@@ -1,0 +1,46 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`whisperCppDefinition > renders the same container from a fixed input 1`] = `
+{
+  "command": [
+    "--model",
+    "/models/ggml-large-v3.bin",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8080",
+    "--inference-path",
+    "/v1/audio/transcriptions",
+    "--convert",
+    "--tmp-dir",
+    "/tmp",
+    "--language",
+    "auto",
+    "--threads",
+    "8",
+    "--no-fallback",
+  ],
+  "devices": [
+    {
+      "deviceKey": "GPU-11111111-2222-3333-4444-555555555555",
+    },
+  ],
+  "entrypoint": [
+    "whisper-server",
+  ],
+  "environment": {},
+  "image": "ghcr.io/ggml-org/whisper.cpp:main-cuda-d1be6fde11ac6e0407606b4e42fe72d34add8037",
+  "labels": {
+    "modelfleet.backend": "whisper.cpp",
+    "modelfleet.instance": "inst_01hq9v",
+  },
+  "mounts": [
+    {
+      "containerPath": "/models/ggml-large-v3.bin",
+      "hostPath": "/srv/models/ggml-large-v3.bin",
+      "readOnly": true,
+    },
+  ],
+  "port": 8080,
+}
+`;

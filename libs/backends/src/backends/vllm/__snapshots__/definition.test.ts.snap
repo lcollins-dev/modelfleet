@@ -1,0 +1,45 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`vllmDefinition > renders the same container from a fixed input 1`] = `
+{
+  "command": [
+    "/models/whisper-large-v3",
+    "--served-model-name",
+    "whisper",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8000",
+    "--tensor-parallel-size",
+    "2",
+    "--gpu-memory-utilization",
+    "0.92",
+  ],
+  "devices": [
+    {
+      "deviceKey": "GPU-11111111-2222-3333-4444-555555555555",
+    },
+    {
+      "deviceKey": "GPU-66666666-7777-8888-9999-000000000000",
+    },
+  ],
+  "environment": {
+    "DO_NOT_TRACK": "1",
+    "HF_HUB_OFFLINE": "1",
+    "VLLM_NO_USAGE_STATS": "1",
+  },
+  "image": "vllm/vllm-openai:v0.31.0",
+  "labels": {
+    "modelfleet.backend": "vllm",
+    "modelfleet.instance": "inst_01hq9v",
+  },
+  "mounts": [
+    {
+      "containerPath": "/models/whisper-large-v3",
+      "hostPath": "/srv/models/huggingface/openai/whisper-large-v3",
+      "readOnly": true,
+    },
+  ],
+  "port": 8000,
+}
+`;

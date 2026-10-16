@@ -1,0 +1,18 @@
+{
+  "extends": ["../../tsconfig.base.json"],
+  "compilerOptions": {
+    /** Build */
+    "target": "ESNext",
+    "module": "Node16",
+    "moduleResolution": "NodeNext",
+    "composite": true,
+
+    /** Paths */
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "baseUrl": "./src"
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"],
+  "references": [{ "path": "../backends/tsconfig.build.json" }]
+}

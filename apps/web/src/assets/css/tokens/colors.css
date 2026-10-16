@@ -1,0 +1,112 @@
+/* ============================================================================
+   Colors. Dark is the default theme; light is set with [data-theme="light"].
+   REBRANDING: override the "Brand hooks" block only. Everything else derives
+   from it or is neutral. Values below are Modelfleet's.
+   ============================================================================ */
+:root,
+[data-theme='dark'] {
+  /* ---- Brand hooks (override these per app) ---- */
+  --primary: #3176c8;
+  --primary-hover: #4787d4;
+  --primary-pressed: #5d98de;
+  --primary-soft: rgba(49, 118, 200, 0.2);
+  --accent-text: #86b6ef;
+  --on-primary: #ffffff;
+  --brand-tile: #1a3354;
+  --brand-accent: #6fd3ff;
+  --glow-cool: rgba(26, 44, 74, 0.42);
+  --glow-cool-fade: rgba(26, 44, 74, 0.2);
+  --glow-deep: rgba(18, 58, 118, 0.32);
+
+  /* ---- Surfaces (warm-ink neutrals) ---- */
+  --bg: #1c1b20;
+  --bg-surface: #211f25;
+  --bg-popover: #312f33;
+  --bg-inset: rgba(255, 255, 255, 0.05);
+  --bg-emphasis: rgba(255, 255, 255, 0.09);
+  --switch-rail: rgba(255, 255, 255, 0.2);
+  --overlay: rgba(0, 0, 0, 0.4);
+
+  /* ---- Lines ---- */
+  --divider: #3f3e42;
+  --border: rgba(148, 146, 151, 0.45);
+  --border-strong: #949297;
+
+  /* ---- Text ladder ---- */
+  --fg-header: #f2f0f8;
+  --fg-highlight: rgba(242, 240, 248, 0.92);
+  --fg: rgba(231, 225, 248, 0.74);
+  --fg-muted: rgba(231, 225, 248, 0.52);
+
+  /* ---- Status ---- */
+  --success: #54ffbd;
+  --warning: #ffbd4f;
+  --error: #ff848b;
+  --success-soft: rgba(84, 255, 189, 0.12);
+  --warning-soft: rgba(255, 189, 79, 0.14);
+  --error-soft: rgba(255, 132, 139, 0.1);
+  --error-line: rgba(255, 132, 139, 0.45);
+  --on-danger: var(--bg-surface);
+
+  /* ---- Data series: keep the order, each neighbour pair is checked colour-blind safe and each 3:1 on bg-emphasis ---- */
+  --series-1: #3c81d4;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #21931e;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  /* ---- Page background: blue wash top-left, deep blue glow bottom-right ---- */
+  --bg-grad:
+    radial-gradient(1000px 560px at 100% 100%, var(--glow-deep), transparent 65%),
+    linear-gradient(135deg, var(--glow-cool) 0%, var(--glow-cool-fade) 45%, transparent 80%), var(--bg);
+  color-scheme: dark;
+}
+[data-theme='light'] {
+  --primary: #2a67b8;
+  --primary-hover: #3a78c8;
+  --primary-pressed: #4f8ad6;
+  --primary-soft: rgba(42, 103, 184, 0.12);
+  --accent-text: #1d4f94;
+  --on-primary: #ffffff;
+  --glow-cool: rgba(214, 230, 252, 0.6);
+  --glow-cool-fade: rgba(214, 230, 252, 0.32);
+  --glow-deep: rgba(206, 224, 252, 0.55);
+
+  --bg: #f9f9fb;
+  --bg-surface: #ffffff;
+  --bg-popover: #ffffff;
+  --bg-inset: rgba(21, 20, 26, 0.04);
+  --bg-emphasis: rgba(21, 20, 26, 0.07);
+  --switch-rail: rgba(21, 20, 26, 0.2);
+
+  --divider: rgba(21, 20, 26, 0.16);
+  --border: rgba(21, 20, 26, 0.24);
+  --border-strong: rgba(21, 20, 26, 0.34);
+
+  --fg-header: #15141a;
+  --fg-highlight: rgba(21, 20, 26, 0.9);
+  --fg: rgba(21, 20, 26, 0.72);
+  --fg-muted: rgba(21, 20, 26, 0.54);
+
+  --success: #017a40;
+  --warning: #a44900;
+  --error: #d7264c;
+  --success-soft: rgba(1, 122, 64, 0.1);
+  --warning-soft: rgba(255, 164, 54, 0.16);
+  --error-soft: rgba(215, 38, 76, 0.07);
+  --error-line: rgba(215, 38, 76, 0.4);
+  --on-danger: #ffffff;
+
+  --series-1: #2a67b8;
+  --series-2: #e2602b;
+  --series-3: #099c6b;
+  --series-4: #b67b07;
+  --series-5: #d0658f;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  color-scheme: light;
+}

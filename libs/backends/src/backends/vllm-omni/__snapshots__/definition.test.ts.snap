@@ -1,0 +1,45 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`vllmOmniDefinition > renders the same container from a fixed input 1`] = `
+{
+  "command": [
+    "/models/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+    "--omni",
+    "--served-model-name",
+    "qwen-tts",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8000",
+    "--stage-overrides",
+    "{"0":{"gpu_memory_utilization":0.25},"1":{"gpu_memory_utilization":0.25}}",
+  ],
+  "devices": [
+    {
+      "deviceKey": "GPU-11111111-2222-3333-4444-555555555555",
+    },
+  ],
+  "entrypoint": [
+    "vllm",
+    "serve",
+  ],
+  "environment": {
+    "DO_NOT_TRACK": "1",
+    "HF_HUB_OFFLINE": "1",
+    "VLLM_NO_USAGE_STATS": "1",
+  },
+  "image": "vllm/vllm-omni:v0.30.0",
+  "labels": {
+    "modelfleet.backend": "vllm-omni",
+    "modelfleet.instance": "inst_01hq9v",
+  },
+  "mounts": [
+    {
+      "containerPath": "/models/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "hostPath": "/srv/models/huggingface/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "readOnly": true,
+    },
+  ],
+  "port": 8000,
+}
+`;

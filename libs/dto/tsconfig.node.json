@@ -1,0 +1,16 @@
+{
+  "extends": ["./tsconfig.json"],
+  "compilerOptions": {
+    /** Build */
+    "target": "ESNext",
+    "module": "Node16",
+    "moduleResolution": "NodeNext",
+    "composite": true,
+
+    /** Paths */
+    "outDir": "./dist/node"
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts"],
+  "exclude": ["src/**/*.test.ts"],
+  "references": [{ "path": "../backends/tsconfig.node.json" }]
+}

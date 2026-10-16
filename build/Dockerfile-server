@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1
+
+## Build container ##
+FROM node:22.18.0-alpine AS builder
+
+WORKDIR /build
+
+# Manifests go in before the source, so a source edit keeps the install layer cached.
+# `npm ci` installs the lockfile's tree for the manifests present and skips the rest.
+COPY package.json package-lock.json ./
+COPY apps/server/package.json ./apps/server/
+COPY apps/web/package.json ./apps/web/
+COPY libs/dto/package.json ./libs/dto/
+COPY libs/agent-protocol/package.json ./libs/agent-protocol/
+COPY libs/backends/package.json ./libs/backends/
+COPY libs/runtime/package.json ./libs/runtime/
+
+RUN --mount=type=cache,target=/root/.npm npm ci
+
+COPY tsconfig.json tsconfig.base.json eslint.root.mjs ./
+COPY apps/server ./apps/server
+COPY apps/web ./apps/web
+COPY libs ./libs
+
+RUN npm run build:libs
+RUN npm run build:server
+
+# Last before the web build, so a new version reuses every layer above.
+ARG APP_VERSION=0.0.0
+ENV VITE_APP_VERSION=${APP_VERSION}
+
+RUN npm run build:web
+
+## Runtime dependencies ##
+FROM node:22.18.0-alpine AS deps
+
+WORKDIR /deps
+
+# `npm ci --workspace` still installs the runtime packages of every manifest present, so only these are copied.
+# Optional is omitted because typeorm's optional peers would bring typescript, ts-node and swc.
+COPY package.json package-lock.json ./
+COPY apps/server/package.json ./apps/server/
+COPY libs/dto/package.json ./libs/dto/
+COPY libs/agent-protocol/package.json ./libs/agent-protocol/
+COPY libs/backends/package.json ./libs/backends/
+COPY libs/runtime/package.json ./libs/runtime/
+
+RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev --omit=optional
+
+# The final stage merges apps/server/node_modules into the root, so refuse a nested module that would replace a root one.
+RUN mkdir -p apps/server/node_modules && cd apps/server/node_modules && for module in $(ls -d [!@.]* @*/* 2>/dev/null); do \
+      if [ -e "/deps/node_modules/$module" ]; then echo "apps/server/node_modules/$module clashes with a root module" >&2; exit 1; fi; \
+    done
+
+## Final container ##
+FROM node:22.18.0-alpine
+
+ENV NODE_ENV=production
+ENV WEB_ROOT_PATH=/app/web
+
+RUN apk --no-cache add curl
+
+USER node
+WORKDIR /app
+
+COPY package.json package-lock.json build/migrate.sh ./
+
+COPY --from=builder /build/apps/server/dist ./
+COPY --from=builder /build/apps/server/email-templates ./email-templates
+COPY --from=builder /build/libs ./libs
+COPY --from=builder /build/apps/server/production.env ./
+
+COPY --from=builder /build/apps/web/dist ./web
+
+COPY --from=deps /deps/node_modules ./node_modules
+COPY --from=deps /deps/apps/server/node_modules ./node_modules
+
+# Last, so a new version reuses every layer above.
+ARG APP_VERSION=0.0.0
+ENV VERSION=${APP_VERSION}
+
+HEALTHCHECK --start-period=15s CMD curl --fail http://localhost:3000/api/v1/availability || exit 1
+
+EXPOSE 3000
+
+CMD ["node", "main.js"]

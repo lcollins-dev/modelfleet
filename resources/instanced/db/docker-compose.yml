@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:17.7-alpine
+    container_name: modelfleet-${INSTANCE}-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '${DB_PORT}:5432'
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+
+volumes:
+  pg-data:

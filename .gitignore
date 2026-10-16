@@ -1,0 +1,41 @@
+# Project
+/node_modules
+*.tsbuildinfo
+
+# Working state a running instance writes (resources/instanced/)
+/.workdir
+
+/_localdev
+
+# CI
+/.npm
+junit.xml
+
+# OS
+.DS_Store
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Claude
+/.claude/worktrees
+/.claude/settings.local.json
+
+# Playwright
+.playwright-mcp
+
+# Compose example secrets, filled from .env.tpl
+/resources/compose/.env

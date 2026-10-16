@@ -1,0 +1,36 @@
+{
+  "name": "@libs/backends",
+  "private": true,
+  "scripts": {
+    "build": "tsc --build --clean tsconfig.build.json tsconfig.node.json && tsc --build tsconfig.build.json tsconfig.node.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "code:lint": "eslint .",
+    "code:lint:fix": "eslint . --fix",
+    "code:format": "prettier --write .",
+    "code:format:check": "prettier --check .",
+    "code:typecheck": "tsc --noEmit -p tsconfig.json",
+    "npm:clean": "rm -rf node_modules"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/node/index.js",
+      "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "node": "./dist/node/runtime/index.js",
+      "default": "./dist/runtime/index.js"
+    },
+    "./openai": {
+      "types": "./dist/openai/index.d.ts",
+      "node": "./dist/node/openai/index.js",
+      "default": "./dist/openai/index.js"
+    }
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  }
+}

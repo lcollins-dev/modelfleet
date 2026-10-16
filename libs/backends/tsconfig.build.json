@@ -1,0 +1,17 @@
+{
+  "extends": ["../../tsconfig.base.json"],
+  "compilerOptions": {
+    /** Build */
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "composite": true,
+
+    /** Paths */
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "baseUrl": "./src"
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts"],
+  "exclude": ["node_modules", "dist", "src/test", "**/*.test.ts"]
+}

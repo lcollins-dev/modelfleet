@@ -1,0 +1,15 @@
+{
+  "extends": ["../../tsconfig.base.json"],
+  "compilerOptions": {
+    /** Build */
+    "target": "ESNext",
+    "module": "Node16",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+
+    /** Paths */
+    "baseUrl": "./src"
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts"],
+  "references": [{ "path": "../backends/tsconfig.build.json" }]
+}

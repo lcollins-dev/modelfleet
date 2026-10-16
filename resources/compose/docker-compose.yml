@@ -1,0 +1,82 @@
+# MODELFLEET_VERSION picks the release both images run; `dev` runs a local `npm run docker:build:*`.
+services:
+  server:
+    image: ghcr.io/lcollins-dev/modelfleet-server:${MODELFLEET_VERSION:-latest}
+    hostname: server
+    restart: always
+    ports:
+      - 8080:3000
+      - 3030:3030
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - server.env
+    environment:
+      USER_TOKEN_SECRET: ${USER_TOKEN_SECRET:?}
+      TYPEORM_PASSWORD: ${TYPEORM_PASSWORD:?}
+    networks:
+      - frontend
+      - backend
+
+  # Holding the Docker socket is host-root-equivalent: this container can start any container
+  # on the host.
+  agent:
+    image: ghcr.io/lcollins-dev/modelfleet-agent:${MODELFLEET_VERSION:-latest}
+    hostname: agent
+    restart: always
+    # NVML enumerates the processes holding device memory only from the host PID namespace.
+    pid: host
+    depends_on:
+      - server
+    env_file:
+      - agent.env
+    networks:
+      - backend
+      # The agent alone reaches the backends it runs, over the network it creates for them.
+      - instances
+    # The image runs as uid 1000, so the socket is reachable only through the group owning it.
+    group_add: ['${DOCKER_GID:?}']
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Downloads write here. A host directory mapped in its place must be writable by uid 1000 and not mounted `:ro`.
+      - models:/var/lib/modelfleet/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  db:
+    image: postgres:17.7-alpine
+    hostname: db
+    restart: always
+    # The image creates this user and database when the volume is first created.
+    environment:
+      POSTGRES_USER: modelfleet
+      POSTGRES_DB: modelfleet
+      POSTGRES_PASSWORD: ${TYPEORM_PASSWORD:?}
+    # A first connection that arrives before Postgres is serving takes the server down
+    # with it, since the retry rebuilds a data source the transactional wrapper holds.
+    # Over TCP, so the socket-only server the init scripts run under does not count.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U modelfleet -d modelfleet']
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    networks:
+      - backend
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+networks:
+  frontend:
+  backend:
+  instances:
+    name: modelfleet-instances
+
+volumes:
+  pg-data:
+  models:

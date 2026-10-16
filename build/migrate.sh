@@ -1,0 +1,1 @@
+npx typeorm migration:run -d cli-data-source.js

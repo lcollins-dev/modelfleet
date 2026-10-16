@@ -1,0 +1,3 @@
+export const GATEWAY_ROUTE_PREFIX = 'v1';
+
+export const GATEWAY_PATH_PREFIX = `/${GATEWAY_ROUTE_PREFIX}`;

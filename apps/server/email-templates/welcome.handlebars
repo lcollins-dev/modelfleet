@@ -1,0 +1,105 @@
+{{#if subject}}
+Welcome to Modelfleet!
+{{/if}}
+{{#if text}}
+Dear {{name}},
+
+Thank you for signing up to Modelfleet, you can sign in using the link below.
+
+{{signInUrl}}
+
+Modelfleet team
+{{/if}}
+{{#if html}}
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    
+    <style>
+      .container {
+        width: 100%;
+
+        padding: 20px;
+
+        font-family: 'open sans', 'helvetica neue', sans-serif;
+        font-size: 18px;
+
+        background-color: #f6f6f6;
+      }
+
+      .content {
+        margin: 0 auto;
+        max-width: 500px;
+      }
+
+      .inner-content {
+        padding: 30px;
+
+        background-color: white;
+
+        border: 1px solid #eee;
+        border-radius: 10px;
+      }
+
+      .bold {
+        font-weight: bold;
+      }
+
+      .newline {
+        margin-bottom: 18px !important;
+      }
+
+      .button-container {
+        display: flex;
+      }
+
+      .button-container,
+      * {
+        margin: 0 auto;
+      }
+
+      .footnote {
+        margin-top: 10px;
+
+        font-size: 16px;
+        text-align: center;
+      }
+
+      button {
+        padding: 8px 12px;
+
+        color: white;
+        font-size: 18px;
+        font-weight: bold;
+
+        background-color: #89c8fd;
+
+        border: 1px solid white;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="content">
+        <div class="inner-content">
+          <div class="newline bold">Dear {{name}},</div>
+
+          <div class="newline">Thank you for signing up to Modelfleet, you can sign in using the button below.</div>
+
+          <div class="button-container newline">
+            <a href="{{signInUrl}}">
+              <button>Sign in</button>
+            </a>
+          </div>
+
+          <div class="bold">Modelfleet team</div>
+        </div>
+        <div class="footnote">© 2026 Modelfleet</div>
+      </div>
+    </div>
+  </body>
+</html>
+{{/if}}

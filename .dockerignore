@@ -1,0 +1,11 @@
+**/dist
+**/node_modules
+.git
+.workdir
+.playwright-mcp
+_localdev
+crates/target
+apps/server/development.env
+apps/agent/development.env
+
+e2e

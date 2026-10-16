@@ -1,0 +1,26 @@
+{
+  "name": "e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "End-to-end tests for Modelfleet",
+  "scripts": {
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:headed": "playwright test --headed",
+    "report": "playwright show-report",
+    "codegen": "playwright codegen $E2E_BASE_URL",
+    "install-browsers": "playwright install chromium",
+    "screenshots": "playwright test -c screenshots/playwright.config.ts",
+    "code:lint": "eslint .",
+    "code:lint:fix": "eslint . --fix",
+    "code:format": "prettier --write .",
+    "code:format:check": "prettier --check .",
+    "code:typecheck": "tsc --noEmit",
+    "npm:clean": "rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0",
+    "@types/node": "22.17.2",
+    "typescript": "5.9.3"
+  }
+}

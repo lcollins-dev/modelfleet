@@ -1,0 +1,34 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`kokoroDefinition > renders the same container from a fixed input 1`] = `
+{
+  "command": [],
+  "devices": [
+    {
+      "deviceKey": "GPU-11111111-2222-3333-4444-555555555555",
+    },
+  ],
+  "entrypoint": [
+    "/app/entrypoint.sh",
+  ],
+  "environment": {
+    "DOWNLOAD_MODEL": "false",
+    "MODEL_AUTO_UNLOAD_TIMEOUT_SECONDS": "0",
+    "MODEL_DIR": "/models",
+    "PORT": "8880",
+  },
+  "image": "ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0",
+  "labels": {
+    "modelfleet.backend": "kokoro",
+    "modelfleet.instance": "inst_01hq9v",
+  },
+  "mounts": [
+    {
+      "containerPath": "/models/v1_0",
+      "hostPath": "/srv/models/Kokoro-82M",
+      "readOnly": true,
+    },
+  ],
+  "port": 8880,
+}
+`;

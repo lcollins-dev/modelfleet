@@ -1,0 +1,50 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`llamaCppDefinition > renders the same container from a fixed input 1`] = `
+{
+  "command": [
+    "--model",
+    "/models/llama-3-8b/model.gguf",
+    "--alias",
+    "chat-8b",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8080",
+    "--ctx-size",
+    "8192",
+    "--ubatch-size",
+    "512",
+    "--parallel",
+    "4",
+    "--flash-attn",
+    "on",
+    "--cache-type-k",
+    "f16",
+    "--cache-type-v",
+    "f16",
+    "--jinja",
+    "--mirostat",
+    "2",
+  ],
+  "devices": [
+    {
+      "deviceKey": "GPU-11111111-2222-3333-4444-555555555555",
+    },
+  ],
+  "environment": {},
+  "image": "ghcr.io/ggml-org/llama.cpp:server-cuda",
+  "labels": {
+    "modelfleet.backend": "llama.cpp",
+    "modelfleet.instance": "inst_01hq9v",
+  },
+  "mounts": [
+    {
+      "containerPath": "/models/llama-3-8b/model.gguf",
+      "hostPath": "/srv/models/llama-3-8b/model.gguf",
+      "readOnly": true,
+    },
+  ],
+  "port": 8080,
+}
+`;

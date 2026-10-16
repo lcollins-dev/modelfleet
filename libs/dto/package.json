@@ -1,0 +1,30 @@
+{
+  "name": "@libs/dto",
+  "private": true,
+  "scripts": {
+    "build": "tsc --build --clean tsconfig.json tsconfig.node.json && tsc --build tsconfig.json tsconfig.node.json",
+    "test": "vitest run",
+    "code:lint": "eslint .",
+    "code:lint:fix": "eslint . --fix",
+    "code:format": "prettier --write .",
+    "code:format:check": "prettier --check .",
+    "code:typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "npm:clean": "rm -rf node_modules"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/node/index.js",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "node": "./dist/node/*.js",
+      "default": "./dist/*.js"
+    }
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  }
+}

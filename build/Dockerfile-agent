@@ -1,0 +1,88 @@
+# syntax=docker/dockerfile:1
+
+## GPU reader ##
+# NVIDIA's driver libraries are glibc-built, and mf-gpu loads them at runtime.
+FROM rust:1.90-slim-bookworm AS gpu-builder
+
+WORKDIR /build
+
+COPY crates ./crates
+
+# The target directory is a cache mount and leaves no trace in the layer, so the binary is copied out in the same step.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/crates/target \
+    cargo build --locked --release --manifest-path crates/Cargo.toml \
+    && cp crates/target/release/mf-gpu /build/mf-gpu
+
+## Build container ##
+FROM node:22.18.0-bookworm-slim AS builder
+
+WORKDIR /build
+
+# Manifests go in before the source, so a source edit keeps the install layer cached.
+# `npm ci` installs the lockfile's tree for the manifests present and skips the rest.
+COPY package.json package-lock.json ./
+COPY apps/agent/package.json ./apps/agent/
+COPY libs/dto/package.json ./libs/dto/
+COPY libs/agent-protocol/package.json ./libs/agent-protocol/
+COPY libs/backends/package.json ./libs/backends/
+COPY libs/runtime/package.json ./libs/runtime/
+
+RUN --mount=type=cache,target=/root/.npm npm ci
+
+COPY tsconfig.json tsconfig.base.json eslint.root.mjs ./
+COPY apps/agent ./apps/agent
+COPY libs ./libs
+
+RUN npm run build:libs
+RUN npm run build:agent
+
+## Runtime dependencies ##
+# Must match the final container's base, so a native module built here loads there.
+FROM node:22.18.0-bookworm-slim AS deps
+
+WORKDIR /deps
+
+COPY package.json package-lock.json ./
+COPY apps/agent/package.json ./apps/agent/
+COPY libs/agent-protocol/package.json ./libs/agent-protocol/
+COPY libs/backends/package.json ./libs/backends/
+COPY libs/runtime/package.json ./libs/runtime/
+
+RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev --omit=optional
+
+# The final stage merges apps/agent/node_modules into the root, so refuse a nested module that would replace a root one.
+RUN mkdir -p apps/agent/node_modules && cd apps/agent/node_modules && for module in $(ls -d [!@.]* @*/* 2>/dev/null); do \
+      if [ -e "/deps/node_modules/$module" ]; then echo "apps/agent/node_modules/$module clashes with a root module" >&2; exit 1; fi; \
+    done
+
+## Final container ##
+FROM node:22.18.0-bookworm-slim
+
+ENV NODE_ENV=production
+
+ENV MODEL_DIRS=/var/lib/modelfleet/models
+
+COPY --from=gpu-builder /build/mf-gpu /usr/local/bin/mf-gpu
+
+# A fresh named volume takes this directory's owner; left to Docker it is created root-owned and downloads fail.
+RUN mkdir -p /var/lib/modelfleet/models && chown node:node /var/lib/modelfleet/models
+
+USER node
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+
+COPY --from=builder /build/apps/agent/dist ./
+COPY --from=builder /build/libs ./libs
+
+COPY --from=deps /deps/node_modules ./node_modules
+COPY --from=deps /deps/apps/agent/node_modules ./node_modules
+
+# Last, so a new version reuses every layer above.
+ARG APP_VERSION=0.0.0
+ENV VERSION=${APP_VERSION}
+
+EXPOSE 3040
+
+CMD ["node", "main.js"]

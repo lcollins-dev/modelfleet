@@ -1,0 +1,15 @@
+{
+  "extends": ["./tsconfig.build.json"],
+  "compilerOptions": {
+    /** Build */
+    "target": "ESNext",
+    "module": "Node16",
+    "moduleResolution": "NodeNext",
+    "composite": true,
+
+    /** Paths */
+    "outDir": "./dist/node"
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts"],
+  "exclude": ["node_modules", "dist", "src/test", "**/*.test.ts"]
+}

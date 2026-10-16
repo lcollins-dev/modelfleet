@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true
+  },
+  "files": [],
+  "references": [
+    { "path": "./libs/dto" },
+    { "path": "./libs/dto/tsconfig.node.json" },
+    { "path": "./libs/agent-protocol/tsconfig.build.json" },
+    { "path": "./libs/backends/tsconfig.build.json" },
+    { "path": "./libs/backends/tsconfig.node.json" },
+    { "path": "./libs/runtime/tsconfig.build.json" }
+  ]
+}

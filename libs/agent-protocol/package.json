@@ -1,0 +1,32 @@
+{
+  "name": "@libs/agent-protocol",
+  "private": true,
+  "scripts": {
+    "build": "tsc --build --clean tsconfig.build.json && tsc --build tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "code:lint": "eslint .",
+    "code:lint:fix": "eslint . --fix",
+    "code:format": "prettier --write .",
+    "code:format:check": "prettier --check .",
+    "code:typecheck": "tsc --noEmit -p tsconfig.json",
+    "npm:clean": "rm -rf node_modules"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.17.2"
+  }
+}

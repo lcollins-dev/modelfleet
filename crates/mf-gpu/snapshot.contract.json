@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "fields": {
+    "schema": { "type": "integer", "required": true },
+    "capturedAt": { "type": "string", "required": true },
+
+    "devices": { "type": "array", "required": true },
+    "devices[]": { "type": "object", "required": true },
+    "devices[].uuid": { "type": "string", "required": false },
+    "devices[].pciBusId": { "type": "string", "required": false },
+    "devices[].index": { "type": "integer", "required": true },
+    "devices[].vendor": { "type": "string", "required": true, "enum": ["nvidia"] },
+    "devices[].name": { "type": "string", "required": false },
+    "devices[].memoryTotalBytes": { "type": "integer", "required": false },
+    "devices[].memoryUsedBytes": { "type": "integer", "required": false },
+    "devices[].utilisationPercent": { "type": "integer", "required": false },
+    "devices[].temperatureC": { "type": "integer", "required": false },
+    "devices[].powerDrawWatts": { "type": "integer", "required": false },
+    "devices[].processAttribution": {
+      "type": "string",
+      "required": true,
+      "enum": ["exact", "approximate", "unavailable"]
+    },
+    "devices[].processes": { "type": "array", "required": true },
+    "devices[].processes[]": { "type": "object", "required": true },
+    "devices[].processes[].pid": { "type": "integer", "required": true },
+    "devices[].processes[].usedBytes": { "type": "integer", "required": false },
+    "devices[].processes[].name": { "type": "string", "required": false },
+
+    "errors": { "type": "array", "required": true },
+    "errors[]": { "type": "object", "required": true },
+    "errors[].scope": { "type": "string", "required": true, "enum": ["provider", "device", "metric"] },
+    "errors[].vendor": { "type": "string", "required": true, "enum": ["nvidia"] },
+    "errors[].device": { "type": "string", "required": false },
+    "errors[].metric": { "type": "string", "required": false },
+    "errors[].message": { "type": "string", "required": true }
+  }
+}

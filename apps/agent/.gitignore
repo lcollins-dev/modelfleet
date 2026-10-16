@@ -1,0 +1,12 @@
+# Project
+/dist
+/node_modules
+
+# Logs
+/logs
+*.log
+
+# Tests
+/coverage
+
+development.env
