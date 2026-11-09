@@ -57,12 +57,44 @@ describe('llamaCppSizeVram estimate', () => {
     expect(computed().weightsBytes).toBe(buildEstimatedModel().sizeBytes);
   });
 
+  describe('the prompt cache', () => {
+    const MIB = 1024 * 1024;
+    const withCache = (promptCache: number) => ({ configuration: { ...configuration, promptCache } });
+
+    it("counts llama.cpp's default where the field is unset", () => {
+      expect(computed().hostCacheBytes).toBe(8192 * MIB);
+    });
+
+    it('counts the configured value in bytes', () => {
+      expect(computed(withCache(2048)).hostCacheBytes).toBe(2048 * MIB);
+    });
+
+    it('counts nothing where the cache is disabled', () => {
+      expect(computed(withCache(0)).hostCacheBytes).toBe(0);
+    });
+
+    it('changes neither the host weights, the resident figure nor the total', () => {
+      const unset = computed();
+      const set = computed(withCache(2048));
+
+      expect(set.hostWeightsBytes).toBe(unset.hostWeightsBytes);
+      expect(set.hostResidentBytes).toBe(unset.hostResidentBytes);
+      expect(set.totalBytes).toBe(unset.totalBytes);
+    });
+
+    it('reads the cache even where the estimate cannot be made', () => {
+      const result = estimate({ configuration: { ...configuration, contextSize: undefined, promptCache: 2048 } });
+
+      expect(result).toMatchObject({ computed: false, hostCacheBytes: 2048 * MIB });
+    });
+  });
+
   it('reads the model header, whatever the cards hold', () => {
     expect(computed().basis).toBe(EstimateBasis.METADATA);
   });
 
   it("counts a projector's bytes whole beside the model's", () => {
-    const projected = computed({ companions: [{ field: 'mmproj', sizeBytes: 812_000_000 }] });
+    const projected = computed({ companions: [{ field: 'mmproj', sizeBytes: 812_000_000, metadata: null }] });
 
     expect(projected.weightsBytes).toBe(buildEstimatedModel().sizeBytes + 812_000_000);
     expect(projected.totalBytes).toBe(computed().totalBytes + 812_000_000);
@@ -167,10 +199,22 @@ describe('llamaCppSizeVram estimate', () => {
       }
     });
 
-    it('holds every host tensor in full where the load mode reads or locks the file', () => {
+    it('holds every host tensor in full where the load mode reads or locks the file and no table is lazy', () => {
       for (const loadMode of ['none', 'dio', 'mlock', 'mmap+mlock']) {
         expect(resident(loadMode)).toBe(36_500_000_000);
       }
+    });
+
+    it('holds all but a lazy table where the load mode reads the file, and that too under mmap+mlock', () => {
+      const lazy = { ...model, architecture: 'deepseek41' };
+      const residentLazy = (loadMode: string): number =>
+        computed({ model: lazy, configuration: { ...configuration, cpuMoe: true, loadMode } }).hostResidentBytes;
+
+      for (const loadMode of ['none', 'dio', 'mlock']) {
+        expect(residentLazy(loadMode)).toBe(1_500_000_000);
+      }
+
+      expect(residentLazy('mmap+mlock')).toBe(36_500_000_000);
     });
 
     it('holds the token table in full where the model reads it whole as its output layer from host memory', () => {
@@ -187,6 +231,250 @@ describe('llamaCppSizeVram estimate', () => {
       expect(computed({ model: dense, configuration: { ...configuration, loadMode: 'none' } }).hostResidentBytes).toBe(
         0
       );
+    });
+  });
+
+  describe('lazy tables', () => {
+    const FOUR_GIB = 4 * 1024 ** 3;
+    const OVER = FOUR_GIB + 1;
+    const UNDER = 1_000_000_000;
+    const EXPERTS = 500_000_000;
+    const TABLE = 'per_layer_token_embd.weight';
+
+    const READING_LOAD_MODES = ['none', 'mlock', 'dio'];
+    const MAPPED_LOAD_MODES = [undefined, 'auto', 'mmap'];
+    const ALL_LAZY_MODES = [undefined, 'auto', 'on', 'off'];
+
+    const modelWith = (
+      tableBytes: number,
+      architecture: string | null = 'deepseek41',
+      tableName: string = TABLE
+    ): ReturnType<typeof buildEstimatedModel> =>
+      buildEstimatedModel({
+        architecture,
+        sizeBytes: 400_000_000_000,
+        tensors: [
+          { name: tableName, sizeBytes: tableBytes },
+          { name: 'output.weight', sizeBytes: 1_000_000_000 },
+          { name: 'blk.0.ffn_up_exps.weight', sizeBytes: EXPERTS },
+        ],
+      });
+
+    const held = (tableBytes: number, loadMode?: string, lazyMode?: string): number =>
+      computed({
+        model: modelWith(tableBytes),
+        configuration: { ...configuration, cpuMoe: true, loadMode, lazyMode },
+      }).hostResidentBytes;
+
+    it('counts no table where the file is mapped, whatever the lazy mode or size', () => {
+      for (const loadMode of MAPPED_LOAD_MODES) {
+        for (const lazyMode of ALL_LAZY_MODES) {
+          expect(held(OVER, loadMode, lazyMode)).toBe(EXPERTS);
+          expect(held(UNDER, loadMode, lazyMode)).toBe(EXPERTS);
+        }
+      }
+    });
+
+    it('counts no table over the threshold under a reading load mode with lazy mode auto or unset', () => {
+      for (const loadMode of READING_LOAD_MODES) {
+        for (const lazyMode of [undefined, 'auto']) {
+          expect(held(OVER, loadMode, lazyMode)).toBe(EXPERTS);
+        }
+      }
+    });
+
+    it('counts a table under the threshold in full under a reading load mode with lazy mode auto or unset', () => {
+      for (const loadMode of READING_LOAD_MODES) {
+        for (const lazyMode of [undefined, 'auto']) {
+          expect(held(UNDER, loadMode, lazyMode)).toBe(UNDER + EXPERTS);
+        }
+      }
+    });
+
+    it('counts no table of any size under a reading load mode with lazy mode on', () => {
+      for (const loadMode of READING_LOAD_MODES) {
+        expect(held(OVER, loadMode, 'on')).toBe(EXPERTS);
+        expect(held(UNDER, loadMode, 'on')).toBe(EXPERTS);
+      }
+    });
+
+    it('counts a table of any size in full under a reading load mode with lazy mode off', () => {
+      for (const loadMode of READING_LOAD_MODES) {
+        expect(held(OVER, loadMode, 'off')).toBe(OVER + EXPERTS);
+        expect(held(UNDER, loadMode, 'off')).toBe(UNDER + EXPERTS);
+      }
+    });
+
+    it('counts every table in full under mmap+mlock, whatever the lazy mode or size', () => {
+      for (const lazyMode of ALL_LAZY_MODES) {
+        expect(held(OVER, 'mmap+mlock', lazyMode)).toBe(OVER + EXPERTS);
+        expect(held(UNDER, 'mmap+mlock', lazyMode)).toBe(UNDER + EXPERTS);
+      }
+    });
+
+    it('takes a table of exactly the threshold as not lazy, since llama.cpp wants it strictly larger', () => {
+      expect(held(FOUR_GIB, 'none')).toBe(FOUR_GIB + EXPERTS);
+      expect(held(FOUR_GIB + 1, 'none')).toBe(EXPERTS);
+    });
+
+    it('treats every architecture that marks the table alike', () => {
+      for (const architecture of ['deepseek41', 'qwen4exp', 'gemma4']) {
+        const model = modelWith(OVER, architecture);
+
+        expect(
+          computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none' } }).hostResidentBytes
+        ).toBe(EXPERTS);
+      }
+    });
+
+    it('counts the table in full on an architecture that does not mark it, even with lazy mode on', () => {
+      const model = modelWith(OVER, 'gemma3n');
+
+      expect(
+        computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none', lazyMode: 'on' } })
+          .hostResidentBytes
+      ).toBe(OVER + EXPERTS);
+    });
+
+    it('counts the table in full where the architecture is unknown', () => {
+      const model = modelWith(OVER, null);
+
+      expect(
+        computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none', lazyMode: 'on' } })
+          .hostResidentBytes
+      ).toBe(OVER + EXPERTS);
+    });
+
+    it('counts a token table over the threshold in full, since llama.cpp never reads one lazily', () => {
+      const model = modelWith(OVER, 'deepseek41', 'token_embd.weight');
+
+      expect(
+        computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none', lazyMode: 'on' } })
+          .hostResidentBytes
+      ).toBe(OVER + EXPERTS);
+    });
+
+    it('counts a lazy table toward the host weights and takes it off the cards', () => {
+      const result = computed({
+        model: modelWith(OVER),
+        configuration: { ...configuration, cpuMoe: true, loadMode: 'none' },
+      });
+
+      expect(result.hostWeightsBytes).toBe(OVER + EXPERTS);
+      expect(result.weightsBytes).toBe(400_000_000_000 - OVER - EXPERTS);
+    });
+
+    describe('with an override naming a card', () => {
+      const overridden = (tableBytes: number, loadMode: string, lazyMode?: string) =>
+        computed({
+          model: modelWith(tableBytes),
+          configuration: { ...configuration, loadMode, lazyMode, tensorOverrides: ['per_layer_token_embd=CUDA0'] },
+        });
+
+      it('keeps a lazy table in host memory, as llama.cpp ignores the override for it', () => {
+        const result = overridden(OVER, 'none');
+
+        expect(result.hostWeightsBytes).toBe(OVER);
+        expect(result.hostResidentBytes).toBe(0);
+        expect(result.weightsBytes).toBe(400_000_000_000 - OVER);
+      });
+
+      it('keeps a lazy table in host memory where the file is mapped too', () => {
+        expect(overridden(OVER, 'mmap').hostWeightsBytes).toBe(OVER);
+        expect(overridden(UNDER, 'auto', 'on').hostWeightsBytes).toBe(UNDER);
+      });
+
+      it('holds a lazy table in full under mmap+mlock, and still off the cards', () => {
+        const result = overridden(OVER, 'mmap+mlock');
+
+        expect(result.hostWeightsBytes).toBe(OVER);
+        expect(result.hostResidentBytes).toBe(OVER);
+      });
+
+      it('sends a table llama.cpp would not make lazy to the card', () => {
+        for (const result of [
+          overridden(OVER, 'none', 'off'),
+          overridden(UNDER, 'none'),
+          overridden(OVER, 'auto', 'off'),
+        ]) {
+          expect(result.hostWeightsBytes).toBe(0);
+          expect(result.hostResidentBytes).toBe(0);
+          expect(result.weightsBytes).toBe(400_000_000_000);
+        }
+      });
+    });
+  });
+
+  describe('a draft model', () => {
+    const DRAFT_BYTES = 8_000_000_000;
+
+    /** The 8192 context x 8 layers x (2048 / 16 x 1) width x 4 bytes of an f16 key and value. */
+    const DRAFT_KV_BYTES = 33_554_432;
+
+    /** The 8 MiB mask for one card and 512 x 2048 x 64 of activations. */
+    const DRAFT_COMPUTE_BYTES = 75_497_472;
+
+    const METADATA = { layerCount: 8, embeddingLength: 2048, headCount: 16, headCountKv: 1 };
+
+    const draftOf = (metadata: typeof METADATA | null = METADATA) => [
+      { field: 'draftModel', sizeBytes: DRAFT_BYTES, metadata },
+    ];
+
+    it('counts its file, its KV cache and its context', () => {
+      const without = computed();
+      const drafted = computed({ companions: draftOf() });
+
+      expect(drafted.weightsBytes - without.weightsBytes).toBe(DRAFT_BYTES);
+      expect(drafted.kvCacheBytes - without.kvCacheBytes).toBe(DRAFT_KV_BYTES);
+      expect(drafted.overheadBytes - without.overheadBytes).toBe(DRAFT_COMPUTE_BYTES);
+    });
+
+    it('sizes the KV at the main context length', () => {
+      const without = computed({ configuration: { ...configuration, contextSize: 16384 } });
+      const drafted = computed({ configuration: { ...configuration, contextSize: 16384 }, companions: draftOf() });
+
+      expect(drafted.kvCacheBytes - without.kvCacheBytes).toBe(DRAFT_KV_BYTES * 2);
+    });
+
+    it("keeps its own f16 cache whatever the main model's is", () => {
+      const quantised = { ...configuration, cacheTypeK: 'q8_0', cacheTypeV: 'q8_0' };
+      const without = computed({ configuration: quantised });
+      const drafted = computed({ configuration: quantised, companions: draftOf() });
+
+      expect(drafted.kvCacheBytes - without.kvCacheBytes).toBe(DRAFT_KV_BYTES);
+    });
+
+    it('takes four copies of its mask on a layer split, even where the main model overrides tensors', () => {
+      const overridden = { ...configuration, tensorOverrides: ['x=CPU'] };
+      const without = computed({ deviceCount: 2, configuration: overridden });
+      const drafted = computed({ deviceCount: 2, configuration: overridden, companions: draftOf() });
+
+      expect(drafted.overheadBytes - without.overheadBytes).toBe(2 * (DRAFT_COMPUTE_BYTES + 3 * 8 * 1024 * 1024));
+    });
+
+    it('counts its file alone where its metadata is missing', () => {
+      const without = computed();
+
+      for (const drafted of [
+        computed({ companions: draftOf(null) }),
+        computed({ companions: draftOf({ ...METADATA, headCountKv: null as unknown as number }) }),
+      ]) {
+        expect(drafted.weightsBytes - without.weightsBytes).toBe(DRAFT_BYTES);
+        expect(drafted.kvCacheBytes).toBe(without.kvCacheBytes);
+        expect(drafted.overheadBytes).toBe(without.overheadBytes);
+      }
+    });
+
+    it('holds no host memory for a draft on the cards', () => {
+      expect(computed({ companions: draftOf() }).hostResidentBytes).toBe(0);
+    });
+
+    it('sizes only the draft field, leaving a projector at its file', () => {
+      const without = computed();
+      const projected = computed({ companions: [{ field: 'mmproj', sizeBytes: DRAFT_BYTES, metadata: METADATA }] });
+
+      expect(projected.kvCacheBytes).toBe(without.kvCacheBytes);
+      expect(projected.overheadBytes).toBe(without.overheadBytes);
     });
   });
 

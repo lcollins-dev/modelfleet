@@ -58,7 +58,7 @@ node's page.
 Your reverse proxy must:
 
 - Serve the console over HTTPS at the root of its own hostname, matching `WEB_APP_BASE_URL`
-- Accept request bodies of 8 MB on the console and 32 MB on the gateway
+- Accept request bodies of 8 MB on the console and 50 MB on the gateway
 - Pass streamed responses through without buffering
 - Let gateway requests wait for `GATEWAY_LOAD_WAIT_TIMEOUT`, 15 minutes by default, while a model loads
 - Set `X-Forwarded-For` to the client's address and be named in `TRUST_PROXY`, which rate limiting relies on
@@ -91,7 +91,7 @@ server {
   ssl_certificate /path/to/fullchain.pem;
   ssl_certificate_key /path/to/privkey.pem;
 
-  client_max_body_size 32m;
+  client_max_body_size 50m;
 
   location / {
     proxy_pass http://127.0.0.1:3030;
@@ -171,6 +171,7 @@ The server reads `server.env` and each agent reads `agent.env`. Both validate ev
 | `USER_IDLE_TIMEOUT`         | `1h`                     | How long a signed-in user may be idle before they are signed out.                       |
 | `NODE_OFFLINE_THRESHOLD`    | `30s`                    | How long without a heartbeat before a node reads as offline.                            |
 | `SCHEDULER_IDLE_TIMEOUT`    | `15m`                    | How long an on-demand deployment idles before it is stopped.                            |
+| `SCHEDULER_MIN_RESIDENCY`   | `2m`                     | How long an instance stays resident after it became ready before it may be evicted.     |
 | `GATEWAY_LOAD_WAIT_TIMEOUT` | `15m`                    | How long a gateway request waits for its model to load.                                 |
 | `LOG_STDOUT_LEVEL`          | `info`                   | Log level for container output.                                                         |
 | `LOG_FILE_PATH`             | `logs`                   | Directory for the log file. Blank, as in the compose file, turns file logging off.      |

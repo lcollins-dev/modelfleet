@@ -1,9 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="Downloads"
-      subtitle="Files being put on your nodes. A finished file shows in the model catalogue once the node scans it."
-    >
+    <ui-page-heading>
       <ui-button type="primary" to="/downloads/create">
         <template #icon>
           <icon-add class="size-4" />
@@ -74,7 +71,13 @@ import {
   UiTableHead,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
+
+usePage({
+  title: 'Downloads',
+  subtitle: 'Files being put on your nodes. A finished file shows in the model catalogue once the node scans it.',
+});
 
 const ANY = 'any';
 

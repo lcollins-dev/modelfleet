@@ -15,16 +15,24 @@
       <div class="flex flex-auto flex-col justify-center">
         <div
           class="flex flex-wrap items-baseline gap-1.5"
-          :class="shownBands.length > 0 ? 'mt-1.5' : 'mt-3.5'"
+          :class="$slots.meter || shownBands.length > 0 ? 'mt-1.5' : 'mt-3.5'"
           data-testid="kpi-value"
         >
           <span class="text-2xl font-semibold tracking-tight text-header tabular-nums">{{ props.value }}</span>
 
           <span v-if="props.unit" class="text-xs text-muted">{{ props.unit }}</span>
+
+          <span v-if="props.detail" class="ml-auto font-mono text-xs text-muted" data-testid="kpi-detail">{{
+            props.detail
+          }}</span>
+        </div>
+
+        <div v-if="$slots.meter" class="mt-3" data-testid="kpi-meter">
+          <slot name="meter" />
         </div>
 
         <div
-          v-if="shownBands.length > 0"
+          v-else-if="shownBands.length > 0"
           class="mt-3 flex h-1 gap-0.5 overflow-hidden rounded-xs bg-emphasis"
           data-testid="kpi-bands"
         >
@@ -39,17 +47,18 @@
       </div>
 
       <div
-        v-if="shownLegend.length > 0"
+        v-if="!$slots.meter && props.legend.length > 0"
         class="flex flex-wrap gap-x-3 gap-y-1"
         :class="shownBands.length > 0 ? 'mt-2.5' : 'mt-4.5'"
       >
         <span
-          v-for="item of shownLegend"
+          v-for="item of props.legend"
           :key="item.label"
           class="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-muted"
+          :class="{ 'ml-auto': item.alignEnd }"
         >
           <span
-            v-if="legendDotted"
+            v-if="legendDotted && !item.alignEnd"
             class="size-1.5 shrink-0 rounded-full"
             :class="item.tone ? METER_TONE_CLASSES[item.tone] : 'bg-transparent'"
           />
@@ -77,6 +86,7 @@ export interface IKpiBand {
 export interface IKpiLegendItem {
   label: string;
   tone?: MeterTone;
+  alignEnd?: boolean;
 }
 
 const props = defineProps({
@@ -97,6 +107,11 @@ const props = defineProps({
     default: undefined,
   },
 
+  detail: {
+    type: String,
+    default: undefined,
+  },
+
   /** Each band takes its share of the bar relative to the others, so they need not total 100. */
   bands: {
     type: Array as PropType<IKpiBand[]>,
@@ -107,7 +122,7 @@ const props = defineProps({
     default: () => [],
   },
 
-  /** Turns the icon warning and leads the legend with `Stale`. */
+  /** Turns the icon warning. */
   stale: {
     type: Boolean,
     default: false,
@@ -116,9 +131,5 @@ const props = defineProps({
 
 const shownBands = computed(() => props.bands.filter(band => band.percent > 0));
 
-const shownLegend = computed<IKpiLegendItem[]>(() =>
-  props.stale ? [{ label: 'Stale', tone: 'warning' }, ...props.legend] : props.legend
-);
-
-const legendDotted = computed(() => shownLegend.value.some(item => item.tone !== undefined));
+const legendDotted = computed(() => props.legend.some(item => item.tone !== undefined));
 </script>

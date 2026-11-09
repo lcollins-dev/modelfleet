@@ -62,9 +62,7 @@ describe('VRAM admission (integration)', () => {
     const refusedId = refused === outcomes[0] ? first : second;
     const [event] = await refusalsOf(refusedId);
 
-    expect(refused?.refused[0].problem).toMatch(
-      /^This deployment needs 1\.\d GiB, more than the pinned GPUs have free$/
-    );
+    expect(refused?.refused[0].problem).toMatch(/^Not enough GPU memory for 1\.\d GiB$/);
     expect(Number(event.detail.availableBytes)).toBe(1.5 * GIB - Number(event.detail.expectedBytes));
     expect(event.detail.cards).toContain(`${DEVICE_KEY}: total 2.5 GiB, used 0.0 GiB, predicted 1.`);
   });

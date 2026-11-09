@@ -21,6 +21,8 @@ export { default as MfModelSelect } from './model/Select.vue';
 
 export { default as MfDownloadRow } from './download/Row.vue';
 export { default as MfDownloadProgress } from './download/Progress.vue';
+export { default as MfDownloadFilePath } from './download/FilePath.vue';
+export { default as MfDownloadTargetFiles } from './download/TargetFiles.vue';
 
 export { default as MfEventDetail } from './event/Detail.vue';
 export { default as MfEventTable } from './event/Table.vue';

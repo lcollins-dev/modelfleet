@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ref } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 
 import type { EventDto } from '@libs/dto';
 import { EventPartyType, EventSeverity, EventType } from '@libs/dto';
@@ -36,7 +37,13 @@ const event = (id: number, overrides: Partial<EventDto> = {}): EventDto => ({
 });
 
 const mountIndex = async () => {
-  const wrapper = mount(Index, { global: { stubs: { teleport: true } } });
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/:path(.*)*', component: { template: '<div />' } }],
+  });
+  await router.push('/events');
+
+  const wrapper = mount(Index, { global: { plugins: [router], stubs: { teleport: true } } });
   await flushPromises();
 
   return wrapper;

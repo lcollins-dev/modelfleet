@@ -9,11 +9,8 @@ import {
   OUTPUT_LINE_CAP,
   applyOutputFrame,
   describeOutputRefusal,
-  describeOutputSpan,
   emptyInstanceOutput,
 } from './instanceOutput';
-
-const NOW = new Date(2026, 9, 15, 16, 0, 0);
 
 const line = (
   text: string,
@@ -43,7 +40,6 @@ describe('applyOutputFrame', () => {
     );
 
     expect(texts(output)).toEqual(['again']);
-    expect(output.complete).toBe(true);
     expect(output.lines).toHaveLength(1);
   });
 
@@ -129,57 +125,6 @@ describe('applyOutputFrame', () => {
 
     expect(output.ended).toBe(InstanceOutputEndReason.LOST);
     expect(texts(output)).toEqual(['last words']);
-  });
-});
-
-describe('describeOutputSpan', () => {
-  it('says nothing until the stream has opened', () => {
-    expect(describeOutputSpan(emptyInstanceOutput(), NOW)).toBeNull();
-  });
-
-  it('reads a tail that reaches the start as the whole output, from its first line', () => {
-    const output = apply(
-      { kind: 'opened', tailLines: 1000, complete: true },
-      { kind: 'lines', lines: [line('bare', null), line('stamped')] }
-    );
-
-    expect(describeOutputSpan(output, NOW)).toBe('Since the container started at 14:02:11');
-  });
-
-  it('reads a cut-off tail as the lines it asked for, from its first line', () => {
-    const output = apply(
-      { kind: 'opened', tailLines: 1000, complete: false },
-      { kind: 'lines', lines: [line('stamped')] }
-    );
-
-    expect(describeOutputSpan(output, NOW)).toBe('Last 1,000 lines, since 14:02:11');
-  });
-
-  it('names the day of a first line from an earlier day', () => {
-    const output = apply(
-      { kind: 'opened', tailLines: 1000, complete: false },
-      { kind: 'lines', lines: [line('stamped', new Date(2026, 9, 14, 23, 59, 1))] }
-    );
-
-    expect(describeOutputSpan(output, NOW)).toBe('Last 1,000 lines, since 14/10/26 23:59:01');
-  });
-
-  it('leaves out the time while no line carries one', () => {
-    expect(describeOutputSpan(apply({ kind: 'opened', tailLines: 1000, complete: true }), NOW)).toBe(
-      'Since the container started'
-    );
-    expect(describeOutputSpan(apply({ kind: 'opened', tailLines: 1000, complete: false }), NOW)).toBe(
-      'Last 1,000 lines'
-    );
-  });
-
-  it('reads the cap once it has dropped lines, since the start is no longer on screen', () => {
-    const output = apply(
-      { kind: 'opened', tailLines: 1000, complete: true },
-      { kind: 'lines', lines: lines(OUTPUT_LINE_CAP + 1) }
-    );
-
-    expect(describeOutputSpan(output, NOW)).toBe('Last 5,000 lines, since 14:02:11');
   });
 });
 

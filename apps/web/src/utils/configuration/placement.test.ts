@@ -319,8 +319,10 @@ describe('describePlacement', () => {
       replicas: 1,
       running: 0,
       problem: null,
+      problemReason: null,
       expectedUsage: null,
       capacity: null,
+      evictions: [],
     },
   ];
 

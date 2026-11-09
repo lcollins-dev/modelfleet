@@ -1,6 +1,7 @@
 import type { Component } from 'vue';
 import IconDeveloperBoard from '~icons/material-symbols/developer-board-outline-rounded';
 import IconDns from '~icons/material-symbols/dns-outline-rounded';
+import IconFastForward from '~icons/material-symbols/fast-forward-outline-rounded';
 import IconImage from '~icons/material-symbols/image-outline-rounded';
 import IconInventory2 from '~icons/material-symbols/inventory-2-outline-rounded';
 import IconLayers from '~icons/material-symbols/layers-outline-rounded';
@@ -43,6 +44,10 @@ const GROUP_PRESENTATION: Record<string, IGroupPresentation | undefined> = {
   multimodal: {
     icon: IconImage,
     description: 'Attach the companion files a model needs to read anything but text.',
+  },
+  speculative: {
+    icon: IconFastForward,
+    description: 'Attach a draft model that drafts tokens ahead of the main model to speed up decoding.',
   },
   server: {
     icon: IconDns,

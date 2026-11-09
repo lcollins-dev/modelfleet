@@ -38,8 +38,8 @@ describe('kokoroDefinition', () => {
   it('names a CPU image for a CPU-only placement and a CUDA image wherever a card is pinned', () => {
     const images = kokoroDefinition.images;
 
-    expect(images[imageVariantOf({ cpu: true, gpus: [] })]).toBe('ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0');
-    expect(images[imageVariantOf({ cpu: false, gpus: [GPU] })]).toBe('ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0');
+    expect(images[imageVariantOf({ cpu: true, gpus: [] })]).toBe('ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.2');
+    expect(images[imageVariantOf({ cpu: false, gpus: [GPU] })]).toBe('ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.2');
   });
 
   it('passes the probe on a healthy answer alone', () => {

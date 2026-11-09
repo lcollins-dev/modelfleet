@@ -55,15 +55,11 @@ describe('MfInstanceOutput', () => {
     const waiting = mountOutput(emptyInstanceOutput(), false, true);
 
     expect(waiting.get('[data-testid="output-status"]').text()).toBe('Waiting');
-    expect(waiting.get('[data-testid="output-span"]').text()).toBe('Waiting for the container');
     expect(waiting.find('[data-testid="output-waiting"]').exists()).toBe(true);
   });
 
-  it('heads the pane with how far back it reaches', () => {
-    expect(mountOutput(emptyInstanceOutput()).get('[data-testid="output-span"]').text()).toBe(
-      'Reading the latest lines'
-    );
-    expect(mountOutput(outputOf(OPENED)).get('[data-testid="output-span"]').text()).toBe('Last 1,000 lines');
+  it('heads the pane with what it shows', () => {
+    expect(mountOutput(outputOf(OPENED)).text()).toContain('Container logs for this instance.');
   });
 
   it('shows each line with its time and a cut marker', () => {

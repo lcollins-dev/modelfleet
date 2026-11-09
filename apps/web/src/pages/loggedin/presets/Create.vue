@@ -1,11 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="New preset"
-      subtitle="Settings any deployment can start from."
-      back-to="/presets"
-      back-label="Presets"
-    />
+    <ui-page-heading />
 
     <mf-preset-form
       v-model:name="form.name"
@@ -17,7 +12,7 @@
     >
       <template #footer>
         <div class="flex gap-2">
-          <ui-button to="/presets">Cancel</ui-button>
+          <ui-button @click="goBack()">Cancel</ui-button>
 
           <ui-button type="primary" :loading="saving" @click="doCreatePreset">Create Preset</ui-button>
         </div>
@@ -43,6 +38,16 @@ import { useNotificationStore } from '@/stores/notification';
 import { MfPresetForm } from '@/components/mf';
 import { UiButton, UiPageContainer, UiPageHeading } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
+usePage({
+  title: 'New preset',
+  subtitle: 'Settings any deployment can start from.',
+  back: '/presets',
+  transient: true,
+});
+
 interface ICreatePresetForm {
   name: string;
   description: string;
@@ -55,6 +60,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/presets/Create');
 
 const router = useRouter();
+const { goBack } = useGoBack();
 
 const notificationStore = useNotificationStore();
 const presetAdminService = usePresetAdminService();

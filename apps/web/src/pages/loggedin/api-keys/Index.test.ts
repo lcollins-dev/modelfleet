@@ -119,6 +119,30 @@ describe('API keys page', () => {
     expect(wrapper.find('[data-testid="api-key-owner-link"]').exists()).toBe(false);
   });
 
+  it('opens on active keys', async () => {
+    await mountIndex();
+
+    expect(getApiKeyList).toHaveBeenLastCalledWith({ status: ApiKeyListStatus.ACTIVE }, 1);
+  });
+
+  it('asks for every key once All is chosen', async () => {
+    const wrapper = await mountIndex();
+
+    await wrapper.get('[role="radio"]:nth-child(1)').trigger('click');
+    await vi.advanceTimersByTimeAsync(Config.LIST_DEBOUNCE_MS);
+    await flushPromises();
+
+    expect(getApiKeyList).toHaveBeenLastCalledWith({}, 1);
+  });
+
+  it('says the view is empty rather than that no keys exist, where only revoked keys do', async () => {
+    getApiKeyList.mockResolvedValue({ apiKeyList: [], pages: 1 });
+
+    const wrapper = await mountIndex();
+
+    expect(wrapper.get('[data-testid="table-empty"]').text()).toBe('No keys in this view.');
+  });
+
   it('narrows to revoked keys', async () => {
     const wrapper = await mountIndex();
 
@@ -131,6 +155,7 @@ describe('API keys page', () => {
 
   it('says there are no keys yet, leaving creation to the heading, and says when a search matches none', async () => {
     getApiKeyList.mockResolvedValue({ apiKeyList: [], pages: 1 });
+    getApiKeyStats.mockResolvedValue({ total: 0, active: 0, revoked: 0 });
 
     const wrapper = await mountIndex();
 

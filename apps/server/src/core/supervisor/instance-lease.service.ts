@@ -29,6 +29,12 @@ export class InstanceLeaseService {
   /** By instance id. Nothing is leased from a draining instance. */
   private readonly draining = new Set<number>();
 
+  /**
+   * By instance id. Those draining because an eviction has claimed them, which only finishing the eviction releases. A
+   * subset of `draining`, kept apart so a reconcile of the victim's own deployment cannot lift an eviction's drain.
+   */
+  private readonly claimed = new Set<number>();
+
   private readonly drained = new Subject<number>();
 
   constructor(
@@ -109,8 +115,47 @@ export class InstanceLeaseService {
     return this.inFlightAcross(instances) === 0;
   }
 
+  /** Leaves an instance an eviction has claimed draining, which `releaseClaim` alone lifts. */
   stopDraining(instances: Instance[]): void {
     for (const instance of instances) {
+      if (!this.claimed.has(instance.id)) {
+        this.draining.delete(instance.id);
+      }
+    }
+  }
+
+  /**
+   * Marks all of the instances draining for an eviction, or none of them if any is already draining, with no await in
+   * between: what stops two plans deciding at once from claiming one victim.
+   */
+  claim(instances: Instance[]): boolean {
+    if (instances.some(instance => this.draining.has(instance.id))) {
+      return false;
+    }
+
+    for (const instance of instances) {
+      this.draining.add(instance.id);
+      this.claimed.add(instance.id);
+    }
+
+    return true;
+  }
+
+  isClaimed(instance: Instance): boolean {
+    return this.claimed.has(instance.id);
+  }
+
+  isDraining(instance: Instance): boolean {
+    return this.draining.has(instance.id);
+  }
+
+  inFlightOn(instance: Instance): number {
+    return this.inFlightFor(instance.id);
+  }
+
+  releaseClaim(instances: Instance[]): void {
+    for (const instance of instances) {
+      this.claimed.delete(instance.id);
       this.draining.delete(instance.id);
     }
   }

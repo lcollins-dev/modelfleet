@@ -38,6 +38,9 @@ export const vllmDefinition: BackendDefinition = {
     HF_HUB_OFFLINE: '1',
     VLLM_NO_USAGE_STATS: '1',
     DO_NOT_TRACK: '1',
+
+    // In MiB, matching the gateway's default upload limit.
+    VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: '50',
   },
 
   port: 8000,

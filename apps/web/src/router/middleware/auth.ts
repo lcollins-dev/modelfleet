@@ -70,15 +70,16 @@ export const authMiddleware: NavigationGuardWithThis<undefined> = async to => {
     }
   };
 
+  // Stopped before the await, so the previous page's watcher cannot redirect while this navigation is pending.
+  if (userWatcher !== null) {
+    userWatcher.stop();
+    userWatcher = null;
+  }
+
   if (userStore.loggedIn) {
     await userService.getProfile().catch((error: unknown) => {
       logger.error({ error }, 'authMiddleware(): Failed to get profile');
     });
-  }
-
-  if (userWatcher !== null) {
-    userWatcher.stop();
-    userWatcher = null;
   }
 
   const newRoute = doRedirect(true);

@@ -165,6 +165,38 @@ describe('ContainerLookupService', () => {
     expect(resolved.has(999)).toBe(false);
   });
 
+  it('answers each instance on this node with its host processes', async () => {
+    const processes = await build().processesByInstance();
+
+    expect(processes).toEqual(new Map([[INSTANCE_KEY, [12345, 12346]]]));
+  });
+
+  it('keeps an instance whose processes could not be listed, with none', async () => {
+    docker = {
+      listContainers,
+      getContainer: () => ({ top: () => Promise.reject(new Error('no such container')) }),
+    } as unknown as Docker;
+
+    const processes = await build().processesByInstance();
+
+    expect(processes).toEqual(new Map([[INSTANCE_KEY, []]]));
+  });
+
+  it('answers null where docker has never answered', async () => {
+    listContainers.mockRejectedValueOnce(new Error('socket closed'));
+
+    await expect(build().processesByInstance()).resolves.toBeNull();
+  });
+
+  it('reuses the index while it is fresh', async () => {
+    const lookup = build();
+
+    await lookup.resolve([12345]);
+    await lookup.processesByInstance();
+
+    expect(listContainers).toHaveBeenCalledTimes(1);
+  });
+
   it('skips a container that exits while its processes are being read', async () => {
     docker = {
       listContainers,

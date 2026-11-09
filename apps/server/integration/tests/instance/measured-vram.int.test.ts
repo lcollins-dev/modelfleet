@@ -89,7 +89,7 @@ describe('Measured VRAM (integration)', () => {
     const outcome = await instanceService.start(deploymentId, admin.id);
 
     expect(outcome.started).toHaveLength(0);
-    expect(outcome.refused[0].problem).toBe('This deployment needs 6.0 GiB, more than the pinned GPUs have free');
+    expect(outcome.refused[0].problem).toBe('Not enough GPU memory for 6.0 GiB');
   });
 
   it('keeps a stored figure higher than a later measurement, and measures no instance still starting', async () => {

@@ -8,7 +8,13 @@
       <slot name="toolbar" />
     </div>
 
-    <div class="overflow-x-auto">
+    <div
+      class="overflow-x-auto"
+      :class="{ [SCROLL_REGION_CLASS]: scrolls }"
+      :role="scrolls ? 'region' : undefined"
+      :tabindex="scrolls ? 0 : undefined"
+      :aria-label="props.scrollLabel"
+    >
       <div :style="{ '--table-columns': props.columns, minWidth: `${props.minWidth}px` }">
         <slot />
       </div>
@@ -29,7 +35,12 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
+
 import UiEmpty from '../feedback/Empty.vue';
+
+const SCROLL_REGION_CLASS =
+  'max-h-72 overflow-y-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary';
 
 /**
  * `columns` is a `grid-template-columns` value that UiTableHead and UiTableRow lay their cells out on. Pass `#empty`
@@ -44,5 +55,13 @@ const props = defineProps({
     type: Number,
     default: 640,
   },
+
+  /** Given, the rows scroll inside a region of this name. Pair it with `sticky` on UiTableHead. */
+  scrollLabel: {
+    type: String,
+    default: undefined,
+  },
 });
+
+const scrolls = computed(() => props.scrollLabel !== undefined);
 </script>

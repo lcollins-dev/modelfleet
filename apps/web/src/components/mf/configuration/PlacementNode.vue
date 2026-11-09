@@ -11,7 +11,14 @@
       <template #description>{{ nodeSummary }}</template>
 
       <template #aside>
-        <ui-tag v-if="fit !== null" :type="placementFitTone(fit)">{{ formatPlacementFit(fit) }}</ui-tag>
+        <ui-tag
+          v-if="fit !== null"
+          :type="placementFitTone(fit)"
+          :title="fitReason ?? undefined"
+          data-testid="placement-node-status"
+        >
+          {{ formatPlacementFit(fit) }}
+        </ui-tag>
       </template>
 
       <template #actions>
@@ -25,7 +32,15 @@
     </ui-picker-row>
 
     <div v-if="fitLines.length > 0" class="flex flex-col pb-2.5 pl-10 pr-4 text-xs text-muted">
-      <span v-for="line of fitLines" :key="line">{{ line }}.</span>
+      <span
+        v-for="line of fitLines"
+        :key="line.label"
+        :class="{ 'text-error': line.short }"
+        :title="line.title ?? undefined"
+        data-testid="placement-node-memory"
+      >
+        {{ line.label }} {{ line.text }}
+      </span>
     </div>
 
     <div v-if="open" class="border-t border-divider bg-inset [&>*+*]:border-t [&>*+*]:border-divider">
@@ -72,7 +87,13 @@ import {
   toggleDevicePin,
   toggleNodePin,
 } from '@/utils/configuration/placement';
-import { describePlacementFit, formatPlacementFit, placementFit, placementFitTone } from '@/utils/deployment';
+import {
+  describePlacementFit,
+  formatPlacementFit,
+  placementFit,
+  placementFitTone,
+  placementReason,
+} from '@/utils/deployment';
 import { formatBytes, formatCount } from '@/utils/format/number';
 import { capacityShares, cardFigures } from '@/utils/gpu';
 
@@ -110,11 +131,13 @@ const nodeSummary = computed(() => {
 
 const cpuSummary = computed(() =>
   deviceKeys.value.some(deviceKey => isPinned(deviceKey))
-    ? "The host's own cores, taking layers the GPUs cannot hold."
-    : "The host's own cores, taking no GPU. Needs a CPU build of the image."
+    ? 'Run with the GPUs, using RAM for offloaded layers.'
+    : 'Run on the CPU. Requires a CPU-compatible container image.'
 );
 
 const fit = computed(() => (props.verdict === null ? null : placementFit(props.verdict)));
+
+const fitReason = computed(() => (props.verdict === null ? null : placementReason(props.verdict)));
 
 const fitLines = computed(() => (props.verdict === null ? [] : describePlacementFit(props.verdict)));
 

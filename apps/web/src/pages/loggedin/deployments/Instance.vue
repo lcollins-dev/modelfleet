@@ -1,6 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading :back-to="`/deployments/${deploymentId}`" :back-label="instance?.deploymentName ?? 'Deployment'">
+    <ui-page-heading>
       <template #title>
         Instance <span class="font-mono">{{ formatInstanceKey(instanceKey) }}</span>
       </template>
@@ -28,6 +28,10 @@
 
         <ui-stat label="Devices">{{ formatDevices(instance.devices) }}</ui-stat>
 
+        <ui-stat label="VRAM" data-testid="instance-vram">{{ vram }}</ui-stat>
+
+        <ui-stat label="RAM" data-testid="instance-resident-memory">{{ residentMemory }}</ui-stat>
+
         <ui-stat label="Uptime" data-testid="instance-uptime">{{ uptime ?? '-' }}</ui-stat>
 
         <ui-stat label="Last reported" data-testid="instance-reported">
@@ -44,11 +48,11 @@
 
     <ui-card
       v-if="failure"
-      :title="failure.title"
-      subtitle="The last output the node kept from the failed backend, not its full log."
+      title="Saved output"
+      subtitle="Final lines captured from the failed backend."
       data-testid="output-failure"
     >
-      <ui-code block tone="error"><mf-instance-output-text :segments="failure.segments" /></ui-code>
+      <ui-code block tone="error"><mf-instance-output-text :segments="failure" /></ui-code>
     </ui-card>
 
     <ui-notice v-else-if="refusal" type="error" title="The output could not be read" data-testid="output-refusal">
@@ -74,14 +78,15 @@
 import { computed, ref, shallowRef, watchEffect } from 'vue';
 import { useRoute } from 'vue-router';
 
-import type { DeploymentInstancesResponseDto, ListInstanceDto } from '@libs/dto';
+import type { DeploymentInstancesResponseDto, ListInstanceDto, NodeTelemetryStatusDto } from '@libs/dto';
 import { InstanceState } from '@libs/dto';
 
 import { IAnsiSegment, PLAIN_STYLE, parseAnsi, plainText } from '@/utils/ansi';
 import { formatDateTime, formatRelativeDate } from '@/utils/format/date';
+import { formatBytes } from '@/utils/format/number';
 import {
   formatDevices,
-  formatInstanceFailure,
+  formatResidentMemory,
   formatInstanceKey,
   formatInstanceState,
   formatUptime,
@@ -89,6 +94,7 @@ import {
 } from '@/utils/instance';
 
 import { useInstanceAdminService } from '@/services/api/admin/InstanceAdminService';
+import { useTelemetryAdminService } from '@/services/api/admin/TelemetryAdminService';
 
 import { MfInstanceOutput, MfInstanceOutputText } from '@/components/mf';
 import {
@@ -105,18 +111,26 @@ import {
 } from '@/components/ui';
 
 import { useInstanceOutput } from '@/composables/useInstanceOutput';
+import { usePage } from '@/composables/usePage';
 
 const NO_KEPT_OUTPUT: IAnsiSegment[] = [{ text: 'The node reported no output from this backend.', style: PLAIN_STYLE }];
 
 const route = useRoute();
 const instanceAdminService = useInstanceAdminService();
+const telemetryAdminService = useTelemetryAdminService();
 
 const deploymentId = computed(() =>
   typeof route.params.deploymentId === 'string' ? parseInt(route.params.deploymentId, 10) : null
 );
 const instanceKey = computed(() => (typeof route.params.instanceKey === 'string' ? route.params.instanceKey : ''));
 
+usePage({
+  title: () => `Instance ${formatInstanceKey(instanceKey.value)}`,
+  back: () => `/deployments/${deploymentId.value ?? ''}`,
+});
+
 const instance = shallowRef<ListInstanceDto | null>(null);
+const telemetryStatus = shallowRef<NodeTelemetryStatusDto | null>(null);
 const removed = ref(false);
 
 const { output, connected, refusal, waiting, open } = useInstanceOutput({
@@ -130,18 +144,38 @@ const { output, connected, refusal, waiting, open } = useInstanceOutput({
 
 const uptime = computed(() => (instance.value === null ? null : formatUptime(instance.value.startedDate)));
 
+const nodeId = computed(() => instance.value?.nodeId ?? null);
+
+const vram = computed(() => {
+  const held = (telemetryStatus.value?.devices ?? [])
+    .flatMap(device => device.processes)
+    .filter(process => process.instanceKey === instanceKey.value);
+
+  if (held.length === 0) {
+    return '-';
+  }
+
+  return formatBytes(held.reduce((total, process) => total + (process.usedBytes ?? 0), 0));
+});
+
+const residentMemory = computed(() =>
+  formatResidentMemory(
+    telemetryStatus.value?.host?.instanceMemory.find(candidate => candidate.instanceKey === instanceKey.value)
+      ?.residentBytes
+  )
+);
+
 // A failed launch may leave no container to stream, so its refusal falls back to the tail the node kept.
 const failure = computed(() => {
   const failed = instance.value;
-  const title = failed === null ? null : formatInstanceFailure(failed);
 
-  if (refusal.value === null || failed === null || title === null) {
+  if (refusal.value === null || failed === null || failed.state !== InstanceState.FAILED) {
     return null;
   }
 
   const kept = parseAnsi(failed.message ?? '').segments;
 
-  return { title, segments: plainText(kept).trim() === '' ? NO_KEPT_OUTPUT : kept };
+  return plainText(kept).trim() === '' ? NO_KEPT_OUTPUT : kept;
 });
 
 const onInstances = (response: DeploymentInstancesResponseDto) => {
@@ -160,6 +194,18 @@ watchEffect(onCleanup => {
   }
 
   const subscription = instanceAdminService.streamDeploymentInstances(deploymentId.value, onInstances);
+
+  onCleanup(() => subscription.close());
+});
+
+watchEffect(onCleanup => {
+  if (nodeId.value === null) {
+    return;
+  }
+
+  const subscription = telemetryAdminService.streamNodeTelemetryStatus(nodeId.value, status => {
+    telemetryStatus.value = status;
+  });
 
   onCleanup(() => subscription.close());
 });

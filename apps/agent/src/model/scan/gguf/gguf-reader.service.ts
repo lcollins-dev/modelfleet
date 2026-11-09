@@ -20,6 +20,11 @@ export const GGUF_SUFFIX = '.gguf';
 /** `general.architecture` on a multimodal projector, whatever model the file is named after. */
 const PROJECTOR_ARCHITECTURE = 'clip';
 
+/** `gemma4-assistant` shares the target model's cache when it loads, so it cannot run on its own. */
+const DRAFT_ARCHITECTURES: ReadonlySet<string> = new Set(['dflash', 'eagle3', 'gemma4-assistant']);
+
+const FIRST_TRUNK_LAYER = /^blk\.0\.(?!nextn\.)/;
+
 /** `general.type` on a LoRA adapter. Its `general.architecture` is the base model's own. */
 const LORA_DECLARED_TYPE = 'adapter';
 
@@ -71,7 +76,7 @@ export class GgufReaderService implements IModelFormatReader {
       throw new Error(first.reason);
     }
 
-    const type = this.typeOf(first.header);
+    const type = this.typeOf(first.header, this.allTensors([first, ...rest]));
 
     return {
       name: first.header.name,
@@ -126,14 +131,10 @@ export class GgufReaderService implements IModelFormatReader {
 
   /** Null where any shard's tensors are unknown. */
   private recordedTensors(results: readonly GgufHeaderResult[]): GgufTensor[] | null {
-    const tensors: IGgufTensor[] = [];
+    const tensors = this.allTensors(results);
 
-    for (const result of results) {
-      if (!result.ok || result.header.tensors === null) {
-        return null;
-      }
-
-      tensors.push(...result.header.tensors);
+    if (tensors === null) {
+      return null;
     }
 
     return tensors
@@ -144,16 +145,51 @@ export class GgufReaderService implements IModelFormatReader {
       .map(tensor => ({ name: tensor.name, sizeBytes: tensor.sizeBytes }));
   }
 
+  private allTensors(results: readonly GgufHeaderResult[]): IGgufTensor[] | null {
+    const tensors: IGgufTensor[] = [];
+
+    for (const result of results) {
+      if (!result.ok || result.header.tensors === null) {
+        return null;
+      }
+
+      tensors.push(...result.header.tensors);
+    }
+
+    return tensors;
+  }
+
   /** An unrecognised marker reads as a model, so the file is still reported. */
-  private typeOf(header: IGgufHeader): ModelType {
+  private typeOf(header: IGgufHeader, tensors: readonly IGgufTensor[] | null): ModelType {
     if (header.declaredType?.toLowerCase() === LORA_DECLARED_TYPE) {
       return ModelType.LORA;
     }
 
-    if (header.metadata.architecture?.toLowerCase() === PROJECTOR_ARCHITECTURE) {
+    const architecture = header.metadata.architecture?.toLowerCase();
+
+    if (architecture === PROJECTOR_ARCHITECTURE) {
       return ModelType.PROJECTOR;
     }
 
+    if ((architecture !== undefined && DRAFT_ARCHITECTURES.has(architecture)) || this.isMtpOnly(header, tensors)) {
+      return ModelType.DRAFT;
+    }
+
     return ModelType.MODEL;
+  }
+
+  /** A full model can carry the same MTP layers, so a draft is told apart by having no first trunk layer. */
+  private isMtpOnly(header: IGgufHeader, tensors: readonly IGgufTensor[] | null): boolean {
+    const { layerCount } = header.metadata;
+
+    if (tensors === null || layerCount === null || layerCount <= 0) {
+      return false;
+    }
+
+    const marker = `blk.${String(layerCount - 1)}.nextn.eh_proj.weight`;
+
+    return (
+      tensors.some(tensor => tensor.name === marker) && !tensors.some(tensor => FIRST_TRUNK_LAYER.test(tensor.name))
+    );
   }
 }

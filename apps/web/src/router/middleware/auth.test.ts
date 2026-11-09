@@ -180,6 +180,26 @@ describe('authMiddleware', () => {
     expect(await runAuthMiddleware(signedInRoute('/dashboard'))).toBeUndefined();
   });
 
+  it("stops the previous page's watcher before reloading the profile, so it cannot redirect a pending navigation", async () => {
+    signIn();
+
+    expect(await runAuthMiddleware(signedInRoute('/nodes'))).toBeUndefined();
+
+    let finishProfile = () => {};
+    getProfileMock.mockImplementation(() => new Promise<void>(resolve => (finishProfile = resolve)));
+
+    const pending = runAuthMiddleware(signedInRoute('/models'));
+
+    useUserStore().clearAuth();
+    await nextTick();
+
+    expect(routerMock.replace).not.toHaveBeenCalled();
+
+    finishProfile();
+
+    expect(await pending).toEqual({ path: '/sign-in', query: { redirect: '/models' } });
+  });
+
   it('keeps a held user on the setup page when the password change swaps their token', async () => {
     signIn({ mustChangePassword: true });
 

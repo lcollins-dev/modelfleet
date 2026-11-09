@@ -10,7 +10,7 @@ import { ActivationPolicy, EventPartyType, EventType, ExpectedUsageSource, Insta
 
 import { Instance } from '@/core/instance/entities/instance.entity';
 
-import { DeploymentService } from '@/core/deployment/deployment.service';
+import { DeploymentService, IDeploymentDraft } from '@/core/deployment/deployment.service';
 import { EventService } from '@/core/event/event.service';
 import { InstanceAdmissionService } from '@/core/instance/instance-admission.service';
 import { InstanceDesiredStateService } from '@/core/instance/instance-desired-state.service';
@@ -53,7 +53,7 @@ const TOO_LARGE: IFitReport = {
   refusal: FitRefusal.TOO_LARGE,
 };
 
-const TOO_LARGE_PROBLEM = 'This deployment needs 20.0 GiB, more than the pinned GPUs have free';
+const TOO_LARGE_PROBLEM = 'Not enough GPU memory for 20.0 GiB';
 
 describe('InstanceService', () => {
   let deploymentService: {
@@ -329,6 +329,7 @@ describe('InstanceService', () => {
         source: ExpectedUsageSource.DECLARED,
         hostWeightsBytes: 0,
         hostResidentBytes: 0,
+        hostCacheBytes: 0,
       },
     });
 
@@ -521,6 +522,90 @@ describe('InstanceService', () => {
     expect(preview.placements).toEqual([expect.objectContaining({ problem: TOO_LARGE_PROBLEM, capacity: TOO_LARGE })]);
   });
 
+  describe('evictions in the preview', () => {
+    const victim = { instance: buildInstance(), idleMs: 60_000, releasedBytes: 8 * GIB };
+
+    it('carries no problem and the evictions where the placement fits after them', async () => {
+      instanceAdmissionService.preview.mockResolvedValue({ problem: TOO_LARGE_PROBLEM, capacity: TOO_LARGE });
+
+      const preview = await instanceService.previewPlacements(TEST_DEPLOYMENT_ID, () => Promise.resolve([victim]));
+
+      expect(preview.placements).toEqual([
+        expect.objectContaining({ problem: null, capacity: TOO_LARGE, evictions: [victim] }),
+      ]);
+    });
+
+    it("previews a saved deployment's draft under its own id, so its own instances are never offered", async () => {
+      instanceAdmissionService.preview.mockResolvedValue({ problem: TOO_LARGE_PROBLEM, capacity: TOO_LARGE });
+      deploymentService.draft.mockResolvedValue(Object.assign(buildDeployment(), { id: undefined }));
+
+      const previewEvictions = vi.fn().mockResolvedValue(null);
+
+      await instanceService.previewDraft({} as IDeploymentDraft, TEST_DEPLOYMENT_ID, previewEvictions);
+
+      expect(previewEvictions).toHaveBeenCalledWith(
+        expect.objectContaining({ id: TEST_DEPLOYMENT_ID }),
+        expect.anything()
+      );
+    });
+
+    it('keeps the refusal where no plan fits', async () => {
+      instanceAdmissionService.preview.mockResolvedValue({ problem: TOO_LARGE_PROBLEM, capacity: TOO_LARGE });
+
+      const preview = await instanceService.previewPlacements(TEST_DEPLOYMENT_ID, () => Promise.resolve(null));
+
+      expect(preview.placements).toEqual([expect.objectContaining({ problem: TOO_LARGE_PROBLEM })]);
+      expect(preview.placements[0].evictions).toBeUndefined();
+    });
+
+    it('asks for no evictions where the placement fits', async () => {
+      const previewEvictions = vi.fn();
+
+      instanceAdmissionService.preview.mockResolvedValue({ problem: null, capacity: { ...TOO_LARGE, refusal: null } });
+
+      await instanceService.previewPlacements(TEST_DEPLOYMENT_ID, previewEvictions);
+
+      expect(previewEvictions).not.toHaveBeenCalled();
+    });
+
+    it('asks for no evictions on a hand start with no room maker', async () => {
+      instanceAdmissionService.admit.mockResolvedValue({ problem: TOO_LARGE_PROBLEM, capacity: TOO_LARGE });
+
+      const outcome = await instanceService.start(TEST_DEPLOYMENT_ID, 1);
+
+      expect(outcome.refused).toHaveLength(1);
+      expect(outcome.evicting).toEqual([]);
+    });
+
+    it('offers a hand start room making, and records only what stands refused', async () => {
+      instanceAdmissionService.admit.mockResolvedValue({ problem: TOO_LARGE_PROBLEM, capacity: TOO_LARGE });
+
+      const makeRoom = vi.fn().mockResolvedValue({ standing: [], makingRoom: true, evicting: [victim] });
+
+      const outcome = await instanceService.start(TEST_DEPLOYMENT_ID, 1, makeRoom);
+
+      expect(makeRoom).toHaveBeenCalledTimes(1);
+      expect(outcome).toMatchObject({ refused: [], evicting: [victim] });
+      expect(eventService.recordEvent).not.toHaveBeenCalledWith(
+        EventType.INSTANCE_START_REFUSED,
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('clears the run of failed starts where the start is making room, so backoff cannot hold its retry', async () => {
+      instanceAdmissionService.admit.mockResolvedValue({ problem: TOO_LARGE_PROBLEM, capacity: TOO_LARGE });
+
+      await instanceService.start(
+        TEST_DEPLOYMENT_ID,
+        1,
+        vi.fn().mockResolvedValue({ standing: [], makingRoom: true, evicting: [victim] })
+      );
+
+      expect(deploymentService.clearLaunchFailures).toHaveBeenCalledWith(TEST_DEPLOYMENT_ID);
+    });
+  });
+
   it('asks no room of a node already holding its replicas, whose own instance holds the memory', async () => {
     instanceRepository.find.mockResolvedValue([buildInstance()]);
 
@@ -536,6 +621,7 @@ describe('InstanceService', () => {
       source: ExpectedUsageSource.ESTIMATED,
       hostWeightsBytes: 0,
       hostResidentBytes: 0,
+      hostCacheBytes: 0,
     };
 
     instanceRepository.find.mockResolvedValue([buildInstance()]);

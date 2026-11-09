@@ -7,6 +7,7 @@ import { BackendId, GIB, LaunchMode } from '@libs/backends';
 import {
   ActivationPolicy,
   ExpectedUsageSource,
+  PlacementProblemReason,
   DeploymentInstancesResponseDto,
   InstanceListResponseDto,
   InstanceState,
@@ -17,6 +18,7 @@ import {
 import { InstanceAdminService } from './instance-admin.service';
 import { DeploymentService } from '@/core/deployment/deployment.service';
 import { GpuService } from '@/core/gpu/gpu.service';
+import { INodePlacement } from '@/core/instance/instance-launch.service';
 import { InstanceService } from '@/core/instance/instance.service';
 import { FitRefusal, IFitReport } from '@/core/ledger/vram-ledger.service';
 import { NodeStateService } from '@/core/node/node-state.service';
@@ -64,6 +66,7 @@ const TOO_LARGE_CAPACITY = {
       predictedBytes: 8 * GIB,
       headroomBytes: GIB,
       freeBytes: 12 * GIB,
+      short: false,
     },
   ],
 };
@@ -97,7 +100,11 @@ describe('InstanceAdminService', () => {
     getState: ReturnType<typeof vi.fn>;
   };
   let nodeStateService: { getObserved: ReturnType<typeof vi.fn> };
-  let deploymentSupervisorService: { factsFor: ReturnType<typeof vi.fn> };
+  let deploymentSupervisorService: {
+    factsFor: ReturnType<typeof vi.fn>;
+    startByHand: ReturnType<typeof vi.fn>;
+    planEvictions: ReturnType<typeof vi.fn>;
+  };
   let telemetryChanged: Subject<number>;
   let instanceAdminService: InstanceAdminService;
 
@@ -140,7 +147,7 @@ describe('InstanceAdminService', () => {
           {
             nodeId: TEST_NODE_ID,
             pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
-            problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+            problem: 'Not enough GPU memory for 20.0 GiB',
             capacity: TOO_LARGE,
             expected: {
               known: true,
@@ -148,6 +155,7 @@ describe('InstanceAdminService', () => {
               source: ExpectedUsageSource.ESTIMATED,
               hostWeightsBytes: 0,
               hostResidentBytes: 0,
+              hostCacheBytes: 0,
             },
           },
         ],
@@ -166,6 +174,11 @@ describe('InstanceAdminService', () => {
 
     nodeStateService = { getObserved: vi.fn().mockReturnValue(null) };
     deploymentSupervisorService = {
+      startByHand: vi.fn(async (deploymentId: number, actorId: number) => ({
+        evicting: [],
+        ...(await (instanceService.start as (id: number, actor: number) => Promise<object>)(deploymentId, actorId)),
+      })),
+      planEvictions: vi.fn(() => Promise.resolve(null)),
       factsFor: vi.fn().mockReturnValue({
         activationPolicy: ActivationPolicy.ALWAYS,
         enabled: true,
@@ -399,8 +412,10 @@ describe('InstanceAdminService', () => {
           replicas: 1,
           running: 1,
           problem: null,
+          problemReason: null,
           expectedUsage: null,
           capacity: null,
+          evictions: [],
         },
       ],
       problem: null,
@@ -420,6 +435,7 @@ describe('InstanceAdminService', () => {
             source: ExpectedUsageSource.ESTIMATED,
             hostWeightsBytes: 30 * GIB,
             hostResidentBytes: 6 * GIB,
+            hostCacheBytes: 0,
           },
         },
       ],
@@ -434,6 +450,7 @@ describe('InstanceAdminService', () => {
       source: ExpectedUsageSource.ESTIMATED,
       hostWeightsBytes: 30 * GIB,
       hostResidentBytes: 6 * GIB,
+      hostCacheBytes: 0,
     });
   });
 
@@ -450,6 +467,7 @@ describe('InstanceAdminService', () => {
             source: ExpectedUsageSource.MEASURED,
             hostWeightsBytes: 0,
             hostResidentBytes: 0,
+            hostCacheBytes: 0,
           },
         },
       ],
@@ -464,6 +482,7 @@ describe('InstanceAdminService', () => {
       source: ExpectedUsageSource.MEASURED,
       hostWeightsBytes: 0,
       hostResidentBytes: 0,
+      hostCacheBytes: 0,
     });
   });
 
@@ -473,7 +492,7 @@ describe('InstanceAdminService', () => {
         {
           nodeId: TEST_NODE_ID,
           pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
-          problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+          problem: 'Not enough GPU memory for 20.0 GiB',
           capacity: TOO_LARGE,
         },
       ],
@@ -486,6 +505,76 @@ describe('InstanceAdminService', () => {
     expect(response.placement.nodes[0].capacity).toEqual(TOO_LARGE_CAPACITY);
   });
 
+  describe('the reason a node is refused', () => {
+    const reasonOf = async (placement: Partial<INodePlacement>): Promise<PlacementProblemReason | null> => {
+      instanceService.previewPlacements.mockResolvedValue({
+        placements: [{ nodeId: TEST_NODE_ID, pins: { cpu: false, gpus: [TEST_DEVICE_KEY] }, ...placement }],
+        replicas: 1,
+        problem: null,
+      });
+
+      const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+      return response.placement.nodes[0].problemReason;
+    };
+
+    it.each([
+      [FitRefusal.TOO_LARGE, PlacementProblemReason.NOT_ENOUGH_VRAM],
+      [FitRefusal.CARD_TOO_SMALL, PlacementProblemReason.NOT_ENOUGH_VRAM],
+      [FitRefusal.CARD_OUTGROWN, PlacementProblemReason.NOT_ENOUGH_VRAM],
+      [FitRefusal.HOST_MEMORY, PlacementProblemReason.NOT_ENOUGH_RAM],
+      [FitRefusal.NO_TELEMETRY, PlacementProblemReason.NO_READINGS],
+      [FitRefusal.UNMEASURED_CARD, PlacementProblemReason.GPU_NOT_MEASURED],
+    ])('gives a %s refusal its reason', async (refusal, reason) => {
+      await expect(reasonOf({ problem: 'A sentence', capacity: { ...TOO_LARGE, refusal } })).resolves.toBe(reason);
+    });
+
+    it('reads an offloading pool that runs out as RAM, since the overflow lands there', async () => {
+      const capacity = { ...TOO_LARGE, launchMode: LaunchMode.CPU_OFFLOAD };
+
+      await expect(reasonOf({ problem: 'A sentence', capacity })).resolves.toBe(PlacementProblemReason.NOT_ENOUGH_RAM);
+    });
+
+    it('reports insufficient VRAM for a GPU-only launch even with a CPU pin', async () => {
+      await expect(
+        reasonOf({ problem: 'A sentence', pins: { cpu: true, gpus: [TEST_DEVICE_KEY] }, capacity: TOO_LARGE })
+      ).resolves.toBe(PlacementProblemReason.NOT_ENOUGH_VRAM);
+    });
+
+    it('names a node that lacks the model or a companion', async () => {
+      await expect(reasonOf({ problem: 'A sentence', modelMissing: true })).resolves.toBe(
+        PlacementProblemReason.MODEL_NOT_ON_NODE
+      );
+    });
+
+    it('has no specific reason for a problem the ledger did not raise', async () => {
+      await expect(reasonOf({ problem: 'This node is offline' })).resolves.toBe(PlacementProblemReason.OTHER);
+    });
+
+    it('has no reason where there is no problem, even beside the refused figures an eviction clears', async () => {
+      await expect(reasonOf({ problem: null, capacity: TOO_LARGE })).resolves.toBeNull();
+    });
+
+    it('marks the card the ledger named short', async () => {
+      instanceService.previewPlacements.mockResolvedValue({
+        placements: [
+          {
+            nodeId: TEST_NODE_ID,
+            pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
+            problem: 'A sentence',
+            capacity: { ...TOO_LARGE, shortCard: TEST_DEVICE_KEY, refusal: FitRefusal.CARD_TOO_SMALL },
+          },
+        ],
+        replicas: 1,
+        problem: null,
+      });
+
+      const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+      expect(response.placement.nodes[0].capacity?.cards[0].short).toBe(true);
+    });
+  });
+
   it("lists the cards a node was refused on in the node's order", async () => {
     gpuService.findByNodeId.mockResolvedValue([
       { deviceKey: 'GPU-b', name: 'RTX 3090' },
@@ -496,7 +585,7 @@ describe('InstanceAdminService', () => {
         {
           nodeId: TEST_NODE_ID,
           pins: { cpu: false, gpus: ['GPU-a', 'GPU-b'] },
-          problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+          problem: 'Not enough GPU memory for 20.0 GiB',
           capacity: {
             ...TOO_LARGE,
             cards: [
@@ -560,7 +649,8 @@ describe('InstanceAdminService', () => {
           activationPolicy: ActivationPolicy.ALWAYS,
           document: request.document,
         },
-        null
+        null,
+        expect.any(Function)
       );
       expect(response.placement.nodes).toEqual([
         expect.objectContaining({
@@ -571,6 +661,7 @@ describe('InstanceAdminService', () => {
             source: ExpectedUsageSource.ESTIMATED,
             hostWeightsBytes: 0,
             hostResidentBytes: 0,
+            hostCacheBytes: 0,
           },
           capacity: TOO_LARGE_CAPACITY,
         }),
@@ -596,9 +687,73 @@ describe('InstanceAdminService', () => {
     it('counts what the deployment being edited already runs on each node', async () => {
       const response = await instanceAdminService.previewPlacement({ ...request, deploymentId: TEST_DEPLOYMENT_ID });
 
-      expect(instanceService.previewDraft).toHaveBeenCalledWith(expect.anything(), TEST_DEPLOYMENT_ID);
+      expect(instanceService.previewDraft).toHaveBeenCalledWith(
+        expect.anything(),
+        TEST_DEPLOYMENT_ID,
+        expect.any(Function)
+      );
       expect(response.placement.nodes[0].running).toBe(1);
     });
+  });
+
+  it('carries the nodes the supervisor is making room on', async () => {
+    deploymentSupervisorService.factsFor.mockReturnValue({
+      activationPolicy: ActivationPolicy.ON_DEMAND,
+      enabled: true,
+      idleTimeoutMs: 900_000,
+      idleSince: null,
+      inFlight: 0,
+      backoffUntil: null,
+      givenUp: false,
+      makingRoomNodeIds: [TEST_NODE_ID],
+    });
+
+    const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+    expect(response.residency.makingRoomNodeIds).toEqual([TEST_NODE_ID]);
+  });
+
+  it('names what would be evicted on a placement that fits after eviction, and carries no problem', async () => {
+    const instance = buildInstance({
+      instanceKey: 'evicted-instance',
+      deployment: buildDeployment({ name: 'qwen' }),
+      pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
+    });
+
+    instanceService.previewPlacements.mockResolvedValue({
+      placements: [
+        {
+          nodeId: TEST_NODE_ID,
+          pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
+          problem: null,
+          capacity: TOO_LARGE,
+          evictions: [{ instance, idleMs: 300_000, releasedBytes: 8 * GIB }],
+        },
+      ],
+      replicas: 1,
+      problem: null,
+    });
+
+    const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+    expect(response.placement.nodes[0].problem).toBeNull();
+    expect(response.placement.nodes[0].evictions).toEqual([
+      {
+        deploymentName: 'qwen',
+        instanceKey: 'evicted-instance',
+        devices: [expect.objectContaining({ deviceKey: TEST_DEVICE_KEY })],
+        idleMs: 300_000,
+        releasedBytes: 8 * GIB,
+      },
+    ]);
+  });
+
+  it('passes an operator confirmation through to the start', async () => {
+    deploymentSupervisorService.startByHand.mockResolvedValue({ started: [], refused: [], evicting: [] });
+
+    await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1, true);
+
+    expect(deploymentSupervisorService.startByHand).toHaveBeenCalledWith(TEST_DEPLOYMENT_ID, 1, true);
   });
 
   it('reports what a start created and the nodes it passed over', async () => {
@@ -607,11 +762,12 @@ describe('InstanceAdminService', () => {
       refused: [{ nodeId: TEST_NODE_ID, pins: { cpu: true, gpus: [] }, problem: 'This node is offline' }],
     });
 
-    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1);
+    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1, false);
 
     expect(response).toEqual({
       started: 1,
       refused: [{ nodeId: TEST_NODE_ID, nodeName: 'rig-01', problem: 'This node is offline', capacity: null }],
+      evicting: [],
     });
   });
 
@@ -624,7 +780,7 @@ describe('InstanceAdminService', () => {
       ],
     });
 
-    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1);
+    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1, false);
 
     expect(response.refused[0].capacity?.cards[0]).toMatchObject({ deviceKey: TEST_DEVICE_KEY, name: null });
   });
@@ -636,13 +792,13 @@ describe('InstanceAdminService', () => {
         {
           nodeId: TEST_NODE_ID,
           pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
-          problem: 'This node has not reported its GPU memory since it connected',
+          problem: 'No GPU memory readings received from this node',
           capacity: { ...TOO_LARGE, cards: [], availableBytes: null, refusal: FitRefusal.NO_TELEMETRY },
         },
       ],
     });
 
-    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1);
+    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1, false);
 
     expect(response.refused[0].capacity).toEqual({
       expectedBytes: 20 * GIB,
@@ -660,13 +816,13 @@ describe('InstanceAdminService', () => {
         {
           nodeId: TEST_NODE_ID,
           pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
-          problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+          problem: 'Not enough GPU memory for 20.0 GiB',
           capacity: TOO_LARGE,
         },
       ],
     });
 
-    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1);
+    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1, false);
 
     expect(response.refused[0].capacity).toEqual(TOO_LARGE_CAPACITY);
   });
@@ -678,19 +834,23 @@ describe('InstanceAdminService', () => {
         {
           nodeId: TEST_NODE_ID,
           pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
-          problem: 'This deployment keeps 30.0 GiB of weights in system memory, more than the node has free',
+          problem: 'Not enough system RAM for 30.0 GiB of model weights',
           capacity: {
             ...TOO_LARGE,
-            hostWeights: { neededBytes: 30 * GIB, predictedBytes: 2 * GIB, freeBytes: 12 * GIB },
+            hostWeights: { neededBytes: 30 * GIB, cacheBytes: 8 * GIB, predictedBytes: 2 * GIB, freeBytes: 12 * GIB },
             refusal: FitRefusal.HOST_MEMORY,
           },
         },
       ],
     });
 
-    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1);
+    const response = await instanceAdminService.startDeployment(TEST_DEPLOYMENT_ID, 1, false);
 
-    expect(response.refused[0].capacity?.hostWeights).toEqual({ neededBytes: 30 * GIB, freeBytes: 12 * GIB });
+    expect(response.refused[0].capacity?.hostWeights).toEqual({
+      neededBytes: 30 * GIB,
+      cacheBytes: 8 * GIB,
+      freeBytes: 12 * GIB,
+    });
   });
 
   it('names the deployment of each instance resident on a node', async () => {
@@ -744,7 +904,7 @@ describe('InstanceAdminService', () => {
 
       seen = [];
       instanceService.previewPlacements.mockResolvedValue(
-        placedOn(TEST_NODE_ID, 'This deployment needs 20.0 GiB, more than the pinned GPUs have free', TOO_LARGE)
+        placedOn(TEST_NODE_ID, 'Not enough GPU memory for 20.0 GiB', TOO_LARGE)
       );
     });
 
@@ -763,20 +923,43 @@ describe('InstanceAdminService', () => {
       await settle();
 
       expect(seen.map(response => response.placement.nodes[0].problem)).toEqual([
-        'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+        'Not enough GPU memory for 20.0 GiB',
         null,
       ]);
+    });
+
+    it('keeps reading telemetry for a placement that fits only after an eviction', async () => {
+      const instance = buildInstance({ deployment: buildDeployment({ name: 'qwen' }) });
+
+      instanceService.previewPlacements.mockResolvedValue({
+        placements: [
+          {
+            nodeId: TEST_NODE_ID,
+            pins: { cpu: false, gpus: [TEST_DEVICE_KEY] },
+            problem: null,
+            capacity: TOO_LARGE,
+            evictions: [{ instance, idleMs: 300_000, releasedBytes: 8 * GIB }],
+          },
+        ],
+        replicas: 1,
+        problem: null,
+      });
+
+      await watch();
+
+      telemetryChanged.next(TEST_NODE_ID);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await settle();
+
+      expect(seen).toHaveLength(2);
     });
 
     it('sends a refusal with the figures of the latest re-read', async () => {
       await watch();
 
       instanceService.previewPlacements.mockResolvedValue(
-        placedOn(
-          TEST_NODE_ID,
-          'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
-          refusedWith(50 * GIB)
-        )
+        placedOn(TEST_NODE_ID, 'Not enough GPU memory for 20.0 GiB', refusedWith(50 * GIB))
       );
       telemetryChanged.next(TEST_NODE_ID);
 
@@ -831,7 +1014,7 @@ describe('InstanceAdminService', () => {
       await watch();
 
       instanceService.previewPlacements.mockResolvedValue(
-        placedOn(OTHER_NODE_ID, 'This deployment needs 20.0 GiB, more than the pinned GPUs have free', TOO_LARGE)
+        placedOn(OTHER_NODE_ID, 'Not enough GPU memory for 20.0 GiB', TOO_LARGE)
       );
       instancesChanged.next();
       await settle();

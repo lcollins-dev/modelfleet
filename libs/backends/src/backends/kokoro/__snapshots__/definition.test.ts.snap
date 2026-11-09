@@ -17,7 +17,7 @@ exports[`kokoroDefinition > renders the same container from a fixed input 1`] = 
     "MODEL_DIR": "/models",
     "PORT": "8880",
   },
-  "image": "ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0",
+  "image": "ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.2",
   "labels": {
     "modelfleet.backend": "kokoro",
     "modelfleet.instance": "inst_01hq9v",

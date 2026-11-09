@@ -1,6 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading title="Users" subtitle="Everyone with an account on this fleet.">
+    <ui-page-heading>
       <ui-button type="primary" to="/users/create">
         <template #icon>
           <icon-person-add class="size-4" />
@@ -83,7 +83,13 @@ import {
 import UserAccessTag from '@/components/user/UserAccessTag.vue';
 import UserAvatar from '@/components/user/UserAvatar.vue';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
+
+usePage({
+  title: 'Users',
+  subtitle: 'Everyone with an account on this fleet.',
+});
 
 const TABLE_COLUMNS = 'minmax(0, 1fr) 13rem 1.25rem';
 

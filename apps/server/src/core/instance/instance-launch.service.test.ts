@@ -240,7 +240,7 @@ describe('InstanceLaunchService', () => {
       const placements = await instanceLaunchService.resolvePlacements(buildDeployment());
 
       expect(placements[0].problem).toBe(
-        "Choose this node's CPU or its GPUs, not both, since this backend cannot offload to host memory"
+        "Choose this node's CPU or its GPUs, not both, since this backend cannot offload to RAM"
       );
     });
 
@@ -333,6 +333,7 @@ describe('InstanceLaunchService', () => {
       const [placement] = await instanceLaunchService.resolvePlacements(buildDeployment());
 
       expect(placement.problem).toMatch(/does not hold/);
+      expect(placement.modelMissing).toBe(true);
     });
 
     it('carries a deployment whose file a later scan re-typed, which no write guard can catch', async () => {
@@ -378,6 +379,7 @@ describe('InstanceLaunchService', () => {
       const [placement] = await instanceLaunchService.resolvePlacements(buildDeployment());
 
       expect(placement.problem).toMatch(/does not hold Gemma 3 4B,/);
+      expect(placement.modelMissing).toBe(true);
     });
 
     it('lets a node holding both the model and the projector start', async () => {
@@ -395,6 +397,23 @@ describe('InstanceLaunchService', () => {
       const [placement] = await instanceLaunchService.resolvePlacements(buildDeployment());
 
       expect(placement.problem).toMatch(/not in the catalogue/);
+    });
+
+    it('carries a node missing the draft model, naming the file it is short of', async () => {
+      const draft = buildProjector({ type: ModelType.DRAFT, name: 'DSpark Q8' });
+
+      deploymentService.resolveConfiguration.mockReturnValue(
+        effective({
+          ...pinnedTo({ nodeId: TEST_NODE_ID, deviceKey: TEST_DEVICE_KEY }),
+          draftModel: PROJECTOR_FINGERPRINT,
+        })
+      );
+      modelService.findByFingerprints.mockResolvedValue(new Map([[PROJECTOR_FINGERPRINT, draft]]));
+      availabilityFor = modelId => (modelId === PROJECTOR_ID ? null : buildAvailability());
+
+      const [placement] = await instanceLaunchService.resolvePlacements(buildDeployment());
+
+      expect(placement.problem).toBe('This node does not hold DSpark Q8, the draft model this deployment uses');
     });
 
     it('carries a projector a later scan re-typed, which no write guard can catch', async () => {
@@ -584,7 +603,7 @@ describe('InstanceLaunchService', () => {
 
       const desired = await instanceLaunchService.describe(buildInstance(), buildDeployment({ model: buildModel() }));
 
-      expect(desired.image).toBe('ghcr.io/ggml-org/llama.cpp:server-cuda');
+      expect(desired.image).toBe(LLAMA_CPP_IMAGES.cuda);
     });
 
     it("names the definition's image for the placement where the document sets the key to null", async () => {
@@ -592,7 +611,7 @@ describe('InstanceLaunchService', () => {
 
       const desired = await instanceLaunchService.describe(buildInstance(), buildDeployment({ model: buildModel() }));
 
-      expect(desired.image).toBe('ghcr.io/ggml-org/llama.cpp:server-cuda');
+      expect(desired.image).toBe(LLAMA_CPP_IMAGES.cuda);
     });
 
     it('names the CPU image for a CPU-only instance of a backend whose variants differ', async () => {

@@ -7,6 +7,7 @@ const TYPE_LABELS: Record<ModelType, string> = {
   [ModelType.PROJECTOR]: 'multimodal projector',
   [ModelType.LORA]: 'LoRA adapter',
   [ModelType.CONTROL_VECTOR]: 'control vector',
+  [ModelType.DRAFT]: 'draft model',
 };
 
 export interface IResolvedModelReference {

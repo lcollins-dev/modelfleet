@@ -45,6 +45,15 @@ describe('UiTableRow', () => {
     expect(wrapper.find('[data-testid="detail"]').exists()).toBe(true);
   });
 
+  it('tightens its padding and type when dense', () => {
+    const normal = mount(TableRow, { slots: { default: '<span>model.gguf</span>' } });
+    const dense = mount(TableRow, { props: { dense: true }, slots: { default: '<span>model.gguf</span>' } });
+
+    expect(normal.classes()).toContain('py-3');
+    expect(dense.classes()).toEqual(expect.arrayContaining(['py-1.5', 'text-xs']));
+    expect(dense.classes()).not.toContain('py-3');
+  });
+
   it('stays a plain row with no chevron when it has nothing to expand', async () => {
     const wrapper = mount(TableRow, { slots: { default: '<span>node.registered</span>' } });
 

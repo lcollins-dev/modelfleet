@@ -1,5 +1,6 @@
 import { IConfiguredValues } from '../../configuration';
-import { IModelTensor } from '../../runtime/estimate';
+import { GIB } from '../../definition';
+import { IEstimatedModel, IModelTensor } from '../../runtime/estimate';
 import { LlamaCppField } from './declaration';
 
 /** llama.cpp's name for host memory, the one buffer that takes a tensor off the cards. */
@@ -23,6 +24,13 @@ const LOOKUP_TABLES: ReadonlySet<string> = new Set([
 
 const TOKEN_TABLE = 'token_embd.weight';
 
+const LAZY_TABLE = 'per_layer_token_embd.weight';
+
+/** llama.cpp marks the table lazy on these alone, and reads it whole on any other architecture. */
+const LAZY_ARCHITECTURES: ReadonlySet<string> = new Set(['deepseek41', 'qwen4exp', 'gemma4']);
+
+const LAZY_THRESHOLD_BYTES = 4 * GIB;
+
 /** Where a model has none, llama.cpp reads the token table as its output layer too. */
 const OUTPUT_LAYER = 'output.weight';
 
@@ -38,6 +46,9 @@ export interface IHostPlacement {
   /** The share of `tensors` llama.cpp only ever reads by row. */
   readByRow: IModelTensor[];
 
+  /** Stay on a mapping in every load mode. */
+  lazy: IModelTensor[];
+
   /** The token table's second copy, which a model with no output layer loads onto the cards to read as one. */
   cardCopyBytes: number;
 }
@@ -48,17 +59,26 @@ export interface IHostPlacement {
  * card claims first stays on it. A lookup table no pattern places stays in host memory. A flag in `extraFlags` is
  * never read.
  */
-export function hostPlacement(tensors: readonly IModelTensor[] | null, values: IConfiguredValues): IHostPlacement {
+export function hostPlacement(
+  model: Pick<IEstimatedModel, 'tensors' | 'architecture'>,
+  values: IConfiguredValues
+): IHostPlacement {
+  const { tensors } = model;
   const overrides = tensorOverrides(values);
 
   if (tensors === null || overrides === null) {
-    return { tensors: [], readByRow: [], cardCopyBytes: 0 };
+    return { tensors: [], readByRow: [], lazy: [], cardCopyBytes: 0 };
   }
 
   const placements = [...expertOverrides(values), ...overrides];
   const bufferOf = (name: string): string | undefined => placements.find(override => override.matches(name))?.buffer;
 
-  const host = tensors.filter(tensor => (bufferOf(tensor.name) ?? defaultBuffer(tensor.name)) === HOST_BUFFER);
+  const lazy = tensors.filter(tensor => isLazy(tensor, model.architecture, values));
+
+  // llama.cpp hands a lazy table the host buffer before it reads any override, so one naming a card changes nothing.
+  const host = tensors.filter(
+    tensor => lazy.includes(tensor) || (bufferOf(tensor.name) ?? defaultBuffer(tensor.name)) === HOST_BUFFER
+  );
   const tokenTable = tensors.find(tensor => tensor.name === TOKEN_TABLE);
   const tied = tensors.every(tensor => tensor.name !== OUTPUT_LAYER);
   const tokenTableBuffer = bufferOf(TOKEN_TABLE);
@@ -73,8 +93,20 @@ export function hostPlacement(tensors: readonly IModelTensor[] | null, values: I
   return {
     tensors: host,
     readByRow: host.filter(tensor => LOOKUP_TABLES.has(tensor.name) && !(tensor === tokenTable && sharedWithOutput)),
+    lazy,
     cardCopyBytes: tokenTable !== undefined && copiedToCards ? tokenTable.sizeBytes : 0,
   };
+}
+
+function isLazy(tensor: IModelTensor, architecture: string | null, values: IConfiguredValues): boolean {
+  const lazyMode = values.text(LlamaCppField.LAZY_MODE) ?? 'auto';
+  const eligible = tensor.name === LAZY_TABLE && architecture !== null && LAZY_ARCHITECTURES.has(architecture);
+
+  if (!eligible || lazyMode === 'off') {
+    return false;
+  }
+
+  return lazyMode === 'on' || tensor.sizeBytes > LAZY_THRESHOLD_BYTES;
 }
 
 function defaultBuffer(name: string): string | undefined {

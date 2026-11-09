@@ -342,11 +342,10 @@ describe('RelayProxyService', () => {
     [
       {
         refusal: AcquireRefusal.DOES_NOT_FIT,
-        problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+        problem: 'Not enough GPU memory for 20.0 GiB',
       },
       'model_does_not_fit',
-      "The model 'chat-8b' cannot start on the GPUs it is pinned to right now. This deployment needs 20.0 GiB, more " +
-        'than the pinned GPUs have free.',
+      "The model 'chat-8b' cannot start on the GPUs it is pinned to right now. Not enough GPU memory for 20.0 GiB.",
     ],
     [
       {

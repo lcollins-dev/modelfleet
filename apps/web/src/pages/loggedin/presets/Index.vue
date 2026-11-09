@@ -1,9 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="Presets"
-      subtitle="Reusable settings for deployments. A preset doesn't name a model or a node."
-    >
+    <ui-page-heading>
       <ui-button type="primary" to="/presets/create">
         <template #icon>
           <icon-add class="size-4" />
@@ -89,7 +86,13 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
+
+usePage({
+  title: 'Presets',
+  subtitle: "Reusable settings for deployments. A preset doesn't name a model or a node.",
+});
 
 const ANY = 'any';
 

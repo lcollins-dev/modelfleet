@@ -38,7 +38,7 @@ export const buildContainerInput = (overrides: Partial<IContainerInput> = {}): I
   companions: [],
   pins: { cpu: false, gpus: ['GPU-11111111-2222-3333-4444-555555555555'] },
   gpuTotalBytes: new Map([['GPU-11111111-2222-3333-4444-555555555555', 24 * 1024 ** 3]]),
-  image: 'ghcr.io/ggml-org/llama.cpp:server-cuda',
+  image: 'ghcr.io/ggml-org/llama.cpp:server-cuda-b12063',
 
   ...overrides,
 });

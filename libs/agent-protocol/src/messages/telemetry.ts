@@ -41,6 +41,7 @@ export const MAX_CONTAINER_ID_LENGTH = 128;
 export const MAX_CONTAINER_NAME_LENGTH = 256;
 export const MAX_CPU_MODEL_LENGTH = 128;
 export const MAX_TELEMETRY_METRIC_LENGTH = 64;
+export const MAX_INSTANCE_MEMORY_READINGS = 256;
 
 /** The vendor UUID. */
 export const deviceKeySchema = z.string().min(1).max(MAX_DEVICE_KEY_LENGTH);
@@ -101,15 +102,42 @@ export const modelDirectorySpaceSchema = z.object({
 });
 export type ModelDirectorySpace = z.infer<typeof modelDirectorySpaceSchema>;
 
+export const instanceMemorySchema = z.object({
+  instanceKey: z.uuid(),
+
+  /** File-backed pages only, the part `MemAvailable` still counts as free. Null where the processes could not be read. */
+  heldBytes: z.number().int().nonnegative().nullable(),
+
+  /** File-backed plus anonymous, null together with `heldBytes`. Absent from an agent that predates it. */
+  residentBytes: z.number().int().nonnegative().nullable().optional(),
+});
+export type InstanceMemory = z.infer<typeof instanceMemorySchema>;
+
+export const heldMemorySchema = z.object({
+  /** A floor where `anyUnknown` is set. */
+  bytes: z.number().int().nonnegative(),
+
+  anyUnknown: z.boolean(),
+});
+export type HeldMemory = z.infer<typeof heldMemorySchema>;
+
 export const hostResourcesSchema = z.object({
   cpuModel: z.string().min(1).max(MAX_CPU_MODEL_LENGTH).nullable(),
   cpuCount: z.number().int().nonnegative(),
   loadAverage1m: z.number().nonnegative().nullable(),
   memoryTotalBytes: z.number().int().nonnegative(),
+
+  /** The kernel's figure, which counts the pages a running backend maps from its weights as free. */
   memoryFreeBytes: z.number().int().nonnegative(),
 
   /** In configured order, so the first is where downloads land. Absent from an agent that predates it. */
   modelDirectories: z.array(modelDirectorySpaceSchema).max(MAX_MODEL_DIRECTORIES).optional(),
+
+  /** Absent from an agent that predates it. */
+  instanceMemory: z.array(instanceMemorySchema).max(MAX_INSTANCE_MEMORY_READINGS).optional(),
+
+  /** Absent from an agent that predates it. */
+  heldMemory: heldMemorySchema.optional(),
 });
 export type HostResources = z.infer<typeof hostResourcesSchema>;
 

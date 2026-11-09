@@ -1,11 +1,9 @@
 <template>
-  <ui-page-container>
-    <ui-page-heading v-if="download" back-to="/downloads" back-label="Downloads">
+  <ui-page-container wide>
+    <ui-page-heading v-if="download">
       <template #title>
         <span class="break-all font-mono">{{ download.repository }}</span>
       </template>
-
-      <template #subtitle>{{ metaLine }}</template>
 
       <div class="flex flex-wrap items-center gap-3">
         <ui-button v-if="retryable && failedTargets.length === 0" :loading="loadingAction" @click="doRetry">
@@ -29,7 +27,7 @@
       </div>
     </ui-page-heading>
 
-    <ui-back-link v-else to="/downloads" label="Downloads" />
+    <ui-back-link v-else />
 
     <div v-if="loadingDownload" class="flex justify-center py-8">
       <ui-spinner />
@@ -65,16 +63,31 @@
           </ui-stat>
 
           <ui-stat v-for="entry of details" :key="entry.label" :label="entry.label" mono>
-            <div v-for="line of entry.lines" :key="line" class="break-all">{{ line }}</div>
+            <div class="break-all">{{ entry.value }}</div>
           </ui-stat>
         </ui-stat-grid>
       </ui-card>
 
-      <ui-card
-        title="Nodes"
-        subtitle="Each node downloads its own copy and checks it before the scan catalogues it."
-        flush
-      >
+      <ui-card title="Files" flush data-testid="download-files">
+        <template #header-extra>
+          <span class="whitespace-nowrap font-mono text-xs text-muted">{{ filesSummary }}</span>
+        </template>
+
+        <ui-table columns="minmax(0, 1fr) 6rem" :min-width="420" scroll-label="Files">
+          <ui-table-head sticky>
+            <span>Path</span>
+            <span class="text-right">Size</span>
+          </ui-table-head>
+
+          <ui-table-row v-for="file of download.files" :key="file.path" dense data-testid="download-file">
+            <mf-download-file-path :path="file.path" />
+
+            <span class="whitespace-nowrap text-right font-mono text-highlight">{{ formatBytes(file.sizeBytes) }}</span>
+          </ui-table-row>
+        </ui-table>
+      </ui-card>
+
+      <ui-card title="Nodes" subtitle="Download status and progress on each node." flush>
         <ui-table :columns="targetColumns" :min-width="680">
           <ui-table-head>
             <span>Node</span>
@@ -120,10 +133,13 @@
             </div>
 
             <mf-download-progress
+              v-if="downloadTargetHasProgress(target)"
               :bytes-done="target.bytesDone"
               :total-bytes="target.totalBytes"
               :state="downloadTargetState(target)"
             />
+
+            <span v-else class="font-mono text-xs" data-testid="download-target-no-progress">-</span>
 
             <span class="font-mono text-xs">{{ formatDownloadSpeed(target) }}</span>
 
@@ -140,21 +156,12 @@
               </ui-button>
             </div>
 
-            <template v-if="expandable" #expand>
-              <div class="flex flex-col gap-1 bg-inset px-4 py-3 text-xs" data-testid="download-target-files">
-                <div v-for="file of target.files" :key="file.path" class="flex justify-between gap-4">
-                  <span class="truncate font-mono text-highlight">{{ file.path }}</span>
-
-                  <span class="shrink-0 text-muted">
-                    {{ formatDownloadFileState(file.state) }} ·
-                    {{ formatDownloadAmount(file.bytesDone, sizeOf(file.path)) }}
-                  </span>
-                </div>
-
-                <span v-if="target.files.length === 0" class="text-muted">
-                  The node keeps no record of each file once it settles.
-                </span>
-              </div>
+            <template v-if="expands(target)" #expand>
+              <mf-download-target-files
+                :node-name="target.nodeName"
+                :files="target.files"
+                :download-files="download.files"
+              />
             </template>
           </ui-table-row>
 
@@ -169,10 +176,10 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import IconRefresh from '~icons/material-symbols/refresh-rounded';
 
-import type { DownloadDto, DownloadProgressDto, EventDto } from '@libs/dto';
+import type { DownloadDto, DownloadProgressDto, DownloadTargetDto, EventDto } from '@libs/dto';
 import { DownloadState, DownloadTargetState, EventPartyType, EventType, NodeState } from '@libs/dto';
 
 import { DialogType } from '@/types/dialog';
@@ -180,9 +187,8 @@ import { DialogType } from '@/types/dialog';
 import {
   describeDownloadTarget,
   downloadStateTone,
+  downloadTargetHasProgress,
   downloadTargetState,
-  formatDownloadAmount,
-  formatDownloadFileState,
   formatDownloadSpeed,
   formatDownloadState,
   formatDownloadTimeLeft,
@@ -199,7 +205,7 @@ import { useEventAdminService } from '@/services/api/admin/EventAdminService';
 import { useDialogStore } from '@/stores/dialog';
 import { useNotificationStore } from '@/stores/notification';
 
-import { MfDownloadProgress } from '@/components/mf';
+import { MfDownloadFilePath, MfDownloadProgress, MfDownloadTargetFiles } from '@/components/mf';
 import {
   UiBackLink,
   UiButton,
@@ -218,16 +224,19 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
 interface IDetailEntry {
   label: string;
-  lines: string[];
+  value: string;
 }
 
 const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/downloads/Download');
 
 const route = useRoute();
-const router = useRouter();
+const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
 const notificationStore = useNotificationStore();
 
@@ -252,14 +261,10 @@ const progressSubscription = shallowRef<ISseSubscription | null>(null);
 
 const totalSize = computed(() => download.value?.files.reduce((sum, file) => sum + file.sizeBytes, 0) ?? 0);
 
-const metaLine = computed(() => {
-  if (download.value === null) {
-    return '';
-  }
-
-  const nodes = download.value.targets.length;
-
-  return `${formatBytes(totalSize.value)} · ${nodes === 1 ? download.value.targets[0].nodeName : formatCount(nodes, 'node')}`;
+usePage({
+  title: () => download.value?.repository ?? '',
+  subtitle: 'Files and progress for this download.',
+  back: '/downloads',
 });
 
 const details = computed<IDetailEntry[]>(() => {
@@ -268,15 +273,17 @@ const details = computed<IDetailEntry[]>(() => {
   }
 
   return [
-    { label: 'Repository', lines: [download.value.repository] },
-    { label: 'Commit', lines: [download.value.revision] },
-    { label: 'Destination', lines: [download.value.directory] },
-    { label: 'Size per node', lines: [formatBytes(totalSize.value)] },
-    { label: 'Started', lines: [formatDateTime(download.value.createdDate)] },
-    { label: 'Started by', lines: [download.value.createdByName ?? 'A deleted user'] },
-    { label: 'Files', lines: download.value.files.map(file => file.path) },
+    { label: 'Commit', value: download.value.revision },
+    { label: 'Destination', value: download.value.directory },
+    { label: 'Size per node', value: formatBytes(totalSize.value) },
+    { label: 'Started', value: formatDateTime(download.value.createdDate) },
+    { label: 'Started by', value: download.value.createdByName ?? 'A deleted user' },
   ];
 });
+
+const filesSummary = computed(
+  () => `${formatCount(download.value?.files.length ?? 0, 'file')} · ${formatBytes(totalSize.value)}`
+);
 
 const failedTargets = computed(
   () => download.value?.targets.filter(target => target.state === DownloadTargetState.FAILED) ?? []
@@ -290,7 +297,10 @@ const failureTitle = computed(() => {
 
 const stoppableAlone = computed(() => (download.value?.targets.length ?? 0) > 1);
 
-const expandable = computed(() => (download.value?.files.length ?? 0) > 1);
+const expands = (target: DownloadTargetDto): boolean =>
+  target.state === DownloadTargetState.ACTIVE && (download.value?.files.length ?? 0) > 1;
+
+const expandable = computed(() => download.value?.targets.some(expands) ?? false);
 
 const targetColumns = computed(() =>
   [
@@ -309,8 +319,6 @@ const retryable = computed(
       target => target.state === DownloadTargetState.FAILED || target.state === DownloadTargetState.STOPPED
     )
 );
-
-const sizeOf = (path: string): number => download.value?.files.find(file => file.path === path)?.sizeBytes ?? 0;
 
 const doGetDownload = () => {
   if (downloadId.value === null) {
@@ -339,9 +347,7 @@ const onLiveEvent = (event: EventDto) => {
 
   // A dismissed download is gone, whoever dismissed it, so there is nothing left to read.
   if (event.type === EventType.DOWNLOAD_DISMISSED) {
-    router.push('/downloads').catch((error: unknown) => {
-      logger.error({ error }, 'onLiveEvent(): Failed to leave a dismissed download');
-    });
+    goBack({ replace: true });
 
     return;
   }
@@ -419,7 +425,7 @@ const doDismiss = () => {
   runAction(async () => {
     if (downloadId.value !== null) {
       await downloadAdminService.dismissDownload(downloadId.value);
-      await router.push('/downloads');
+      goBack({ replace: true });
     }
   }, 'doDismiss');
 };

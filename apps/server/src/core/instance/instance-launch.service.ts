@@ -36,7 +36,7 @@ const IMAGE_MISSING_MESSAGE = 'Set a container image, since this backend has no 
 const PINS_REFUSAL_MESSAGES: Record<PinsRefusal, string> = {
   [PinsRefusal.SEVERAL_DEVICES]: 'Choose one GPU on this node, since this backend runs on a single GPU',
   [PinsRefusal.CPU_BESIDE_DEVICES]:
-    "Choose this node's CPU or its GPUs, not both, since this backend cannot offload to host memory",
+    "Choose this node's CPU or its GPUs, not both, since this backend cannot offload to RAM",
 };
 
 const NODE_UNAVAILABLE_MESSAGES: Record<Exclude<NodeState, NodeState.ONLINE>, string> = {
@@ -47,22 +47,36 @@ const NODE_UNAVAILABLE_MESSAGES: Record<Exclude<NodeState, NodeState.ONLINE>, st
 
 const DEFAULT_REPLICAS = 1;
 
-interface IResolvedFiles {
+interface IPlacementProblem {
   problem: string | null;
+  modelMissing?: boolean;
+}
+
+interface IResolvedFiles extends IPlacementProblem {
   weightsPath: string | null;
   companionPaths: CompanionPath[];
 }
 
-export interface INodePlacement {
+export interface INodePlacement extends IPlacementProblem {
   nodeId: number;
   pins: IInstancePins;
-  problem: string | null;
 
   /** Present where the ledger refused the node, and on every node a preview put to it. */
   capacity?: IFitReport;
 
   /** Filled by a preview, where the node takes a card and the deployment can be sized. */
   expected?: IKnownUsage;
+
+  evictions?: IPlannedEviction[];
+}
+
+/** One instance a plan would stop to make room for a start. */
+export interface IPlannedEviction {
+  instance: Instance;
+
+  idleMs: number;
+
+  releasedBytes: number;
 }
 
 @Injectable()
@@ -99,7 +113,7 @@ export class InstanceLaunchService {
 
       const image = this.readImage(backend, configuration, pins);
 
-      placements.push({ nodeId, pins, problem: await this.problemWith(deployment, nodeId, pins, image) });
+      placements.push({ nodeId, pins, ...(await this.problemWith(deployment, nodeId, pins, image)) });
     }
 
     return placements;
@@ -132,36 +146,40 @@ export class InstanceLaunchService {
     nodeId: number,
     pins: IInstancePins,
     image: string | null
-  ): Promise<string | null> {
+  ): Promise<IPlacementProblem> {
     const unavailable = await this.nodeUnavailable(nodeId);
 
     if (unavailable !== null) {
-      return unavailable;
+      return { problem: unavailable };
     }
 
     const unknown = await this.unknownDevices(nodeId, pins.gpus);
 
     if (unknown.length > 0) {
-      return `${UNKNOWN_DEVICE_MESSAGE}: ${unknown.join(', ')}`;
+      return { problem: `${UNKNOWN_DEVICE_MESSAGE}: ${unknown.join(', ')}` };
     }
 
     const refusal = pinsRefusal(definitionFor(this.deploymentService.getBackend(deployment)).container, pins);
 
     if (refusal !== null) {
-      return PINS_REFUSAL_MESSAGES[refusal];
+      return { problem: PINS_REFUSAL_MESSAGES[refusal] };
     }
 
     if (image === null) {
-      return `${IMAGE_MISSING_MESSAGE} ${imageVariantOf(pins)} placements`;
+      return { problem: `${IMAGE_MISSING_MESSAGE} ${imageVariantOf(pins)} placements` };
     }
 
     const files = await this.resolveFiles(deployment, nodeId);
 
     if (files.weightsPath === null) {
-      return files.problem;
+      return { problem: files.problem, modelMissing: files.modelMissing };
     }
 
-    return this.notServable(deployment) ?? files.problem;
+    const notServable = this.notServable(deployment);
+
+    return notServable === null
+      ? { problem: files.problem, modelMissing: files.modelMissing }
+      : { problem: notServable };
   }
 
   /**
@@ -172,7 +190,7 @@ export class InstanceLaunchService {
     const weightsPath = await this.pathOn(deployment.modelId, nodeId);
 
     if (weightsPath === null) {
-      return { problem: MODEL_MISSING_MESSAGE, weightsPath, companionPaths: [] };
+      return { problem: MODEL_MISSING_MESSAGE, modelMissing: true, weightsPath, companionPaths: [] };
     }
 
     const companionPaths: CompanionPath[] = [];
@@ -195,7 +213,7 @@ export class InstanceLaunchService {
       const path = await this.pathOn(model.id, nodeId);
 
       if (path === null) {
-        return { problem: this.companionMissingMessage(model), weightsPath, companionPaths };
+        return { problem: this.companionMissingMessage(model), modelMissing: true, weightsPath, companionPaths };
       }
 
       companionPaths.push({ field: reference.field, path });

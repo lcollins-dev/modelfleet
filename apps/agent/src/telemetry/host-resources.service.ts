@@ -11,6 +11,7 @@ import {
 } from '@libs/agent-protocol';
 
 import { ConfigService } from '../config/config.service';
+import { InstanceMemoryService } from './instance-memory.service';
 
 export const MOUNT_TIMEOUT_MS = 2000;
 
@@ -18,18 +19,25 @@ export const MOUNT_TIMEOUT_MS = 2000;
 export class HostResourcesService {
   private readonly unanswered = new Set<string>();
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly instanceMemoryService: InstanceMemoryService
+  ) {}
 
   async read(): Promise<HostResources> {
+    const [modelDirectories, held] = await Promise.all([
+      Promise.all(this.configService.modelDirs.slice(0, MAX_MODEL_DIRECTORIES).map(path => this.measure(path))),
+      this.instanceMemoryService.read(),
+    ]);
+
     return {
       cpuModel: this.firstCpuModel(),
       cpuCount: cpus().length,
       loadAverage1m: this.oneMinuteLoad(),
       memoryTotalBytes: totalmem(),
       memoryFreeBytes: freemem(),
-      modelDirectories: await Promise.all(
-        this.configService.modelDirs.slice(0, MAX_MODEL_DIRECTORIES).map(path => this.measure(path))
-      ),
+      modelDirectories,
+      ...held,
     };
   }
 

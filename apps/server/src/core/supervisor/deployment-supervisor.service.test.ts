@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Subject } from 'rxjs';
 import { Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,11 +14,13 @@ import { DeploymentService, ILaunchFailureCount } from '@/core/deployment/deploy
 import { EventService } from '@/core/event/event.service';
 import { InstanceAdmissionService } from '@/core/instance/instance-admission.service';
 import { INodePlacement } from '@/core/instance/instance-launch.service';
-import { InstanceService } from '@/core/instance/instance.service';
-import { IFitReport } from '@/core/ledger/vram-ledger.service';
+import { InstanceService, RoomMaker } from '@/core/instance/instance.service';
+import { FitRefusal, IFitReport } from '@/core/ledger/vram-ledger.service';
 import { NodeService } from '@/core/node/node.service';
 import { DeploymentActionsService } from '@/core/supervisor/deployment-actions.service';
 import { DeploymentSupervisorService } from '@/core/supervisor/deployment-supervisor.service';
+import { EvictionPlannerService, IEvictionPlan } from '@/core/supervisor/eviction-planner.service';
+import { InstanceEvictionService } from '@/core/supervisor/instance-eviction.service';
 import { InstanceLeaseService } from '@/core/supervisor/instance-lease.service';
 import { SupervisorPolicyService } from '@/core/supervisor/supervisor-policy.service';
 
@@ -68,6 +71,8 @@ describe('DeploymentSupervisorService', () => {
   };
   let deploymentActionsService: DeploymentActionsService;
   let deploymentSupervisorService: DeploymentSupervisorService;
+  let planner: { plan: Mock<EvictionPlannerService['plan']> };
+  let instanceLeaseService: InstanceLeaseService;
 
   /** A node's report, which the real observation writes and announces. */
   const report = (next: Instance[]) => {
@@ -141,6 +146,12 @@ describe('DeploymentSupervisorService', () => {
       { find: vi.fn().mockResolvedValue(null) } as unknown as NodeService
     );
 
+    planner = { plan: vi.fn<EvictionPlannerService['plan']>().mockResolvedValue(null) };
+    instanceLeaseService = new InstanceLeaseService(
+      agentConnectionService as unknown as AgentConnectionService,
+      deploymentService as unknown as DeploymentService
+    );
+
     deploymentSupervisorService = new DeploymentSupervisorService(
       {
         schedulerIdleTimeoutMs: 900_000,
@@ -148,10 +159,14 @@ describe('DeploymentSupervisorService', () => {
       } as unknown as ConfigService,
       deploymentActionsService,
       deploymentService as unknown as DeploymentService,
-      new InstanceLeaseService(
-        agentConnectionService as unknown as AgentConnectionService,
-        deploymentService as unknown as DeploymentService
+      planner as unknown as EvictionPlannerService,
+      new InstanceEvictionService(
+        eventService as unknown as EventService,
+        { capacityDetail: vi.fn().mockReturnValue({}) } as unknown as InstanceAdmissionService,
+        instanceLeaseService,
+        instanceService as unknown as InstanceService
       ),
+      instanceLeaseService,
       instanceService as unknown as InstanceService,
       new SupervisorPolicyService()
     );
@@ -162,6 +177,276 @@ describe('DeploymentSupervisorService', () => {
   afterEach(() => {
     deploymentSupervisorService.onModuleDestroy();
     vi.useRealTimers();
+  });
+
+  describe('making room', () => {
+    const OTHER_DEPLOYMENT = 99;
+    const REFUSED = {
+      nodeId: 1,
+      pins: { cpu: false, gpus: ['GPU-a'] },
+      problem: 'This deployment needs 20 GiB',
+      capacity: { refusal: FitRefusal.TOO_LARGE } as IFitReport,
+    };
+
+    const victim = (id = 50): Instance =>
+      instanceOf(id, InstanceState.READY, { deploymentId: OTHER_DEPLOYMENT, deployment: buildDeployment() });
+
+    const planFor = (instance: Instance): IEvictionPlan => ({
+      victims: [{ instance, idleMs: 600_000, releasedBytes: 8 }],
+      refused: REFUSED.capacity,
+    });
+
+    const refuse = () => instanceService.bringUp.mockResolvedValue({ started: [], refused: [REFUSED] });
+
+    beforeEach(() => {
+      deployment.activationPolicy = ActivationPolicy.ALWAYS;
+    });
+
+    it('claims and stops the victims of a plan that fits, and tells no waiter it does not fit', async () => {
+      const instance = victim();
+
+      refuse();
+      planner.plan.mockResolvedValue(planFor(instance));
+
+      const { acquiring } = await waiting();
+      let settled = false;
+
+      void acquiring.then(() => {
+        settled = true;
+      });
+
+      await vi.waitFor(() =>
+        expect(instanceService.takeDown).toHaveBeenCalledWith(
+          [instance],
+          expect.objectContaining({ reason: InstanceChangeReason.EVICTED })
+        )
+      );
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(settled).toBe(false);
+      expect(eventService.recordEvent).not.toHaveBeenCalledWith(
+        EventType.INSTANCE_START_REFUSED,
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('leaves a refusal standing where no plan fits, stopping nothing', async () => {
+      refuse();
+
+      const result = await acquire();
+
+      expect(result.refusal).toBe(AcquireRefusal.DOES_NOT_FIT);
+      expect(instanceService.takeDown.mock.calls.every(([instances]) => instances.length === 0)).toBe(true);
+    });
+
+    it('chooses no further victims while the mark stands, and keeps the deployment wanted', async () => {
+      const instance = victim();
+
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(instance));
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(planner.plan).toHaveBeenCalledTimes(1);
+      expect(instanceService.bringUp).toHaveBeenCalledTimes(2);
+    });
+
+    it('lifts the mark once a start finds room', async () => {
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(victim()));
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      instanceService.bringUp.mockResolvedValue({ started: [instanceOf(9, InstanceState.STARTING)], refused: [] });
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([]);
+    });
+
+    it('names the nodes the mark is waiting on, for the screen to read', async () => {
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(victim()));
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([REFUSED.nodeId]);
+    });
+
+    it('lifts the mark when the operator stops the deployment, so nothing starts again', async () => {
+      const stop = vi.fn().mockResolvedValue(undefined);
+
+      Object.assign(instanceService, { stop });
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(victim()));
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+      await deploymentSupervisorService.stopByHand(DEPLOYMENT_ID, 1);
+
+      expect(stop).toHaveBeenCalledWith(DEPLOYMENT_ID, 1);
+      expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([]);
+    });
+
+    it('keeps the mark where a claim is lost to a concurrent start of the same deployment', async () => {
+      const instance = victim();
+      const held = await instanceLeaseService.lease(OTHER_DEPLOYMENT, [instance]);
+      let finishPlan: (plan: IEvictionPlan) => void = () => undefined;
+
+      refuse();
+      planner.plan.mockReturnValueOnce(
+        new Promise(resolve => {
+          finishPlan = resolve;
+        })
+      );
+
+      const reconciling = deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      await vi.waitFor(() => expect(planner.plan).toHaveBeenCalledTimes(1));
+
+      planner.plan.mockResolvedValueOnce(planFor(instance));
+      Object.assign(instanceService, {
+        start: vi.fn((_id: number, _actor: number, maker: RoomMaker) => maker(deployment, [REFUSED], [])),
+      });
+
+      await deploymentSupervisorService.startByHand(DEPLOYMENT_ID, 1, true);
+
+      finishPlan(planFor(instance));
+      await reconciling;
+
+      expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([REFUSED.nodeId]);
+
+      held?.release();
+    });
+
+    it('stops waiting on a node once a start there has spent the room made', async () => {
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(victim()));
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      instanceService.bringUp.mockResolvedValue({
+        started: [instanceOf(9, InstanceState.STARTING, { nodeId: REFUSED.nodeId })],
+        refused: [REFUSED],
+      });
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([]);
+    });
+
+    it('stops waiting on a node refused for something other than capacity', async () => {
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(victim()));
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      instanceService.bringUp.mockResolvedValue({
+        started: [],
+        refused: [{ ...REFUSED, capacity: undefined, problem: 'The node is offline' }],
+      });
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([]);
+    });
+
+    it('lifts the mark where a start stops being possible at all', async () => {
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(victim()));
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      instanceService.bringUp.mockRejectedValue(new BadRequestException('No placement'));
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([]);
+    });
+
+    it('refuses as usual once the mark expires, putting back what was not stopped', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-20T12:00:00Z') });
+
+      const instance = victim();
+
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(instance));
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      vi.setSystemTime(new Date('2026-10-20T12:06:00Z'));
+
+      const result = await acquire();
+
+      expect(result.refusal).toBe(AcquireRefusal.DOES_NOT_FIT);
+    });
+
+    it('waits out a request in flight on a claimed victim, then stops it when the last one leaves', async () => {
+      const instance = victim();
+      const lease = await instanceLeaseService.lease(OTHER_DEPLOYMENT, [instance]);
+
+      refuse();
+      planner.plan.mockResolvedValue(planFor(instance));
+      instanceService.findByDeploymentId.mockImplementation(deploymentId =>
+        Promise.resolve(deploymentId === OTHER_DEPLOYMENT ? [instance] : rows)
+      );
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(instanceService.takeDown).not.toHaveBeenCalledWith([instance], expect.anything());
+
+      lease?.release();
+
+      await vi.waitFor(() =>
+        expect(instanceService.takeDown).toHaveBeenCalledWith(
+          [instance],
+          expect.objectContaining({ reason: InstanceChangeReason.EVICTED })
+        )
+      );
+    });
+
+    it('leaves a claimed victim draining when its own deployment reconciles', async () => {
+      const instance = victim();
+      const lease = await instanceLeaseService.lease(OTHER_DEPLOYMENT, [instance]);
+
+      refuse();
+      planner.plan.mockResolvedValue(planFor(instance));
+      instanceService.findByDeploymentId.mockImplementation(deploymentId =>
+        Promise.resolve(deploymentId === OTHER_DEPLOYMENT ? [instance] : rows)
+      );
+
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+      await deploymentSupervisorService.reconcile(OTHER_DEPLOYMENT);
+
+      expect(instanceLeaseService.isDraining(instance)).toBe(true);
+
+      lease?.release();
+    });
+
+    it('takes a hand start through room making only when the operator confirmed', async () => {
+      const start = vi.fn().mockResolvedValue({ started: [], refused: [], evicting: [] });
+
+      Object.assign(instanceService, { start });
+
+      await deploymentSupervisorService.startByHand(DEPLOYMENT_ID, 1, false);
+      await deploymentSupervisorService.startByHand(DEPLOYMENT_ID, 1, true);
+
+      expect(start.mock.calls[0][2]).toBeNull();
+      expect(start.mock.calls[1][2]).toEqual(expect.any(Function));
+    });
+
+    it('stands a hand start with a mark, so it finishes starting with no waiting request', async () => {
+      deployment.activationPolicy = ActivationPolicy.ON_DEMAND;
+      refuse();
+      planner.plan.mockResolvedValueOnce(planFor(victim()));
+
+      const start = vi.fn((_id: number, _actor: number, maker: RoomMaker) => maker(deployment, [REFUSED], []));
+
+      Object.assign(instanceService, { start });
+
+      await deploymentSupervisorService.startByHand(DEPLOYMENT_ID, 1, true);
+      await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+      expect(instanceService.bringUp).toHaveBeenCalled();
+    });
   });
 
   describe('a ready deployment', () => {
@@ -244,7 +529,7 @@ describe('DeploymentSupervisorService', () => {
         refused: [
           {
             nodeId: 1,
-            problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+            problem: 'Not enough GPU memory for 20.0 GiB',
             capacity: {} as IFitReport,
           } as INodePlacement,
         ],
@@ -254,7 +539,7 @@ describe('DeploymentSupervisorService', () => {
 
       expect(result).toMatchObject({
         refusal: AcquireRefusal.DOES_NOT_FIT,
-        problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+        problem: 'Not enough GPU memory for 20.0 GiB',
       });
       expect(onWait).not.toHaveBeenCalled();
     });

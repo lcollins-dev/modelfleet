@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BackendId } from '@libs/backends';
 import type { GpuTelemetryDto, InstancePlacementDto, PlacementNodeDto } from '@libs/dto';
-import { ActivationPolicy, ExpectedUsageSource, GpuProcessAttribution, GpuVendor, NodeState } from '@libs/dto';
+import {
+  ActivationPolicy,
+  ExpectedUsageSource,
+  GpuProcessAttribution,
+  GpuVendor,
+  NodeState,
+  PlacementProblemReason,
+} from '@libs/dto';
 
 import { Config } from '@/Config';
 
@@ -63,8 +70,16 @@ const verdict = (nodeId: number, nodeName: string, overrides: Partial<PlacementN
   replicas: 1,
   running: 0,
   problem: null,
-  expectedUsage: { bytes: 20 * GIB, source: ExpectedUsageSource.ESTIMATED, hostWeightsBytes: 0, hostResidentBytes: 0 },
+  problemReason: null,
+  expectedUsage: {
+    bytes: 20 * GIB,
+    source: ExpectedUsageSource.ESTIMATED,
+    hostWeightsBytes: 0,
+    hostResidentBytes: 0,
+    hostCacheBytes: 0,
+  },
   capacity: { expectedBytes: 20 * GIB, availableBytes: 23 * GIB, hostFreeBytes: null, cards: [], hostWeights: null },
+  evictions: [],
   ...overrides,
 });
 
@@ -119,7 +134,8 @@ describe('MfPlacementField', () => {
       nodes: [
         verdict(1, 'rig-01'),
         verdict(2, 'rig-02', {
-          problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
+          problem: 'Not enough GPU memory for 20.0 GiB',
+          problemReason: PlacementProblemReason.NOT_ENOUGH_VRAM,
           capacity: {
             expectedBytes: 20 * GIB,
             availableBytes: 13 * GIB,
@@ -135,11 +151,52 @@ describe('MfPlacementField', () => {
     const wrapper = render();
     await settle();
 
-    expect(wrapper.text()).toContain(
-      'FitsExpected to take 20 GiB on rig-01, estimated from the model and configuration.'
+    const nodes = wrapper.findAll('[data-testid="placement-node"]');
+    const refused = nodes[1];
+
+    expect(nodes[0].text()).toContain('VRAM 20 / 23 GiB free');
+    expect(nodes[0].get('[data-testid="placement-node-status"]').text()).toBe('Fits');
+    expect(refused.get('[data-testid="placement-node-status"]').text()).toBe('Not enough VRAM');
+    expect(refused.get('[data-testid="placement-node-status"]').attributes('title')).toBe(
+      'Not enough GPU memory for 20.0 GiB'
     );
-    expect(wrapper.text()).toContain('Does not fit');
-    expect(wrapper.text()).toContain('Needs 20 GiB. Free after headroom: 13 GiB. Short by 7 GiB.');
+
+    const memory = refused.get('[data-testid="placement-node-memory"]');
+
+    expect(memory.text()).toBe('VRAM 20 / 13 GiB free');
+    expect(memory.classes()).toContain('text-error');
+    expect(memory.attributes('title')).toBe('Estimated');
+    expect(refused.text()).not.toContain('Not enough GPU memory');
+  });
+
+  it('says a node fits after eviction, naming what goes, rather than that it does not fit', async () => {
+    previewPlacement.mockResolvedValue({
+      placement: {
+        nodes: [
+          verdict(1, 'rig-01', {
+            problem: null,
+            evictions: [
+              {
+                deploymentName: 'qwen-idle',
+                instanceKey: 'key-1',
+                devices: [{ deviceKey: 'GPU-1', name: null }],
+                idleMs: 300_000,
+                releasedBytes: 8 * GIB,
+              },
+            ],
+          }),
+        ],
+        problem: null,
+      },
+    });
+
+    const wrapper = render();
+    await settle();
+
+    const status = wrapper.get('[data-testid="placement-node-status"]');
+
+    expect(status.text()).toBe('Fits after evicting');
+    expect(status.attributes('title')).toBe('Fits after evicting qwen-idle (idle 5m, frees 8 GiB)');
   });
 
   it('asks about the form as edited, and asks again when a field that moves the figure changes', async () => {
@@ -158,16 +215,23 @@ describe('MfPlacementField', () => {
   });
 
   it('drops the verdict of a node once nothing on it is ticked', async () => {
-    answer({ nodes: [verdict(1, 'rig-01'), verdict(2, 'rig-02')], problem: null });
+    const capacity = {
+      expectedBytes: 18 * GIB,
+      availableBytes: 23 * GIB,
+      hostFreeBytes: null,
+      cards: [],
+      hostWeights: null,
+    };
+    answer({ nodes: [verdict(1, 'rig-01'), verdict(2, 'rig-02', { capacity })], problem: null });
 
     const wrapper = render();
     await settle();
 
-    expect(wrapper.text()).toContain('on rig-02');
+    expect(wrapper.text()).toContain('VRAM 18 / 23 GiB free');
 
     await wrapper.setProps({ modelValue: { gpus: [{ nodeId: 1, deviceKey: 'GPU-1' }], nodeIds: [] } });
 
-    expect(wrapper.text()).not.toContain('on rig-02');
+    expect(wrapper.text()).not.toContain('VRAM 18 / 23 GiB free');
   });
 
   it("shows a ticked card's free memory after headroom, from the figures its verdict was read off", async () => {
@@ -187,6 +251,7 @@ describe('MfPlacementField', () => {
                 predictedBytes: 2 * GIB,
                 headroomBytes: GIB,
                 freeBytes: 12 * GIB,
+                short: false,
               },
             ],
             hostWeights: null,
@@ -246,7 +311,7 @@ describe('MfPlacementField', () => {
     await settle();
 
     expect(previewPlacement).not.toHaveBeenCalled();
-    expect(wrapper.text()).toContain('Choose a model to see whether this selection fits.');
+    expect(wrapper.text()).toContain('Choose a model to check memory requirements.');
   });
 
   it('says why the selection as a whole cannot be sized', async () => {
@@ -267,11 +332,11 @@ describe('MfPlacementField', () => {
     previewPlacement.mockRejectedValue(new Error('offline'));
     await wrapper.setProps({ document: 'contextSize: 32768\n' });
 
-    expect(wrapper.text()).toContain('Checking whether this selection fits.');
+    expect(wrapper.text()).toContain('Checking available memory...');
 
     await settle();
 
-    expect(wrapper.text()).toContain('Whether this selection fits could not be checked.');
+    expect(wrapper.text()).toContain('Could not check available memory.');
     expect(wrapper.text()).not.toContain('Fits');
   });
 

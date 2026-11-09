@@ -1,5 +1,5 @@
 <template>
-  <ui-table :columns="gridColumns" :min-width="680">
+  <ui-table :columns="gridColumns" :min-width="minWidth">
     <ui-table-head>
       <span>Instance</span>
       <span>{{ props.party === 'deployment' ? 'Deployment' : 'Node' }}</span>
@@ -7,6 +7,7 @@
       <span>Device</span>
       <span>Uptime</span>
       <span v-if="props.vramByInstance !== undefined">VRAM</span>
+      <span v-if="props.residentBytesByInstance !== undefined">RAM</span>
       <span></span>
     </ui-table-head>
 
@@ -16,6 +17,7 @@
       :instance="instance"
       :party="props.party"
       :vram-bytes="vramOf(instance)"
+      :resident-memory="residentMemoryOf(instance)"
     />
 
     <template v-if="!props.loading && props.instances.length === 0" #empty>{{ props.emptyDescription }}</template>
@@ -27,9 +29,17 @@ import { PropType, computed } from 'vue';
 
 import type { ListInstanceDto } from '@libs/dto';
 
+import { formatResidentMemory } from '@/utils/instance';
+
 import { UiTable, UiTableHead } from '@/components/ui';
 
 import MfInstanceRow from './Row.vue';
+
+const BASE_MIN_WIDTH = 680;
+
+const MEMORY_COLUMN = '5.5rem';
+
+const MEMORY_COLUMN_MIN_WIDTH = 104;
 
 const props = defineProps({
   instances: {
@@ -56,20 +66,31 @@ const props = defineProps({
     type: Object as PropType<Record<string, number>>,
     default: undefined,
   },
+
+  /** Given, adds a RAM column. Null is a process that could not be read. */
+  residentBytesByInstance: {
+    type: Object as PropType<Record<string, number | null>>,
+    default: undefined,
+  },
 });
 
-const gridColumns = computed(() =>
-  [
-    'minmax(0, 1fr)',
-    'minmax(0, 1fr)',
-    '6rem',
-    'minmax(0, 10rem)',
-    '6rem',
-    ...(props.vramByInstance === undefined ? [] : ['5.5rem']),
-    '1rem',
-  ].join(' ')
+const memoryColumns = computed(() =>
+  [props.vramByInstance, props.residentBytesByInstance]
+    .filter(figures => figures !== undefined)
+    .map(() => MEMORY_COLUMN)
 );
+
+const gridColumns = computed(() =>
+  ['minmax(0, 1fr)', 'minmax(0, 1fr)', '6rem', 'minmax(0, 10rem)', '6rem', ...memoryColumns.value, '1rem'].join(' ')
+);
+
+const minWidth = computed(() => BASE_MIN_WIDTH + memoryColumns.value.length * MEMORY_COLUMN_MIN_WIDTH);
 
 const vramOf = (instance: ListInstanceDto): number | null | undefined =>
   props.vramByInstance === undefined ? undefined : (props.vramByInstance[instance.instanceKey] ?? null);
+
+const residentMemoryOf = (instance: ListInstanceDto): string | undefined =>
+  props.residentBytesByInstance === undefined
+    ? undefined
+    : formatResidentMemory(props.residentBytesByInstance[instance.instanceKey]);
 </script>

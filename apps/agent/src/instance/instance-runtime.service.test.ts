@@ -4,7 +4,7 @@ import ms from 'ms';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InstanceState } from '@libs/agent-protocol';
-import { BackendId, Readiness, ProbeMethod } from '@libs/backends';
+import { BackendId, definitionFor, Readiness, ProbeMethod } from '@libs/backends';
 import { BACKEND_LABEL, INSTANCE_LABEL } from '@libs/backends/runtime';
 
 import { ConfigService } from '@/config/config.service';
@@ -174,7 +174,7 @@ describe('InstanceRuntimeService', () => {
 
       const images = containerService.create.mock.calls.map(call => (call[0] as Docker.ContainerCreateOptions).Image);
 
-      expect(images).toEqual(['ghcr.io/ggml-org/llama.cpp:server-cuda', 'mine:latest']);
+      expect(images).toEqual([definitionFor(BackendId.LLAMA_CPP).images.cuda, 'mine:latest']);
     });
 
     it('refuses to start where neither the server nor the backend names an image for the placement', async () => {
@@ -286,6 +286,30 @@ describe('InstanceRuntimeService', () => {
         '/srv/models/llama-3-8b/model.gguf:/models/model.gguf:ro',
         '/srv/models/gemma-3-4b/mmproj-F16.gguf:/models/mmproj/mmproj-F16.gguf:ro',
       ]);
+    });
+
+    it('mounts a draft model in a directory of its own and passes its container path', async () => {
+      await instanceRuntimeService.start(
+        buildDesiredInstance({
+          configuration: { contextSize: 8192, draftModel: 'c'.repeat(64), speculativeType: 'draft-dspark' },
+          companionPaths: [{ field: 'draftModel', path: '/srv/models/dspark/dspark-Q8.gguf' }],
+        }),
+        GPU_TOTALS
+      );
+
+      const body = containerService.create.mock.calls[0][0] as Docker.ContainerCreateOptions;
+
+      expect(body.HostConfig?.Binds).toContain(
+        '/srv/models/dspark/dspark-Q8.gguf:/models/draftModel/dspark-Q8.gguf:ro'
+      );
+      expect(body.Cmd).toEqual(
+        expect.arrayContaining([
+          '--spec-draft-model',
+          '/models/draftModel/dspark-Q8.gguf',
+          '--spec-type',
+          'draft-dspark',
+        ])
+      );
     });
 
     it('keeps a companion apart from weights of the same basename', async () => {

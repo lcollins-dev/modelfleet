@@ -155,6 +155,13 @@ describe('Instance admin routes (integration)', () => {
     expect(response.body.message).toBe('You do not have permission to do this');
   });
 
+  it('takes a start confirming an eviction, and refuses a body it does not know', async () => {
+    const placed = await place();
+
+    await startDeployment(app, adminToken, placed.deploymentId).send({ confirmEviction: true }).expect(201);
+    await startDeployment(app, adminToken, placed.deploymentId).send({ unknown: true }).expect(400);
+  });
+
   it('lists an instance with its node, its device and its state', async () => {
     const placed = await place();
 
@@ -187,13 +194,16 @@ describe('Instance admin routes (integration)', () => {
           replicas: 1,
           running: 0,
           problem: null,
+          problemReason: null,
           expectedUsage: {
             bytes: expect.any(Number),
             source: ExpectedUsageSource.ESTIMATED,
             hostWeightsBytes: 0,
             hostResidentBytes: 0,
+            hostCacheBytes: 8192 * 1024 * 1024,
           },
           capacity: expect.objectContaining({ cards: [expect.objectContaining({ deviceKey: DEVICE_KEY })] }),
+          evictions: [],
         },
       ],
       problem: null,

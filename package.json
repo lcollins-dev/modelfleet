@@ -54,6 +54,31 @@
     "prettier": "3.7.4",
     "typescript": "5.9.3",
     "typescript-eslint": "8.50.0",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
+  },
+  "overrides": {
+    "@nestjs/platform-express": {
+      "multer": "2.5.0"
+    },
+    "@nestjs/cli": {
+      "glob": "14.0.2"
+    },
+    "typeorm": {
+      "glob": "14.0.2"
+    },
+    "@vue/test-utils": {
+      "js-beautify": {
+        "glob": "14.0.2"
+      }
+    },
+    "editorconfig": {
+      "minimatch": "11.0.1"
+    },
+    "@trivago/prettier-plugin-sort-imports": {
+      "minimatch": "11.0.1"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.1"
+    }
   }
 }

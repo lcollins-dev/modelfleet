@@ -1,6 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading :title="preset?.name ?? 'Preset'" :subtitle="subtitle" back-to="/presets" back-label="Presets" />
+    <ui-page-heading />
 
     <div v-if="loadingPreset" class="flex justify-center py-8">
       <ui-spinner />
@@ -22,7 +22,7 @@
       >
         <template #footer>
           <div class="flex gap-2">
-            <ui-button to="/presets">Cancel</ui-button>
+            <ui-button @click="goBack()">Cancel</ui-button>
 
             <ui-button type="primary" :loading="saving" @click="doSavePreset">Save Changes</ui-button>
           </div>
@@ -31,7 +31,7 @@
 
       <mf-danger-card
         label="Delete preset"
-        :help="deleteHelp"
+        help="Its configuration is removed for good. Deployments using it must move off first."
         action-label="Delete Preset"
         :loading="deleting"
         @action="confirmDelete"
@@ -42,7 +42,7 @@
 
 <script setup lang="ts">
 import { computed, h, reactive, ref, watchEffect } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 
 import { BackendId, backendField, declarationFor } from '@libs/backends';
 import type { PresetDto, PresetChangedFieldDto, PresetImpactResponseDto, UpdatePresetRequestDto } from '@libs/dto';
@@ -61,6 +61,9 @@ import { useNotificationStore } from '@/stores/notification';
 import { MfDangerCard, MfPresetForm } from '@/components/mf';
 import { UiButton, UiCard, UiEmpty, UiPageContainer, UiPageHeading, UiSpinner } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
 interface IPresetForm {
   name: string;
   description: string;
@@ -73,7 +76,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/presets/Preset');
 
 const route = useRoute();
-const router = useRouter();
+const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
 const notificationStore = useNotificationStore();
 const presetAdminService = usePresetAdminService();
@@ -103,22 +106,10 @@ const describeDeployments = (count: number, verb?: string): string => {
   return verb === undefined ? subject : `${subject} ${count === 1 ? `${verb}s` : verb}`;
 };
 
-const subtitle = computed(() => {
-  if (preset.value === null) {
-    return undefined;
-  }
-
-  return preset.value.deployments === 0
-    ? 'No deployment uses it yet.'
-    : `Used by ${describeDeployments(preset.value.deployments)}. They pick up changes the next time they are applied.`;
-});
-
-const deleteHelp = computed(() => {
-  if (preset.value === null || preset.value.deployments === 0) {
-    return 'Its configuration is removed. This cannot be undone.';
-  }
-
-  return `${describeDeployments(preset.value.deployments, 'use')} it. Move them to another preset or give them their own configuration first.`;
+usePage({
+  title: () => preset.value?.name ?? 'Preset',
+  subtitle: 'Reusable settings for deployments.',
+  back: '/presets',
 });
 
 const fieldLabel = (backend: BackendId, key: string): string =>
@@ -146,12 +137,6 @@ const seedForm = (loaded: PresetDto) => {
   form.backend = loaded.backend;
   form.replicas = typeof replicas === 'number' ? replicas : null;
   form.values = readFieldValues(declaration.fields, loaded.configuration);
-};
-
-const viewPresetList = () => {
-  router.push('/presets').catch((error: unknown) => {
-    logger.error({ error }, 'viewPresetList(): Failed to navigate to preset list');
-  });
 };
 
 const doGetPreset = () => {
@@ -277,7 +262,7 @@ const doDeletePreset = (target: PresetDto): Promise<void> => {
     .then(() => {
       notificationStore.addToast('Preset deleted', `${target.name} is removed.`);
 
-      viewPresetList();
+      goBack({ replace: true });
     })
     .finally(() => {
       deleting.value = false;

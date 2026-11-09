@@ -17,6 +17,7 @@ export enum InstanceChangeReason {
   DEPLOYMENT_DISABLED = 'deployment-disabled',
   LAUNCH_OVERRAN = 'launch-overran',
   ON_REQUEST = 'on-request',
+  EVICTED = 'evicted',
 }
 
 export enum ResidencyRule {
@@ -40,8 +41,19 @@ export const ExpectedUsageDto = z.object({
   hostWeightsBytes: z.number(),
 
   hostResidentBytes: z.number(),
+
+  hostCacheBytes: z.number(),
 });
 export type ExpectedUsageDto = z.infer<typeof ExpectedUsageDto>;
+
+export enum PlacementProblemReason {
+  NOT_ENOUGH_VRAM = 'notEnoughVram',
+  NOT_ENOUGH_RAM = 'notEnoughRam',
+  MODEL_NOT_ON_NODE = 'modelNotOnNode',
+  NO_READINGS = 'noReadings',
+  GPU_NOT_MEASURED = 'gpuNotMeasured',
+  OTHER = 'other',
+}
 
 export const PlacementCardCapacityDto = z.object({
   deviceKey: z.string(),
@@ -53,11 +65,16 @@ export const PlacementCardCapacityDto = z.object({
 
   /** Before headroom. */
   freeBytes: z.number().nullable(),
+
+  short: z.boolean(),
 });
 export type PlacementCardCapacityDto = z.infer<typeof PlacementCardCapacityDto>;
 
 export const PlacementHostWeightsDto = z.object({
+  /** Includes `cacheBytes`. */
   neededBytes: z.number(),
+
+  cacheBytes: z.number(),
 
   /** After what loading instances hold. */
   freeBytes: z.number(),
@@ -110,6 +127,18 @@ export const ListInstanceDto = z.object({
 });
 export type ListInstanceDto = z.infer<typeof ListInstanceDto>;
 
+/** An idle instance a start would stop to make room, had it no room otherwise. */
+export const PlacementEvictionDto = z.object({
+  deploymentName: z.string(),
+  instanceKey: z.string(),
+  devices: z.array(InstanceDeviceDto),
+
+  idleMs: z.number(),
+
+  releasedBytes: z.number(),
+});
+export type PlacementEvictionDto = z.infer<typeof PlacementEvictionDto>;
+
 export const PlacementNodeDto = z.object({
   nodeId: z.number(),
   nodeName: z.string(),
@@ -122,9 +151,15 @@ export const PlacementNodeDto = z.object({
   running: z.number(),
   problem: z.string().nullable(),
 
+  /** Null exactly where `problem` is. */
+  problemReason: z.enum(PlacementProblemReason).nullable(),
+
   expectedUsage: ExpectedUsageDto.nullable(),
 
   capacity: PlacementCapacityDto.nullable(),
+
+  /** Non-empty where the placement fits only after these are stopped. `problem` is then null. */
+  evictions: z.array(PlacementEvictionDto),
 });
 export type PlacementNodeDto = z.infer<typeof PlacementNodeDto>;
 
@@ -147,6 +182,8 @@ export const DeploymentResidencyDto = z.object({
   givenUp: z.boolean(),
 
   lastLaunchFailure: z.string().nullable(),
+
+  makingRoomNodeIds: z.array(z.number()),
 });
 export type DeploymentResidencyDto = z.infer<typeof DeploymentResidencyDto>;
 

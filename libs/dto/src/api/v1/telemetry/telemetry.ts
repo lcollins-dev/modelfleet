@@ -83,12 +83,34 @@ export const ModelDirectorySpaceDto = z.object({
 });
 export type ModelDirectorySpaceDto = z.infer<typeof ModelDirectorySpaceDto>;
 
+export const InstanceMemoryDto = z.object({
+  instanceKey: z.string(),
+
+  /** Null where the instance's process could not be read. */
+  heldBytes: z.number().nullable(),
+
+  /** File-backed plus anonymous, null together with `heldBytes`. */
+  residentBytes: z.number().nullable(),
+});
+export type InstanceMemoryDto = z.infer<typeof InstanceMemoryDto>;
+
 export const NodeHostTelemetryDto = z.object({
   cpuModel: z.string().nullable(),
   cpuCount: z.number(),
   loadAverage1m: z.number().nullable(),
   memoryTotalBytes: z.number(),
+
+  /** The kernel's figure, which counts what models hold through mapped files as free. */
   memoryFreeBytes: z.number(),
+
+  /** A floor where `heldByModelsUnknown` is set. */
+  heldByModelsBytes: z.number(),
+  heldByModelsUnknown: z.boolean(),
+
+  /** `memoryFreeBytes` less `heldByModelsBytes`, never below zero. */
+  memoryAvailableBytes: z.number(),
+
+  instanceMemory: z.array(InstanceMemoryDto),
 
   /** In the node's configured order, so the first is where downloads land. */
   modelDirectories: z.array(ModelDirectorySpaceDto),

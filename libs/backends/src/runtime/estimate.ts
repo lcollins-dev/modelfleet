@@ -30,9 +30,12 @@ export interface IEstimatedDevice {
   totalBytes: number | null;
 }
 
+export type ICompanionMetadata = Pick<IModelMetadata, 'layerCount' | 'embeddingLength' | 'headCount' | 'headCountKv'>;
+
 export interface IEstimatedCompanion {
   field: string;
   sizeBytes: number;
+  metadata: ICompanionMetadata | null;
 }
 
 export interface IVramEstimateInput {
@@ -81,12 +84,16 @@ export interface IComputedVramEstimate {
   hostWeightsBytes: number;
 
   hostResidentBytes: number;
+
+  hostCacheBytes: number;
 }
 
 export interface IUnavailableVramEstimate {
   computed: false;
 
   missing: readonly IMissingEstimateInput[];
+
+  hostCacheBytes: number;
 }
 
 export type IVramEstimate = IComputedVramEstimate | IUnavailableVramEstimate;
@@ -112,8 +119,11 @@ export function missingDeviceTotal(deviceKey: string): IMissingEstimateInput {
   return { source: EstimateInputSource.DEVICE, field: deviceKey };
 }
 
-export function unavailableEstimate(missing: readonly IMissingEstimateInput[]): IUnavailableVramEstimate {
-  return { computed: false, missing };
+export function unavailableEstimate(
+  missing: readonly IMissingEstimateInput[],
+  hostCacheBytes = 0
+): IUnavailableVramEstimate {
+  return { computed: false, missing, hostCacheBytes };
 }
 
 export function computedEstimate(parts: {
@@ -123,6 +133,7 @@ export function computedEstimate(parts: {
   overheadBytes: number;
   hostWeightsBytes: number;
   hostResidentBytes: number;
+  hostCacheBytes: number;
 }): IComputedVramEstimate {
   return {
     computed: true,
@@ -157,6 +168,7 @@ export function fractionOfDevices(input: IVramEstimateInput, fraction: number): 
     overheadBytes: totals.reduce((sum, total) => sum + Math.round(total * fraction), 0),
     hostWeightsBytes: 0,
     hostResidentBytes: 0,
+    hostCacheBytes: 0,
   });
 }
 
@@ -168,6 +180,7 @@ export function weightsEstimate(parts: IWeightsEstimateParts): IComputedVramEsti
     overheadBytes: parts.overheadBytesPerDevice * parts.deviceCount,
     hostWeightsBytes: 0,
     hostResidentBytes: 0,
+    hostCacheBytes: 0,
   });
 }
 
@@ -201,6 +214,7 @@ export function configuredSizeEstimate(
     overheadBytes: Math.round(gib * GIB),
     hostWeightsBytes: 0,
     hostResidentBytes: 0,
+    hostCacheBytes: 0,
   });
 }
 

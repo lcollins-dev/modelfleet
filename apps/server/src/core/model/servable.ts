@@ -7,6 +7,7 @@ const NOT_A_MODEL_MESSAGES: Record<Exclude<ModelType, ModelType.MODEL>, string> 
   [ModelType.PROJECTOR]: 'A multimodal projector runs alongside a model. It cannot be deployed on its own',
   [ModelType.LORA]: 'A LoRA adapter runs alongside the model it adapts. It cannot be deployed on its own',
   [ModelType.CONTROL_VECTOR]: 'A control vector runs alongside a model. It cannot be deployed on its own',
+  [ModelType.DRAFT]: 'A draft model drafts tokens for another model. It cannot be deployed on its own',
 };
 
 /** Null where the weights can be served alone. Otherwise the reason, naming what the file is. */

@@ -115,12 +115,17 @@ export const useInstanceAdminService = () => {
     });
   }
 
-  async function startDeployment(deploymentId: number, form: string | null = null): Promise<StartInstanceResponseDto> {
+  async function startDeployment(
+    deploymentId: number,
+    form: string | null = null,
+    confirmEviction = false
+  ): Promise<StartInstanceResponseDto> {
     const started = await apiService
       .makeRequest(`admin/deployment/${deploymentId}/instance`, RequestType.POST, {
         response: StartInstanceResponseDto,
         token: userStore.token,
         form,
+        ...(confirmEviction ? { body: { confirmEviction } } : {}),
       })
       .finally(() => errorService.clearValidationError())
       .catch((error: unknown) => errorService.handleError(error));

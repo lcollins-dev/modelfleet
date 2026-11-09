@@ -28,6 +28,10 @@
       {{ props.vramBytes === null ? '-' : formatBytes(props.vramBytes) }}
     </span>
 
+    <span v-if="props.residentMemory !== undefined" class="font-mono text-xs" data-testid="instance-resident-memory">
+      {{ props.residentMemory }}
+    </span>
+
     <icon-chevron-right class="size-4 text-muted" />
   </ui-table-row>
 </template>
@@ -63,6 +67,11 @@ const props = defineProps({
   /** Undefined leaves the VRAM cell out, for a table without that column. */
   vramBytes: {
     type: Number as PropType<number | null>,
+    default: undefined,
+  },
+  /** Undefined leaves the RAM cell out, for a table without that column. */
+  residentMemory: {
+    type: String,
     default: undefined,
   },
 });

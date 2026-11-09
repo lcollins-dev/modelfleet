@@ -961,7 +961,7 @@ describe('Gateway inference (integration, serial)', () => {
 
       expect(answer.status).toBe(503);
       expect(error.code).toBe('model_does_not_fit');
-      expect(error.message).toMatch(/more than the pinned GPUs have free/);
+      expect(error.message).toMatch(/Not enough GPU memory for/);
       expect(await instancesOf(deployment.id)).toEqual([]);
     });
 
@@ -1092,12 +1092,12 @@ describe('Gateway inference (integration, serial)', () => {
     });
 
     it('refuses an upload over the audio limit with a 413 in OpenAI form', async () => {
-      const answer = await transcribe(uploadFor('nothing-here', Buffer.alloc(26 * 1024 * 1024)));
+      const answer = await transcribe(uploadFor('nothing-here', Buffer.alloc(50 * 1024 * 1024 + 1)));
 
       expect(answer.status).toBe(413);
       expect(JSON.parse(answer.body).error).toMatchObject({
         type: 'invalid_request_error',
-        message: 'The upload is larger than the 25mb limit.',
+        message: 'The upload is larger than the 50mb limit.',
       });
     });
 

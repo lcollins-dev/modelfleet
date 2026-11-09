@@ -200,7 +200,7 @@ placement:
       );
 
       expect(issues.map(issue => issue.message)).toEqual([
-        "Pins a node's CPU beside its GPUs, and this backend cannot offload to host memory.",
+        "Pins a node's CPU beside its GPUs, and this backend cannot offload to RAM.",
       ]);
     });
 

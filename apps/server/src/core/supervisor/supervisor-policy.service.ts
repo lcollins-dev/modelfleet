@@ -41,6 +41,8 @@ export interface ISupervisorFacts {
 
   waiting: number;
 
+  makingRoomNodeIds: number[];
+
   idleTimeoutMs: number;
   idleSince: Date | null;
   backoffUntil: Date | null;
@@ -63,7 +65,7 @@ export class SupervisorPolicyService {
 
     const always = facts.activationPolicy === ActivationPolicy.ALWAYS;
 
-    if (always || (facts.waiting > 0 && facts.live === 0)) {
+    if (always || facts.makingRoomNodeIds.length > 0 || (facts.waiting > 0 && facts.live === 0)) {
       return this.startOrHold(facts);
     }
 
@@ -107,6 +109,12 @@ export class SupervisorPolicyService {
 
   idleFor(idleSince: Date, now: Date): number {
     return Math.max(now.getTime() - idleSince.getTime(), 0);
+  }
+
+  newestInstanceDate(instances: { readyDate: Date | null; createdDate: Date }[]): Date | null {
+    const newest = instances.map(instance => (instance.readyDate ?? instance.createdDate).getTime());
+
+    return newest.length === 0 ? null : new Date(Math.max(...newest));
   }
 
   /** Falls back to the configured default where the document names no duration this can read. */

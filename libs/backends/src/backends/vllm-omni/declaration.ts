@@ -9,7 +9,7 @@ import { BackendImages, imageField } from '../../definition';
 import { ModelFormat } from '../../model';
 import { enforceEagerField } from '../vllm/declaration';
 
-export const VLLM_OMNI_IMAGES: BackendImages = { cuda: 'vllm/vllm-omni:v0.30.0' };
+export const VLLM_OMNI_IMAGES: BackendImages = { cuda: 'vllm/vllm-omni:v0.32.0' };
 
 export const GPU_MEMORY_GIB_FIELD = 'gpuMemoryGib';
 

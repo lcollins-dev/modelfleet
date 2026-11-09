@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { BackendId, GIB, IInstancePins } from '@libs/backends';
+import { BackendId, GIB, IInstancePins, ModelType } from '@libs/backends';
 import { EstimateInputSource, fractionOfDevices, IVramEstimate, IVramEstimateInput } from '@libs/backends/runtime';
 import { ExpectedUsageSource } from '@libs/dto';
 
@@ -126,6 +126,7 @@ describe('ExpectedUsageService', () => {
       source: ExpectedUsageSource.MEASURED,
       hostWeightsBytes: 0,
       hostResidentBytes: 0,
+      hostCacheBytes: 8192 * MIB,
       cardShares: null,
     });
   });
@@ -187,6 +188,7 @@ describe('ExpectedUsageService', () => {
       source: ExpectedUsageSource.MEASURED,
       hostWeightsBytes: 900 * MIB,
       hostResidentBytes: 900 * MIB,
+      hostCacheBytes: 8192 * MIB,
       cardShares: null,
     });
   });
@@ -210,6 +212,39 @@ describe('ExpectedUsageService', () => {
     const usage = await expectedFor(deployment);
 
     expect(usage).toMatchObject({ source: ExpectedUsageSource.MEASURED, hostWeightsBytes: 0, hostResidentBytes: 0 });
+  });
+
+  it('still counts the prompt cache beside a measured figure where the estimate cannot be made', async () => {
+    remembered = 9 * 1024 * MIB;
+    configuration = { ...CONFIGURATION, contextSize: undefined, promptCache: 2048 };
+
+    await expect(expectedFor()).resolves.toMatchObject({
+      source: ExpectedUsageSource.MEASURED,
+      hostResidentBytes: 0,
+      hostCacheBytes: 2048 * MIB,
+    });
+  });
+
+  it('preserves declared VRAM usage and GPU shares in tensor mode', async () => {
+    configuration = { ...CONFIGURATION, vramGib: 10, splitMode: 'tensor' };
+
+    const usage = await expectedFor(buildDeployment(), { cpu: true, gpus: ['GPU-a', 'GPU-b'] });
+
+    expect(usage).toMatchObject({
+      source: ExpectedUsageSource.DECLARED,
+      bytes: 10 * 1024 * MIB,
+      cardsOnlyReason: 'Tensor mode requires the whole model in VRAM',
+    });
+    expect(usage.known && usage.cardShares?.[0]).toBe(usage.known && usage.cardShares?.[1]);
+  });
+
+  it('counts the prompt cache beside a declared figure', async () => {
+    configuration = { ...CONFIGURATION, vramGib: 10, promptCache: 1024 };
+
+    await expect(expectedFor()).resolves.toMatchObject({
+      source: ExpectedUsageSource.DECLARED,
+      hostCacheBytes: 1024 * MIB,
+    });
   });
 
   it("answers with the adapter's missing inputs where it cannot estimate", async () => {
@@ -243,6 +278,60 @@ describe('ExpectedUsageService', () => {
     const projected = await expectedFor();
 
     expect(without.known && projected.known && projected.bytes - without.bytes).toBe(800 * MIB);
+  });
+
+  describe('a draft model', () => {
+    const DRAFT_BYTES = 8_000_000_000;
+
+    const DRAFT_TOTAL_BYTES = DRAFT_BYTES + 33_554_432 + 75_497_472;
+
+    beforeEach(() => {
+      references = [
+        {
+          field: 'draftModel',
+          fingerprint: 'c'.repeat(64),
+          label: 'Draft model',
+          modelType: ModelType.DRAFT,
+          model: buildModel({
+            type: ModelType.DRAFT,
+            sizeBytes: DRAFT_BYTES,
+            ggufMetadata: {
+              architecture: 'dflash',
+              quantisation: 'Q8_0',
+              quantisationMixed: false,
+              layerCount: 8,
+              embeddingLength: 2048,
+              headCount: 16,
+              headCountKv: 1,
+              contextLength: null,
+              tensors: null,
+            },
+          }),
+        },
+      ];
+    });
+
+    it('adds its file, context and KV from its own metadata to the estimate', async () => {
+      const drafted = await expectedFor();
+
+      references = [];
+
+      const without = await expectedFor();
+
+      expect(drafted.known && without.known ? drafted.bytes - without.bytes : null).toBe(DRAFT_TOTAL_BYTES);
+    });
+
+    it('leaves a measured figure as it is, which already holds the draft', async () => {
+      remembered = 9 * GIB;
+
+      await expect(expectedFor()).resolves.toMatchObject({ bytes: 9 * GIB, source: ExpectedUsageSource.MEASURED });
+    });
+
+    it('leaves a declared figure as it is', async () => {
+      configuration = { ...CONFIGURATION, vramGib: 6 };
+
+      await expect(expectedFor()).resolves.toMatchObject({ bytes: 6 * GIB, source: ExpectedUsageSource.DECLARED });
+    });
   });
 
   describe('a figure the operator declared', () => {

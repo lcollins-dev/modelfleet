@@ -182,12 +182,22 @@ export class TelemetryAdminService {
   }
 
   private getINodeHostTelemetry(host: HostResources): NodeHostTelemetryDto {
+    const heldByModelsBytes = host.heldMemory?.bytes ?? 0;
+
     return {
       cpuModel: host.cpuModel,
       cpuCount: host.cpuCount,
       loadAverage1m: host.loadAverage1m,
       memoryTotalBytes: host.memoryTotalBytes,
       memoryFreeBytes: host.memoryFreeBytes,
+      heldByModelsBytes,
+      heldByModelsUnknown: host.heldMemory?.anyUnknown ?? true,
+      memoryAvailableBytes: Math.max(host.memoryFreeBytes - heldByModelsBytes, 0),
+      instanceMemory: (host.instanceMemory ?? []).map(reading => ({
+        instanceKey: reading.instanceKey,
+        heldBytes: reading.heldBytes,
+        residentBytes: reading.residentBytes ?? reading.heldBytes,
+      })),
       modelDirectories: (host.modelDirectories ?? []).map(directory => this.getIModelDirectorySpace(directory)),
     };
   }

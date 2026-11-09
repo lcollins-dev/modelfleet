@@ -52,8 +52,6 @@ describe('A split across cards (integration)', () => {
     const outcome = await instanceService.start(deploymentId, admin.id);
 
     expect(outcome.started).toHaveLength(0);
-    expect(outcome.refused[0].problem).toMatch(
-      new RegExp(`^This deployment needs \\d+\\.\\d GiB on ${CARD_A}, more than it has free$`)
-    );
+    expect(outcome.refused[0].problem).toMatch(new RegExp(`^Not enough memory on ${CARD_A} for \\d+\\.\\d GiB$`));
   });
 });

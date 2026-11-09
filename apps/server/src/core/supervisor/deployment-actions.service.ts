@@ -11,7 +11,7 @@ import { ILaunchFailureCount } from '../deployment/deployment.service';
 import { EventService } from '../event/event.service';
 import { InstanceAdmissionService } from '../instance/instance-admission.service';
 import { INodePlacement } from '../instance/instance-launch.service';
-import { InstanceService } from '../instance/instance.service';
+import { IRoomOutcome, InstanceService, RoomMaker } from '../instance/instance.service';
 import { NodeService } from '../node/node.service';
 
 import { AcquireRefusal, IStartRefusal } from './supervisor.types';
@@ -43,7 +43,12 @@ export class DeploymentActionsService {
    * Drops the failed instances first, so a replacement is created against a node that is short again, then brings the
    * deployment up. Null where something started, or `live` says something was already starting or ready.
    */
-  async start(deployment: Deployment, instances: Instance[], live: number): Promise<IStartRefusal | null> {
+  async start(
+    deployment: Deployment,
+    instances: Instance[],
+    live: number,
+    makeRoom: RoomMaker = this.leaveRefused
+  ): Promise<IStartRefusal | null> {
     const always = deployment.activationPolicy === ActivationPolicy.ALWAYS;
     const failed = instances.filter(instance => instance.instanceState === InstanceState.FAILED);
 
@@ -60,11 +65,13 @@ export class DeploymentActionsService {
         note: always ? KEEPING_RESIDENT_NOTE : SERVE_REQUEST_NOTE,
       });
 
-      await this.sayRefused(deployment, await this.describeRefusals(outcome.refused), outcome.refused);
+      const room = await makeRoom(deployment, outcome.refused, outcome.started);
+
+      await this.sayRefused(deployment, await this.describeRefusals(room.standing), room.standing);
 
       // Nothing refused means every node already holds its share, as when a start by hand got there first.
-      return outcome.started.length === 0 && live === 0 && outcome.refused.length > 0
-        ? this.refusalOf(outcome.refused)
+      return !room.makingRoom && outcome.started.length === 0 && live === 0 && room.standing.length > 0
+        ? this.refusalOf(room.standing)
         : null;
     } catch (error: unknown) {
       if (!(error instanceof BadRequestException)) {
@@ -76,6 +83,9 @@ export class DeploymentActionsService {
       return { refusal: AcquireRefusal.CANNOT_START, problem: error.message };
     }
   }
+
+  private readonly leaveRefused: RoomMaker = (_deployment, refused): Promise<IRoomOutcome> =>
+    Promise.resolve({ standing: refused, makingRoom: false, evicting: [] });
 
   /** A refusal for capacity on any node outweighs the rest, since memory freeing is what would change the answer. */
   private refusalOf(refused: INodePlacement[]): IStartRefusal {

@@ -54,8 +54,8 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      # Dev dependencies included, and any severity fails.
-      - run: npm audit
+      # Dev dependencies included. A low finding passes, since some have no patched release.
+      - run: npm audit --audit-level=moderate
 
   test:
     name: Unit tests

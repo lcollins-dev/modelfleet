@@ -29,6 +29,7 @@ export enum EventType {
   DEPLOYMENT_DISABLED = 'deployment.disabled',
   DEPLOYMENT_DELETED = 'deployment.deleted',
   DEPLOYMENT_GIVEN_UP = 'deployment.given-up',
+  DEPLOYMENT_SWAPPING = 'deployment.swapping',
   INSTANCE_STARTED = 'instance.started',
   INSTANCE_STOPPED = 'instance.stopped',
   INSTANCE_START_REFUSED = 'instance.start-refused',
@@ -104,6 +105,7 @@ export type EventDetailMap = {
   [EventType.DEPLOYMENT_DISABLED]: { name: string };
   [EventType.DEPLOYMENT_DELETED]: { name: string; modelName: string };
   [EventType.DEPLOYMENT_GIVEN_UP]: { name: string; launchFailures: number; output?: string };
+  [EventType.DEPLOYMENT_SWAPPING]: { name: string; otherName: string; swaps: number; windowMs: number };
   [EventType.INSTANCE_STARTED]: {
     name: string;
     instanceKey: string;
@@ -119,6 +121,19 @@ export type EventDetailMap = {
     nodeName: string;
     reason: InstanceChangeReason;
     output?: string;
+
+    /** Present where an eviction stopped the instance. */
+    evictedFor?: string;
+    idleMs?: number;
+    releasedBytes?: number;
+
+    expectedBytes?: number;
+    availableBytes?: number;
+    cards?: string;
+    hostNeededBytes?: number;
+    hostCacheBytes?: number;
+    hostHeldBytes?: number;
+    hostAvailableBytes?: number;
   };
   [EventType.INSTANCE_START_REFUSED]: {
     name: string;

@@ -23,8 +23,7 @@ const PLACEMENT_KEY = 'placement';
 
 const PINS_REFUSAL_MESSAGES: Record<PinsRefusal, string> = {
   [PinsRefusal.SEVERAL_DEVICES]: 'Pins several GPUs on one node, and this backend runs on a single GPU.',
-  [PinsRefusal.CPU_BESIDE_DEVICES]:
-    "Pins a node's CPU beside its GPUs, and this backend cannot offload to host memory.",
+  [PinsRefusal.CPU_BESIDE_DEVICES]: "Pins a node's CPU beside its GPUs, and this backend cannot offload to RAM.",
 };
 
 interface IConfigurationIssue {

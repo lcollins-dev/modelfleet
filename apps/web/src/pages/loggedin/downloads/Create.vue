@@ -1,11 +1,6 @@
 <template>
   <ui-page-container>
-    <ui-page-heading
-      title="New download"
-      subtitle="Pull files onto one or more nodes. Each node downloads its own copy."
-      back-to="/downloads"
-      back-label="Downloads"
-    />
+    <ui-page-heading />
 
     <ui-form :name="FORM_NAME" @submit="doCreateDownload">
       <ui-card>
@@ -135,7 +130,7 @@
 
         <template #footer>
           <div class="flex gap-2">
-            <ui-button :disabled="loadingCreate" to="/downloads">Cancel</ui-button>
+            <ui-button :disabled="loadingCreate" @click="goBack()">Cancel</ui-button>
 
             <ui-button type="primary" native-type="submit" :loading="loadingCreate">Start Download</ui-button>
           </div>
@@ -195,6 +190,16 @@ import {
   UiPageHeading,
 } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
+usePage({
+  title: 'New download',
+  subtitle: 'Pull files onto one or more nodes. Each node downloads its own copy.',
+  back: '/downloads',
+  transient: true,
+});
+
 const FORM_NAME = 'create-download';
 
 const ADDRESS_INVALID = "Enter owner/name, or a model repository's address on huggingface.co.";
@@ -203,6 +208,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/downloads/Create');
 
 const router = useRouter();
+const { goBack } = useGoBack();
 
 const downloadAdminService = useDownloadAdminService();
 const nodeAdminService = useNodeAdminService();

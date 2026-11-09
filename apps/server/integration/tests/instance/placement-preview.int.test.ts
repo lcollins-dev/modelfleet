@@ -83,7 +83,7 @@ describe('Placement preview (integration)', () => {
     const [node] = placement.nodes;
 
     expect(node.expectedUsage?.source).toBe(ExpectedUsageSource.ESTIMATED);
-    expect(node.problem).toMatch(/^This deployment needs \d+\.\d GiB, more than the pinned GPUs have free$/);
+    expect(node.problem).toMatch(/^Not enough GPU memory for \d+\.\d GiB$/);
     expect(node.capacity).toMatchObject({ expectedBytes: node.expectedUsage?.bytes, availableBytes: 0 });
     expect(await dbQuery(app, `SELECT id FROM "deployment" WHERE "name" = ''`)).toEqual([]);
   });
@@ -117,6 +117,7 @@ describe('Placement preview (integration)', () => {
       source: ExpectedUsageSource.MEASURED,
       hostWeightsBytes: 0,
       hostResidentBytes: 0,
+      hostCacheBytes: 8192 * 1024 * 1024,
     });
   });
 

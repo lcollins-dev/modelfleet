@@ -1,6 +1,6 @@
 <template>
   <ui-page-container>
-    <ui-page-heading title="Profile &amp; security" :subtitle="userStore.profile?.email">
+    <ui-page-heading>
       <template #leading>
         <ui-avatar size="lg" round>{{ initial }}</ui-avatar>
       </template>
@@ -103,6 +103,8 @@ import {
   UiPageHeading,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
+
 const PROFILE_FORM = 'profile';
 const PASSWORD_FORM = 'password';
 
@@ -113,6 +115,8 @@ const errorStore = useErrorStore();
 const notificationStore = useNotificationStore();
 const userStore = useUserStore();
 const userService = useUserService();
+
+usePage({ title: 'Profile & security', subtitle: () => userStore.profile?.email });
 
 const name = ref('');
 const email = ref('');

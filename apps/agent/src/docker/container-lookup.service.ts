@@ -26,6 +26,7 @@ export class ContainerLookupService {
   private readonly maxAgeMs: number;
 
   private index = new Map<number, IContainerRef>();
+  private instanceProcesses = new Map<string, number[]>();
   private readAt = Number.NEGATIVE_INFINITY;
 
   constructor(
@@ -54,12 +55,21 @@ export class ContainerLookupService {
     return resolved;
   }
 
-  private needsRead(pids: readonly number[]): boolean {
-    if (Date.now() - this.readAt > this.maxAgeMs) {
-      return true;
+  /** An instance whose processes could not be listed carries none. Null until Docker has answered once. */
+  async processesByInstance(): Promise<ReadonlyMap<string, readonly number[]> | null> {
+    if (this.isStale()) {
+      await this.read();
     }
 
-    return pids.some(pid => !this.index.has(pid));
+    return this.readAt === Number.NEGATIVE_INFINITY ? null : this.instanceProcesses;
+  }
+
+  private needsRead(pids: readonly number[]): boolean {
+    return this.isStale() || pids.some(pid => !this.index.has(pid));
+  }
+
+  private isStale(): boolean {
+    return Date.now() - this.readAt > this.maxAgeMs;
   }
 
   private async read(): Promise<void> {
@@ -72,46 +82,54 @@ export class ContainerLookupService {
     }
 
     const index = new Map<number, IContainerRef>();
+    const instanceProcesses = new Map<string, number[]>();
 
     for (const container of listed) {
       for (const pid of container.pids) {
         index.set(pid, { id: container.id, name: container.name, instanceKey: container.instanceKey });
       }
+
+      if (container.instanceKey !== null) {
+        instanceProcesses.set(container.instanceKey, [
+          ...(instanceProcesses.get(container.instanceKey) ?? []),
+          ...container.pids,
+        ]);
+      }
     }
 
     this.index = index;
+    this.instanceProcesses = instanceProcesses;
     this.readAt = Date.now();
   }
 
-  /** A container that exits mid-read is skipped. */
   private async listContainerProcesses(): Promise<IContainerProcesses[]> {
     const containers = await this.docker.listContainers();
     const listed: IContainerProcesses[] = [];
 
     for (const info of containers) {
-      const name = this.containerName(info.Names);
-
-      try {
-        const response: unknown = await this.docker.getContainer(info.Id).top();
-        const top = containerTopSchema.safeParse(response);
-
-        if (top.success) {
-          listed.push({
-            id: info.Id,
-            name,
-            instanceKey: this.instanceKeyOf(info.Labels),
-            pids: this.pidsFrom(top.data.Titles, top.data.Processes),
-          });
-        }
-      } catch (error: unknown) {
-        this.logger.debug(
-          { error, container: info.Id },
-          'listContainerProcesses(): Reading the processes of one container failed'
-        );
-      }
+      listed.push({
+        id: info.Id,
+        name: this.containerName(info.Names),
+        instanceKey: this.instanceKeyOf(info.Labels),
+        pids: await this.pidsOf(info.Id),
+      });
     }
 
     return listed;
+  }
+
+  /** Empty rather than throwing, so a running container whose processes cannot be listed still appears. */
+  private async pidsOf(containerId: string): Promise<number[]> {
+    try {
+      const response: unknown = await this.docker.getContainer(containerId).top();
+      const top = containerTopSchema.safeParse(response);
+
+      return top.success ? this.pidsFrom(top.data.Titles, top.data.Processes) : [];
+    } catch (error: unknown) {
+      this.logger.debug({ error, container: containerId }, 'pidsOf(): Reading the processes of one container failed');
+
+      return [];
+    }
   }
 
   /** Another node's process still counts against the card, as usage no instance of this node holds. */

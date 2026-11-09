@@ -42,6 +42,7 @@ const mountPreset = async () => {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
+      { path: '/presets', component: { template: '<div />' } },
       { path: '/presets/:presetId', component: { template: '<div />' } },
       { path: '/:path(.*)*', component: { template: '<div />' } },
     ],
@@ -72,11 +73,11 @@ beforeEach(() => {
 });
 
 describe('Preset page', () => {
-  it('heads the page with the preset and its use, and locks the backend', async () => {
+  it('heads the page with the preset, and locks the backend', async () => {
     const { wrapper } = await mountPreset();
 
     expect(wrapper.get('h1').text()).toBe('llama.cpp standard');
-    expect(wrapper.text()).toContain('Used by 2 deployments.');
+    expect(wrapper.text()).toContain('Reusable settings for deployments.');
     expect(wrapper.get<HTMLInputElement>('input[placeholder="vLLM BF16 throughput"]').element.value).toBe(
       'llama.cpp standard'
     );
@@ -132,7 +133,7 @@ describe('Preset page', () => {
   it('deletes the preset once confirmed, warning first when deployments use it', async () => {
     const { wrapper, router } = await mountPreset();
 
-    expect(wrapper.text()).toContain('2 deployments use it.');
+    expect(wrapper.text()).toContain('Deployments using it must move off first.');
 
     await clickButton(wrapper, 'Delete Preset');
 

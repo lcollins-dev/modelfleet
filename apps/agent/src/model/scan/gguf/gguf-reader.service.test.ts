@@ -36,6 +36,7 @@ function text(value: string): Buffer {
 }
 
 const STRING_VALUE = 8;
+const UINT32_VALUE = 4;
 
 const F32 = 0;
 const Q4_K = 12;
@@ -143,9 +144,9 @@ describe('GgufReaderService', () => {
       await rm(directory, { recursive: true, force: true });
     });
 
-    const typeOf = async (pairs: readonly Buffer[]): Promise<ModelType> => {
+    const typeOf = async (pairs: readonly Buffer[], tensors: readonly Buffer[] = []): Promise<ModelType> => {
       const path = join(directory, 'weights.gguf');
-      const bytes = ggufBytes(pairs);
+      const bytes = ggufBytes(pairs, tensors);
 
       await writeFile(path, bytes);
 
@@ -167,6 +168,55 @@ describe('GgufReaderService', () => {
 
     it('reads a model out of a header stating an ordinary architecture', async () => {
       await expect(typeOf([architecture('llama')])).resolves.toBe(ModelType.MODEL);
+    });
+
+    describe('a draft', () => {
+      const MTP_MARKER = 'blk.33.nextn.eh_proj.weight';
+      const blockCount = (arch: string, count: number): Buffer =>
+        Buffer.concat([text(`${arch}.block_count`), u32(UINT32_VALUE), u32(count)]);
+
+      it.each(['dflash', 'eagle3', 'gemma4-assistant'])('reads the %s architecture as a draft', async name => {
+        await expect(typeOf([architecture(name)])).resolves.toBe(ModelType.DRAFT);
+      });
+
+      it('reads an MTP module holding the marker and no first trunk layer as a draft', async () => {
+        await expect(
+          typeOf([architecture('qwen35'), blockCount('qwen35', 34)], [tensor(MTP_MARKER, 1024)])
+        ).resolves.toBe(ModelType.DRAFT);
+      });
+
+      it('finds the marker on a tensor far below the recorded floor', async () => {
+        await expect(typeOf([architecture('qwen35'), blockCount('qwen35', 34)], [tensor(MTP_MARKER, 1)])).resolves.toBe(
+          ModelType.DRAFT
+        );
+      });
+
+      it('keeps a full model carrying MTP layers as a model', async () => {
+        await expect(
+          typeOf(
+            [architecture('qwen35'), blockCount('qwen35', 34)],
+            [tensor('blk.0.attn_norm.weight', 1024), tensor(MTP_MARKER, 1024)]
+          )
+        ).resolves.toBe(ModelType.MODEL);
+      });
+
+      it('keeps a file with no marker as a model', async () => {
+        await expect(
+          typeOf([architecture('qwen35'), blockCount('qwen35', 34)], [tensor('blk.33.attn_norm.weight', 1024)])
+        ).resolves.toBe(ModelType.MODEL);
+      });
+
+      it('takes a single-layer module, whose marker sits at the first layer, as a draft', async () => {
+        await expect(
+          typeOf([architecture('qwen35'), blockCount('qwen35', 1)], [tensor('blk.0.nextn.eh_proj.weight', 1024)])
+        ).resolves.toBe(ModelType.DRAFT);
+      });
+
+      it('keeps a file whose tensors are unknown as a model', async () => {
+        await expect(
+          typeOf([architecture('qwen35'), blockCount('qwen35', 34)], [tensor(MTP_MARKER, 1024, UNNAMED_TYPE)])
+        ).resolves.toBe(ModelType.MODEL);
+      });
     });
 
     it('reads a projector out of the clip architecture, whatever name the file carries', async () => {

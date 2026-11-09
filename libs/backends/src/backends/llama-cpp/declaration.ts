@@ -22,11 +22,20 @@ export enum LlamaCppField {
   CACHE_TYPE_V = 'cacheTypeV',
   NO_KV_OFFLOAD = 'noKvOffload',
   LOAD_MODE = 'loadMode',
+  LAZY_MODE = 'lazyMode',
+  PROMPT_CACHE = 'promptCache',
+  DRAFT_MODEL = 'draftModel',
+  SPECULATIVE_TYPE = 'speculativeType',
+  DRAFT_TOKENS = 'draftTokens',
 }
 
-const LLAMA_CPP_IMAGE = 'ghcr.io/ggml-org/llama.cpp:server-cuda';
+/** Bump only after checking the declaration, the estimate and the hooks against the new build. */
+const RELEASE = 'b12063';
 
-export const LLAMA_CPP_IMAGES: BackendImages = { cuda: LLAMA_CPP_IMAGE, cpu: LLAMA_CPP_IMAGE };
+export const LLAMA_CPP_IMAGES: BackendImages = {
+  cuda: `ghcr.io/ggml-org/llama.cpp:server-cuda-${RELEASE}`,
+  cpu: `ghcr.io/ggml-org/llama.cpp:server-${RELEASE}`,
+};
 
 const CACHE_TYPES = ['f32', 'f16', 'bf16', 'q8_0', 'q5_1', 'q5_0', 'q4_1', 'q4_0', 'iq4_nl'];
 
@@ -37,6 +46,7 @@ const MEMORY = 'memory';
 const CPU = 'cpu';
 const ROPE = 'rope';
 const MULTIMODAL = 'multimodal';
+const SPECULATIVE = 'speculative';
 const SERVER = 'server';
 const ADVANCED = 'advanced';
 
@@ -91,8 +101,7 @@ const fields: BackendField[] = [
     name: LlamaCppField.CPU_MOE,
     flag: '--cpu-moe',
     label: 'All expert layers on the CPU',
-    description:
-      "Keep every mixture-of-experts layer's experts in host memory. This frees the most VRAM but reduces speed.",
+    description: "Keep every mixture-of-experts layer's experts in RAM. This frees the most VRAM but reduces speed.",
     group: GPU,
     type: BackendFieldType.BOOLEAN,
   },
@@ -101,7 +110,7 @@ const fields: BackendField[] = [
     flag: '--n-cpu-moe',
     label: 'Expert layers on the CPU',
     description:
-      'Set how many mixture-of-experts layers stay in host memory, starting with the first layer. This reduces ' +
+      'Set how many mixture-of-experts layers stay in RAM, starting with the first layer. This reduces ' +
       'VRAM use when the whole model does not fit on the GPU.',
     group: GPU,
     type: BackendFieldType.INTEGER,
@@ -113,7 +122,7 @@ const fields: BackendField[] = [
     label: 'Tensor overrides',
     description:
       'Send the tensors whose names match a pattern to another device, one pattern=device entry each, such as ' +
-      'token_embd.weight=CPU. CPU keeps a tensor in host memory, off the GPUs.',
+      'token_embd.weight=CPU. CPU keeps a tensor in RAM, off the GPUs.',
     group: GPU,
     type: BackendFieldType.TEXT_LIST,
   },
@@ -121,10 +130,12 @@ const fields: BackendField[] = [
     name: LlamaCppField.SPLIT_MODE,
     flag: '--split-mode',
     label: 'Split mode',
-    description: 'Choose how to divide the model when an instance uses more than one GPU.',
+    description:
+      'Choose how to split the model across GPUs. Tensor mode is experimental, requires flash attention and ' +
+      'disables automatic fitting. The whole model must fit in VRAM, divided equally unless you set Tensor split.',
     group: GPU,
     type: BackendFieldType.CHOICE,
-    choices: ['none', 'layer', 'row', 'tensor'],
+    choices: ['none', 'layer', 'tensor'],
   },
   {
     name: LlamaCppField.TENSOR_SPLIT,
@@ -170,7 +181,7 @@ const fields: BackendField[] = [
     name: LlamaCppField.NO_KV_OFFLOAD,
     flag: '--no-kv-offload',
     label: 'Keep the KV cache off the GPU',
-    description: 'Keep the key and value cache in host memory. This frees VRAM but reduces speed.',
+    description: 'Keep the key and value cache in RAM. This frees VRAM but reduces speed.',
     group: MEMORY,
     type: BackendFieldType.BOOLEAN,
   },
@@ -184,6 +195,28 @@ const fields: BackendField[] = [
     group: MEMORY,
     type: BackendFieldType.CHOICE,
     choices: ['auto', 'none', 'mmap', 'mlock', 'mmap+mlock', 'dio'],
+  },
+  {
+    name: LlamaCppField.LAZY_MODE,
+    flag: '--lazy-mode',
+    label: 'Lazy mode',
+    description:
+      'Choose when to read a per-layer lookup table from disk row by row instead of holding it in memory. Leave ' +
+      'this unset to do so for a table over 4 GiB. On does so at any size, and off never does.',
+    group: MEMORY,
+    type: BackendFieldType.CHOICE,
+    choices: ['auto', 'on', 'off'],
+  },
+  {
+    name: LlamaCppField.PROMPT_CACHE,
+    flag: '--cache-ram',
+    label: 'Prompt cache (MiB)',
+    description:
+      'Set the most RAM the prompt cache can grow to, in MiB. Use 0 to disable the cache. Leave this unset ' +
+      "to keep the backend's own default.",
+    group: MEMORY,
+    type: BackendFieldType.INTEGER,
+    min: 0,
   },
 
   {
@@ -265,6 +298,39 @@ const fields: BackendField[] = [
   },
 
   {
+    name: LlamaCppField.DRAFT_MODEL,
+    flag: '--spec-draft-model',
+    label: 'Draft model',
+    description:
+      'Choose the draft model that drafts tokens ahead of this model. Pick a DSpark, DFlash, Eagle3 or MTP file made ' +
+      'for this model, and make sure every node this deployment runs on holds it.',
+    group: SPECULATIVE,
+    type: BackendFieldType.MODEL_REFERENCE,
+    modelType: ModelType.DRAFT,
+  },
+  {
+    name: LlamaCppField.SPECULATIVE_TYPE,
+    flag: '--spec-type',
+    label: 'Speculative type',
+    description:
+      'Choose how to draft tokens. DFlash, DSpark and Eagle3 take effect only with a draft model of that kind, and ' +
+      'MTP with an MTP draft model or MTP layers in the main model. Leave this unset to detect the type from the ' +
+      'draft model.',
+    group: SPECULATIVE,
+    type: BackendFieldType.CHOICE,
+    choices: ['draft-mtp', 'draft-dflash', 'draft-dspark', 'draft-eagle3'],
+  },
+  {
+    name: LlamaCppField.DRAFT_TOKENS,
+    flag: '--spec-draft-n-max',
+    label: 'Draft tokens',
+    description: 'Set the most tokens to draft at once. This takes effect only while speculative decoding runs.',
+    group: SPECULATIVE,
+    type: BackendFieldType.INTEGER,
+    min: 0,
+  },
+
+  {
     name: 'contBatching',
     flag: '--cont-batching',
     offFlag: '--no-cont-batching',
@@ -339,8 +405,17 @@ export const llamaCppDeclaration: BackendDeclaration = {
     { group: CPU, label: 'CPU' },
     { group: ROPE, label: 'Context extension' },
     { group: MULTIMODAL, label: 'Multimodal' },
+    { group: SPECULATIVE, label: 'Speculative decoding' },
     { group: SERVER, label: 'Server behaviour' },
     { group: ADVANCED, label: 'Advanced' },
   ],
   fields,
+  referenceRequirements: [
+    {
+      choiceField: LlamaCppField.SPECULATIVE_TYPE,
+      choices: ['draft-dflash', 'draft-dspark'],
+      referenceField: LlamaCppField.DRAFT_MODEL,
+      architecture: 'dflash',
+    },
+  ],
 };

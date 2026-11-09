@@ -94,6 +94,7 @@ const mountConfiguration = async () => {
     history: createMemoryHistory(),
     routes: [
       { path: '/deployments/:deploymentId/configuration', component: { template: '<div />' } },
+      { path: '/deployments/:deploymentId', component: { template: '<div />' } },
       { path: '/:path(.*)*', component: { template: '<div />' } },
     ],
   });
@@ -142,6 +143,7 @@ describe('Deployment settings page', () => {
             problem: null,
             expectedUsage: null,
             capacity: null,
+            evictions: [],
           },
         ],
         problem: null,
@@ -168,7 +170,8 @@ describe('Deployment settings page', () => {
     const { wrapper } = await mountConfiguration();
 
     expect(wrapper.get('h1').text()).toBe('Edit settings');
-    expect(wrapper.text()).toContain('llama-70b-chat · holds its own settings');
+    expect(wrapper.text()).toContain("Configure this deployment's model, backend and runtime settings.");
+    expect(wrapper.text()).not.toContain('holds its own settings');
     expect(wrapper.text()).toContain('Changes waiting to be applied');
     expect(wrapper.get<HTMLInputElement>('input[placeholder="llama-70b-chat"]').element.value).toBe('llama-70b-chat');
 

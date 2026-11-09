@@ -6,7 +6,7 @@ import { llamaCppDeclaration } from './declaration';
 import { IHostPlacement, hostPlacement } from './override-tensor';
 
 const placementOf = (tensors: IModelTensor[] | null, configuration: BackendConfiguration): IHostPlacement =>
-  hostPlacement(tensors, configuredValues(llamaCppDeclaration, configuration));
+  hostPlacement({ tensors, architecture: null }, configuredValues(llamaCppDeclaration, configuration));
 
 const hostTensorBytes = (tensors: IModelTensor[] | null, configuration: BackendConfiguration): number =>
   placementOf(tensors, configuration).tensors.reduce((total, tensor) => total + tensor.sizeBytes, 0);

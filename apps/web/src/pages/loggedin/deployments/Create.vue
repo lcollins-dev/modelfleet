@@ -1,11 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="New deployment"
-      subtitle="Name it, pick a preset or a backend and a model, then change only what you need."
-      back-to="/deployments"
-      back-label="Deployments"
-    />
+    <ui-page-heading />
 
     <mf-deployment-identity
       v-model:name="form.name"
@@ -30,7 +25,7 @@
     >
       <template #footer>
         <div class="flex gap-2">
-          <ui-button to="/deployments">Cancel</ui-button>
+          <ui-button @click="goBack()">Cancel</ui-button>
 
           <ui-button type="primary" :loading="saving" @click="doCreateDeployment">Create Deployment</ui-button>
         </div>
@@ -55,6 +50,16 @@ import { useNotificationStore } from '@/stores/notification';
 import { MfConfigurationEditor, MfDeploymentIdentity } from '@/components/mf';
 import { UiButton, UiPageContainer, UiPageHeading } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
+usePage({
+  title: 'New deployment',
+  subtitle: 'Name it, pick a preset or a backend and a model, then change only what you need.',
+  back: '/deployments',
+  transient: true,
+});
+
 interface ICreateDeploymentForm {
   name: string;
   description: string;
@@ -69,6 +74,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/deployments/Create');
 
 const router = useRouter();
+const { goBack } = useGoBack();
 
 const notificationStore = useNotificationStore();
 const deploymentAdminService = useDeploymentAdminService();

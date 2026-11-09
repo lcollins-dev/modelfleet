@@ -3,8 +3,8 @@ import { BackendImages, imageField } from '../../definition';
 import { ModelFormat } from '../../model';
 
 export const KOKORO_IMAGES: BackendImages = {
-  cuda: 'ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0',
-  cpu: 'ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0',
+  cuda: 'ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.2',
+  cpu: 'ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.2',
 };
 
 const CONTAINER = 'container';

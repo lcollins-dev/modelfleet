@@ -9,10 +9,10 @@ import { FitRefusal, IAdmittedUsage, IFitReport, VramLedgerService } from '../le
 import { ExpectedUsageService, IExpectedUsage, IKnownUsage } from './expected-usage.service';
 import { INodePlacement } from './instance-launch.service';
 
-const NO_TELEMETRY_MESSAGE = 'This node has not reported its GPU memory since it connected';
-const UNMEASURED_CARD_MESSAGE = 'A pinned GPU has not reported its total or used memory';
-const UNKNOWN_USAGE_MESSAGE = "This deployment's memory use cannot be estimated without";
-const DECLARE_VRAM_HINT = 'declare its VRAM as `vramGib` to start it';
+const NO_TELEMETRY_MESSAGE = 'No GPU memory readings received from this node';
+const UNMEASURED_CARD_MESSAGE = 'Memory readings are missing for a selected GPU';
+const UNKNOWN_USAGE_MESSAGE = 'Cannot estimate memory use. Missing:';
+const DECLARE_VRAM_HINT = 'Set `vramGib` to specify GPU memory use';
 
 export interface IAdmission {
   problem: string | null;
@@ -28,6 +28,7 @@ export interface ICapacityDetail {
   availableBytes?: number;
   cards?: string;
   hostNeededBytes?: number;
+  hostCacheBytes?: number;
   hostHeldBytes?: number;
   hostAvailableBytes?: number;
 }
@@ -53,6 +54,19 @@ export class InstanceAdmissionService {
     const report = await this.vramLedgerService.check(placement.nodeId, placement.pins, this.admittedOf(usage));
 
     return { ...this.admissionOf(report), capacity: report, expected: usage };
+  }
+
+  /** Null where the placement takes no card, or no source can size the deployment. */
+  async checkReleasing(
+    deployment: Deployment,
+    placement: INodePlacement,
+    releasing: readonly string[]
+  ): Promise<IFitReport | null> {
+    const usage = await this.usageOf(deployment, placement);
+
+    return usage?.known === true
+      ? this.vramLedgerService.checkReleasing(placement.nodeId, placement.pins, this.admittedOf(usage), releasing)
+      : null;
   }
 
   /** Null where the placement takes no card, or no source can size the deployment. */
@@ -86,7 +100,13 @@ export class InstanceAdmissionService {
   }
 
   private admittedOf(usage: IKnownUsage): IAdmittedUsage {
-    return { expectedBytes: usage.bytes, hostBytes: usage.hostResidentBytes, cardShares: usage.cardShares };
+    return {
+      expectedBytes: usage.bytes,
+      hostBytes: usage.hostResidentBytes,
+      hostCacheBytes: usage.hostCacheBytes,
+      cardShares: usage.cardShares,
+      cardsOnlyReason: usage.cardsOnlyReason,
+    };
   }
 
   /** Null for a placement on the CPU alone, which takes no card and is never sized. */
@@ -115,6 +135,7 @@ export class InstanceAdmissionService {
         ? {}
         : {
             hostNeededBytes: report.hostWeights.neededBytes,
+            hostCacheBytes: report.hostWeights.cacheBytes,
             hostHeldBytes: report.hostWeights.predictedBytes,
             hostAvailableBytes: report.hostWeights.freeBytes,
           }),
@@ -134,45 +155,54 @@ export class InstanceAdmissionService {
         return { problem: UNMEASURED_CARD_MESSAGE, capacity: report };
 
       case FitRefusal.TOO_LARGE:
-        return { problem: this.tooLargeMessage(report), capacity: report };
+        return { problem: this.withCardsOnlyReason(report, this.tooLargeMessage(report)), capacity: report };
 
       case FitRefusal.HOST_MEMORY:
         return { problem: this.hostMemoryMessage(report), capacity: report };
 
       case FitRefusal.CARD_TOO_SMALL:
-        return { problem: this.cardTooSmallMessage(report), capacity: report };
+        return { problem: this.withCardsOnlyReason(report, this.cardTooSmallMessage(report)), capacity: report };
 
       case FitRefusal.CARD_OUTGROWN:
-        return { problem: this.cardOutgrownMessage(report), capacity: report };
+        return { problem: this.withCardsOnlyReason(report, this.cardOutgrownMessage(report)), capacity: report };
     }
+  }
+
+  private withCardsOnlyReason(report: IFitReport, message: string): string {
+    return report.cardsOnlyReason === undefined ? message : `${report.cardsOnlyReason}. ${message}`;
   }
 
   private tooLargeMessage(report: IFitReport): string {
     if (report.launchMode !== LaunchMode.CPU_OFFLOAD) {
-      return `This deployment needs ${this.gib(report.expectedBytes)}, more than the pinned GPUs have free`;
+      return `Not enough GPU memory for ${this.gib(report.expectedBytes)}`;
     }
 
     const needed = report.expectedBytes + (report.hostWeights?.neededBytes ?? 0);
 
-    return `This deployment needs ${this.gib(needed)}, more than the pinned GPUs and system memory have free`;
+    return `Not enough VRAM and RAM for ${this.gib(needed)}`;
   }
 
   private cardTooSmallMessage(report: IFitReport): string {
     const card = report.cards.find(candidate => candidate.deviceKey === report.shortCard);
 
-    return `This deployment needs ${this.gib(card?.neededBytes ?? 0)} on ${report.shortCard}, more than it has free`;
+    return `Not enough memory on ${report.shortCard} for ${this.gib(card?.neededBytes ?? 0)}`;
   }
 
   private cardOutgrownMessage(report: IFitReport): string {
     const total = report.cards.find(candidate => candidate.deviceKey === report.shortCard)?.totalBytes ?? 0;
 
-    return `This deployment needs more than the ${this.gib(total)} ${report.shortCard} holds in all`;
+    return `GPU memory requirement exceeds ${report.shortCard} capacity (${this.gib(total)})`;
   }
 
   private hostMemoryMessage(report: IFitReport): string {
-    const needed = report.hostWeights?.neededBytes ?? 0;
+    const cacheBytes = report.hostWeights?.cacheBytes ?? 0;
+    const weightsBytes = (report.hostWeights?.neededBytes ?? 0) - cacheBytes;
+    const parts = [
+      ...(weightsBytes > 0 ? [`${this.gib(weightsBytes)} of model weights`] : []),
+      ...(cacheBytes > 0 ? [`up to ${this.gib(cacheBytes)} of prompt cache`] : []),
+    ];
 
-    return `This deployment keeps ${this.gib(needed)} of weights in system memory, more than the node has free`;
+    return `Not enough RAM for ${parts.join(' and ')}`;
   }
 
   private unknownUsageMessage(missing: IMissingEstimateInput[]): string {
@@ -180,7 +210,7 @@ export class InstanceAdmissionService {
 
     return missing.some(input => input.source === EstimateInputSource.DEVICE)
       ? named
-      : `${named}; ${DECLARE_VRAM_HINT}`;
+      : `${named}. ${DECLARE_VRAM_HINT}`;
   }
 
   private missingInputName(input: IMissingEstimateInput): string {
@@ -192,7 +222,7 @@ export class InstanceAdmissionService {
         return `\`${input.field}\``;
 
       case EstimateInputSource.DEVICE:
-        return `the total memory of GPU ${input.field}, which it has not reported`;
+        return `total memory for ${input.field} (not reported)`;
     }
   }
 

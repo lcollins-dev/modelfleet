@@ -36,9 +36,12 @@ export interface ICardFigures {
 }
 
 export interface IHostFigures {
+  /** Includes `cacheBytes`. */
   neededBytes: number;
 
-  /** What loading instances hold, which `freeBytes` already leaves out. */
+  cacheBytes: number;
+
+  /** What loading instances hold beyond the pages they have mapped, which `freeBytes` already leaves out. */
   predictedBytes: number;
 
   freeBytes: number;
@@ -66,6 +69,8 @@ export interface IFitReport {
   shortCard: string | null;
 
   refusal: FitRefusal | null;
+
+  cardsOnlyReason?: string;
 }
 
 /**
@@ -77,8 +82,11 @@ const READINGS_TO_MEASURE = 2;
 export interface IAdmittedUsage {
   expectedBytes: number;
   hostBytes: number;
+  hostCacheBytes: number;
 
   cardShares: number[] | null;
+
+  cardsOnlyReason?: string;
 }
 
 interface IAdmissionInputs {
@@ -91,6 +99,8 @@ interface ILedgerEntry {
   deploymentId: number;
   predictions: Map<string, number>;
   totalBytes: Map<string, number | null>;
+
+  /** Weights alone, since the prompt cache is never held for a load or handed back on release. */
   hostBytes: number;
 
   /** Null until the node reports the instance past starting. */
@@ -135,6 +145,24 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
     const inputs = await this.readInputs(nodeId);
 
     return this.fit(nodeId, pins, usage, inputs);
+  }
+
+  /** An instance frees only what the node's latest reading attributes to it, so nothing where nothing is attributed. */
+  async checkReleasing(
+    nodeId: number,
+    pins: IInstancePins,
+    usage: IAdmittedUsage,
+    releasing: readonly string[]
+  ): Promise<IFitReport> {
+    const inputs = await this.readInputs(nodeId);
+
+    return this.fit(nodeId, pins, usage, inputs, new Set(releasing));
+  }
+
+  attributedBytes(nodeId: number, instanceKey: string): number {
+    const devices = this.telemetryService.getTelemetry(nodeId)?.devices ?? [];
+
+    return devices.reduce((total, device) => total + this.attributedTo(instanceKey, device), 0);
   }
 
   headroomFor(nodeId: number): number {
@@ -245,8 +273,14 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
    * Reads only what is held in memory, so nothing can change between this and a reservation made on it. Where the
    * instance may offload, its host weights come out of the pool's system memory, so it is counted once.
    */
-  private fit(nodeId: number, pins: IInstancePins, usage: IAdmittedUsage, inputs: IAdmissionInputs): IFitReport {
-    const launchMode = launchModeOf(pins);
+  private fit(
+    nodeId: number,
+    pins: IInstancePins,
+    usage: IAdmittedUsage,
+    inputs: IAdmissionInputs,
+    releasing: ReadonlySet<string> = new Set()
+  ): IFitReport {
+    const launchMode = this.admittedLaunchMode(pins, usage);
     const telemetry = this.telemetryService.getTelemetry(nodeId);
 
     const report: IFitReport = {
@@ -258,6 +292,7 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
       hostWeights: null,
       shortCard: null,
       refusal: null,
+      cardsOnlyReason: usage.cardsOnlyReason,
     };
 
     if (launchMode === LaunchMode.CPU_ONLY) {
@@ -269,10 +304,15 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
     }
 
     const offloads = launchMode === LaunchMode.CPU_OFFLOAD;
-    const hostPredictedBytes = this.predictedOnHost(nodeId);
-    const hostFreeBytes = Math.max(telemetry.host.memoryFreeBytes - hostPredictedBytes, 0);
+    const held = new Map(
+      (telemetry.host.instanceMemory ?? []).map(reading => [reading.instanceKey, reading.heldBytes])
+    );
+    const hostPredictedBytes = this.predictedOnHost(nodeId, held, releasing);
+    const hostFreeBytes =
+      Math.max(telemetry.host.memoryFreeBytes - this.heldOnHost(held, releasing) - hostPredictedBytes, 0) +
+      this.releasedOnHost(nodeId, held, releasing);
 
-    report.cards = pins.gpus.map(deviceKey => this.figuresFor(nodeId, deviceKey, telemetry, inputs));
+    report.cards = pins.gpus.map(deviceKey => this.figuresFor(nodeId, deviceKey, telemetry, inputs, releasing));
     report.hostFreeBytes = offloads ? hostFreeBytes : null;
 
     const outgrown = offloads ? null : this.outgrownCard(report.cards, usage);
@@ -287,9 +327,12 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
       return { ...report, refusal: FitRefusal.UNMEASURED_CARD };
     }
 
-    if (usage.hostBytes > 0) {
+    const hostNeededBytes = usage.hostBytes + usage.hostCacheBytes;
+
+    if (hostNeededBytes > 0) {
       report.hostWeights = {
-        neededBytes: usage.hostBytes,
+        neededBytes: hostNeededBytes,
+        cacheBytes: usage.hostCacheBytes,
         predictedBytes: hostPredictedBytes,
         freeBytes: hostFreeBytes,
       };
@@ -297,7 +340,7 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
 
     report.availableBytes = available + (report.hostFreeBytes ?? 0);
 
-    if (usage.expectedBytes + (offloads ? usage.hostBytes : 0) > report.availableBytes) {
+    if (usage.expectedBytes + (offloads ? hostNeededBytes : 0) > report.availableBytes) {
       return { ...report, refusal: FitRefusal.TOO_LARGE };
     }
 
@@ -311,7 +354,15 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
       return { ...report, shortCard: shortCard.deviceKey, refusal: FitRefusal.CARD_TOO_SMALL };
     }
 
-    return usage.hostBytes <= hostFreeBytes ? report : { ...report, refusal: FitRefusal.HOST_MEMORY };
+    return hostNeededBytes <= hostFreeBytes ? report : { ...report, refusal: FitRefusal.HOST_MEMORY };
+  }
+
+  private admittedLaunchMode(pins: IInstancePins, usage: IAdmittedUsage): LaunchMode {
+    const launchMode = launchModeOf(pins);
+
+    return launchMode === LaunchMode.CPU_OFFLOAD && usage.cardsOnlyReason !== undefined
+      ? LaunchMode.GPU_ONLY
+      : launchMode;
   }
 
   private placeOnCards(report: IFitReport, usage: IAdmittedUsage): void {
@@ -350,11 +401,14 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
     nodeId: number,
     deviceKey: string,
     telemetry: INodeTelemetry,
-    inputs: IAdmissionInputs
+    inputs: IAdmissionInputs,
+    releasing: ReadonlySet<string>
   ): ICardFigures {
     const totalBytes = inputs.totalBytes.get(deviceKey) ?? null;
-    const usedBytes = telemetry.devices.find(device => device.deviceKey === deviceKey)?.memoryUsedBytes ?? null;
-    const predictedBytes = this.predictedOn(nodeId, deviceKey);
+    const device = telemetry.devices.find(candidate => candidate.deviceKey === deviceKey);
+    const usedBytes = device?.memoryUsedBytes ?? null;
+    const predictedBytes = this.predictedOn(nodeId, deviceKey, releasing);
+    const releasedBytes = Math.min(this.releasedOn(device, releasing), usedBytes ?? 0);
 
     return {
       deviceKey,
@@ -362,7 +416,8 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
       usedBytes,
       predictedBytes,
       headroomBytes: inputs.headroomBytes,
-      freeBytes: totalBytes === null || usedBytes === null ? null : totalBytes - usedBytes - predictedBytes,
+      freeBytes:
+        totalBytes === null || usedBytes === null ? null : totalBytes - usedBytes - predictedBytes + releasedBytes,
       neededBytes: null,
     };
   }
@@ -446,21 +501,77 @@ export class VramLedgerService implements OnModuleInit, OnModuleDestroy {
     return Math.min(this.telemetryService.heldBy(device, instanceKey) ?? 0, device.memoryUsedBytes);
   }
 
-  /** Held whole until measured, since no reading attributes system memory to an instance. */
-  private predictedOnHost(nodeId: number): number {
+  /** The kernel's free figure counts these mapped pages as free. */
+  private heldOnHost(held: ReadonlyMap<string, number | null>, releasing: ReadonlySet<string>): number {
+    let total = 0;
+
+    for (const [instanceKey, heldBytes] of held) {
+      if (!releasing.has(instanceKey)) {
+        total += heldBytes ?? 0;
+      }
+    }
+
+    return total;
+  }
+
+  /** A loading instance's own held pages are subtracted already, so only what its weights exceed them by counts. */
+  private predictedOnHost(
+    nodeId: number,
+    held: ReadonlyMap<string, number | null>,
+    releasing: ReadonlySet<string>
+  ): number {
     let predicted = 0;
 
-    for (const entry of this.entries.values()) {
-      if (entry.nodeId === nodeId && !this.isMeasured(entry)) {
-        predicted += entry.hostBytes;
+    for (const [instanceKey, entry] of this.entries) {
+      if (entry.nodeId === nodeId && !this.isMeasured(entry) && !releasing.has(instanceKey)) {
+        predicted += this.hostBytesBeyondHeld(instanceKey, entry, held);
       }
     }
 
     return predicted;
   }
 
-  private predictedOn(nodeId: number, deviceKey: string): number {
-    return this.predictionsOn(nodeId, deviceKey).reduce((sum, prediction) => sum + prediction.bytes, 0);
+  /** Stopping a measured instance returns its anonymous host weights. Its mapped pages already read as free. */
+  private releasedOnHost(
+    nodeId: number,
+    held: ReadonlyMap<string, number | null>,
+    releasing: ReadonlySet<string>
+  ): number {
+    let released = 0;
+
+    for (const instanceKey of releasing) {
+      const entry = this.entries.get(instanceKey);
+
+      if (entry !== undefined && entry.nodeId === nodeId && this.isMeasured(entry)) {
+        released += this.hostBytesBeyondHeld(instanceKey, entry, held);
+      }
+    }
+
+    return released;
+  }
+
+  private hostBytesBeyondHeld(
+    instanceKey: string,
+    entry: ILedgerEntry,
+    held: ReadonlyMap<string, number | null>
+  ): number {
+    return Math.max(entry.hostBytes - (held.get(instanceKey) ?? 0), 0);
+  }
+
+  private predictedOn(nodeId: number, deviceKey: string, releasing: ReadonlySet<string>): number {
+    return this.predictionsOn(nodeId, deviceKey)
+      .filter(prediction => !releasing.has(prediction.instanceKey))
+      .reduce((sum, prediction) => sum + prediction.bytes, 0);
+  }
+
+  private releasedOn(device: GpuDeviceMetrics | undefined, releasing: ReadonlySet<string>): number {
+    let released = 0;
+
+    for (const instanceKey of releasing) {
+      released += this.attributedTo(instanceKey, device);
+    }
+
+    return released;
   }
 
   private availableOf(cards: ICardFigures[]): number | null {

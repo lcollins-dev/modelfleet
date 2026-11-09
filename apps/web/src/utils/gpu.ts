@@ -1,4 +1,5 @@
 import {
+  NodeHostTelemetryDto,
   GpuProcessAttribution,
   GpuTelemetryDto,
   GpuProcessDto,
@@ -110,6 +111,26 @@ export const vramUsage = (devices: GpuTelemetryDto[]): IVramUsage => {
   }
 
   return { usedBytes, totalBytes, freeBytes: Math.max(0, totalBytes - usedBytes) };
+};
+
+export interface IRamUsage {
+  usedBytes: number;
+  totalBytes: number;
+  freeBytes: number;
+  freeUnknown: boolean;
+}
+
+export const ramUsage = (hosts: (NodeHostTelemetryDto | null)[]): IRamUsage => {
+  const counted = hosts.filter(host => host !== null && host.memoryTotalBytes > 0);
+  const totalBytes = counted.reduce((sum, host) => sum + (host?.memoryTotalBytes ?? 0), 0);
+  const freeBytes = counted.reduce((sum, host) => sum + (host?.memoryAvailableBytes ?? 0), 0);
+
+  return {
+    usedBytes: totalBytes - freeBytes,
+    totalBytes,
+    freeBytes,
+    freeUnknown: counted.some(host => host?.heldByModelsUnknown === true),
+  };
 };
 
 /** `nowMs` is on the server's clock, which `receivedAt` is read on. Null where nothing has been received. */
@@ -248,37 +269,74 @@ export const pooledCapacity = (devices: GpuTelemetryDto[], headroomBytes: number
   };
 };
 
-const bytesOrDash = (bytes: number | null): string => (bytes === null ? '-' : formatBytes(bytes));
+export interface IMemoryFigures {
+  vramUsedBytes: number;
+  vramFreeBytes: number | null;
+  ramUsedBytes: number;
+  ramFreeBytes: number | null;
+}
 
-/** Where the placement offloads, the pool holds the host weights too. */
-export const pooledNeedBytes = (capacity: PlacementCapacityDto): number =>
-  capacity.expectedBytes + (capacity.hostFreeBytes === null ? 0 : (capacity.hostWeights?.neededBytes ?? 0));
+/**
+ * An offloading placement pools free system memory into `availableBytes`, so it comes back out of VRAM here, and
+ * what the GPUs cannot hold counts as spilled into RAM.
+ */
+export const capacityFigures = (capacity: PlacementCapacityDto): IMemoryFigures => {
+  const hostBytes = capacity.hostWeights?.neededBytes ?? 0;
+  const ramFreeBytes = capacity.hostWeights?.freeBytes ?? capacity.hostFreeBytes;
 
-export const hostShortBytes = (capacity: PlacementCapacityDto): number =>
-  capacity.hostWeights === null ? 0 : Math.max(capacity.hostWeights.neededBytes - capacity.hostWeights.freeBytes, 0);
-
-export const describeCapacityNeed = (capacity: PlacementCapacityDto): string => {
-  const needed = pooledNeedBytes(capacity);
-
-  const pool =
-    capacity.hostFreeBytes === null || capacity.availableBytes === null
-      ? ''
-      : `, including ${formatBytes(capacity.hostFreeBytes)} of system memory`;
-
-  const lines = [`Needs ${formatBytes(needed)}`, `Free after headroom: ${bytesOrDash(capacity.availableBytes)}${pool}`];
-
-  if (capacity.hostWeights !== null) {
-    lines.push(
-      `Weights kept in system memory: ${formatBytes(capacity.hostWeights.neededBytes)}, ` +
-        `with ${formatBytes(capacity.hostWeights.freeBytes)} free`
-    );
+  if (capacity.hostFreeBytes === null) {
+    return {
+      vramUsedBytes: capacity.expectedBytes,
+      vramFreeBytes: capacity.availableBytes,
+      ramUsedBytes: hostBytes,
+      ramFreeBytes,
+    };
   }
 
-  if (capacity.availableBytes !== null && capacity.availableBytes < needed) {
-    lines.push(`Short by ${formatBytes(needed - capacity.availableBytes)}`);
-  } else if (hostShortBytes(capacity) > 0) {
-    lines.push(`Short by ${formatBytes(hostShortBytes(capacity))} of system memory`);
+  const gpuFreeBytes = capacity.availableBytes === null ? null : capacity.availableBytes - capacity.hostFreeBytes;
+  const spillBytes = gpuFreeBytes === null ? 0 : Math.max(capacity.expectedBytes - gpuFreeBytes, 0);
+
+  return {
+    vramUsedBytes: capacity.expectedBytes - spillBytes,
+    vramFreeBytes: gpuFreeBytes,
+    ramUsedBytes: hostBytes + spillBytes,
+    ramFreeBytes,
+  };
+};
+
+/** Writes a unit both figures share once: `89 / 92 GiB`. */
+const formatUsedOfFree = (usedBytes: number, freeBytes: number | null): string => {
+  const used = formatBytes(usedBytes);
+
+  if (freeBytes === null) {
+    return `${used} / -`;
   }
 
-  return lines.join('. ');
+  const free = formatBytes(freeBytes);
+  const unit = used.slice(used.indexOf(' '));
+
+  return free.endsWith(unit) ? `${used.slice(0, -unit.length)} / ${free}` : `${used} / ${free}`;
+};
+
+export interface IMemoryCell {
+  text: string;
+  short: boolean;
+}
+
+export const UNKNOWN_MEMORY: IMemoryCell = { text: '-', short: false };
+
+const memoryCell = (usedBytes: number, freeBytes: number | null): IMemoryCell => ({
+  text: freeBytes === null ? formatUsedOfFree(usedBytes, null) : `${formatUsedOfFree(usedBytes, freeBytes)} free`,
+  short: freeBytes !== null && usedBytes > freeBytes,
+});
+
+export const memoryCells = (figures: IMemoryFigures): { vram: IMemoryCell; ram: IMemoryCell } => ({
+  vram: memoryCell(figures.vramUsedBytes, figures.vramFreeBytes),
+  ram: figures.ramUsedBytes > 0 ? memoryCell(figures.ramUsedBytes, figures.ramFreeBytes) : UNKNOWN_MEMORY,
+});
+
+export const describeMemory = (figures: IMemoryFigures): string[] => {
+  const { vram, ram } = memoryCells(figures);
+
+  return ram === UNKNOWN_MEMORY ? [`VRAM ${vram.text}`] : [`VRAM ${vram.text}`, `RAM ${ram.text}`];
 };

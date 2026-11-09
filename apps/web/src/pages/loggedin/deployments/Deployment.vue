@@ -1,6 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading v-if="deployment" back-to="/deployments" back-label="Deployments">
+    <ui-page-heading v-if="deployment">
       <template #title>
         <span class="break-all font-mono">{{ deployment.name }}</span>
       </template>
@@ -9,14 +9,7 @@
         <ui-link :to="`/models/${deployment.modelId}`" data-testid="deployment-model-link">
           {{ deployment.modelName }}
         </ui-link>
-        on {{ deployment.backend }} ·
-        <template v-if="deployment.presetId !== null">
-          preset
-          <ui-link :to="`/presets/${deployment.presetId}`" data-testid="deployment-preset-link">
-            {{ deployment.presetName }}
-          </ui-link>
-        </template>
-        <template v-else>its own settings</template>
+        on {{ deployment.backend }}
       </template>
 
       <div class="flex flex-wrap items-center gap-2">
@@ -31,7 +24,7 @@
       </div>
     </ui-page-heading>
 
-    <ui-back-link v-else to="/deployments" label="Deployments" />
+    <ui-back-link v-else />
 
     <div v-if="loadingDeployment && !deployment" class="flex justify-center py-8">
       <ui-spinner />
@@ -64,7 +57,11 @@
         </template>
       </ui-notice>
 
-      <ui-notice v-if="placement?.problem" type="warning" title="This deployment cannot be started">
+      <ui-notice v-if="makingRoom" type="info" title="Making room for this deployment" data-testid="making-room">
+        Idle instances are being stopped. It starts once their memory is reported free.
+      </ui-notice>
+
+      <ui-notice v-else-if="placement?.problem" type="warning" title="This deployment cannot be started">
         {{ placement.problem }}.
       </ui-notice>
 
@@ -76,11 +73,12 @@
         <mf-kpi-tile label="In flight" :icon="IconHourglassTop" v-bind="inFlightKpi" />
       </div>
 
-      <ui-card title="Instances" flush data-testid="instances-card">
-        <template #subtitle>
-          <span data-testid="residency">{{ residencyLine }}</span>
-        </template>
-
+      <ui-card
+        title="Instances"
+        subtitle="Instances of this deployment and their current status."
+        flush
+        data-testid="instances-card"
+      >
         <template #header-extra>
           <div class="flex shrink-0 gap-2">
             <ui-button v-if="running" type="danger-outline" :loading="stopping" @click="confirmStop">
@@ -95,7 +93,7 @@
               type="primary"
               :loading="starting"
               :disabled="!startable"
-              @click="doStart"
+              @click="requestStart"
             >
               <template #icon>
                 <icon-play-arrow class="size-4" />
@@ -115,9 +113,13 @@
             </ui-code>
 
             <template #action>
-              <ui-button type="danger" :loading="starting" @click="doStart">Start Now</ui-button>
+              <ui-button type="danger" :loading="starting" @click="requestStart">Start Now</ui-button>
             </template>
           </ui-notice>
+        </div>
+
+        <div v-else-if="launchRetry" class="border-b border-divider px-6 py-4" data-testid="launch-retry">
+          <ui-notice type="warning">{{ launchRetry }}</ui-notice>
         </div>
 
         <mf-instance-table
@@ -135,13 +137,11 @@
         flush
         data-testid="placement-card"
       >
-        <ui-table :columns="PLACEMENT_COLUMNS" :min-width="860">
+        <ui-table :columns="PLACEMENT_COLUMNS" :min-width="680">
           <ui-table-head>
             <span>Node</span>
-            <span>Expected</span>
-            <span>Free</span>
-            <span>Kept off the GPUs</span>
-            <span>System memory</span>
+            <span>VRAM</span>
+            <span>RAM</span>
             <span>Status</span>
             <span></span>
           </ui-table-head>
@@ -158,40 +158,35 @@
               </ui-link>
             </div>
 
-            <div class="flex flex-wrap items-center gap-1.5">
-              <span class="font-mono text-xs" :class="row.expectedShort ? 'text-error' : 'text-highlight'">
-                {{ row.expected }}
-              </span>
+            <span
+              class="font-mono text-xs"
+              :class="row.vram.short ? 'text-error' : 'text-highlight'"
+              :title="row.vram.title ?? undefined"
+              data-testid="placement-vram"
+            >
+              {{ row.vram.text }}
+            </span>
 
-              <ui-tag v-if="row.source" :type="expectedUsageSourceTone(row.source)">
-                {{ formatExpectedUsageSource(row.source) }}
-              </ui-tag>
-            </div>
-
-            <span class="font-mono text-xs">{{ row.free }}</span>
-
-            <span class="font-mono text-xs">{{ row.offGpus }}</span>
-
-            <span class="font-mono text-xs" :class="{ 'text-error': row.systemMemoryShort }">
-              {{ row.systemMemory }}
+            <span
+              class="font-mono text-xs"
+              :class="{ 'text-error': row.ram.short }"
+              :title="row.ram.title ?? undefined"
+              data-testid="placement-ram"
+            >
+              {{ row.ram.text }}
             </span>
 
             <div>
-              <ui-tag :type="placementFitTone(row.fit)">{{ formatPlacementFit(row.fit) }}</ui-tag>
+              <ui-tag :type="placementFitTone(row.fit)" :title="row.reason ?? undefined" data-testid="placement-status">
+                {{ formatPlacementFit(row.fit) }}
+              </ui-tag>
             </div>
 
-            <span v-if="row.reason === null"></span>
+            <span v-if="!row.expandable"></span>
 
-            <template v-if="row.reason !== null" #expand>
+            <template v-if="row.expandable" #expand>
               <div class="bg-inset" data-testid="placement-refusal">
-                <p class="px-6 py-3 text-xs text-highlight">{{ row.reason }}</p>
-
-                <ui-table
-                  v-if="row.cards.length > 0 || row.poolSystemMemory !== null"
-                  :columns="PLACEMENT_CARD_COLUMNS"
-                  :min-width="640"
-                  class="border-t border-divider"
-                >
+                <ui-table :columns="PLACEMENT_CARD_COLUMNS" :min-width="640">
                   <ui-table-head>
                     <span>Card</span>
                     <span>Total</span>
@@ -201,10 +196,23 @@
                     <span>Free</span>
                   </ui-table-head>
 
-                  <ui-table-row v-for="card of row.cards" :key="card.deviceKey" data-testid="placement-card-row">
+                  <ui-table-row
+                    v-for="card of row.cards"
+                    :key="card.deviceKey"
+                    :class="{ 'text-error': card.short }"
+                    data-testid="placement-card-row"
+                  >
                     <div class="min-w-0">
-                      <div class="truncate font-mono text-xs text-header">{{ card.deviceKey }}</div>
-                      <div v-if="card.name" class="mt-0.5 truncate text-xs text-muted">{{ card.name }}</div>
+                      <div class="truncate font-mono text-xs" :class="card.short ? 'text-error' : 'text-header'">
+                        {{ card.deviceKey }}
+                      </div>
+                      <div
+                        v-if="card.name"
+                        class="mt-0.5 truncate text-xs"
+                        :class="card.short ? 'text-error' : 'text-muted'"
+                      >
+                        {{ card.name }}
+                      </div>
                     </div>
 
                     <span class="font-mono text-xs">{{ card.total }}</span>
@@ -218,8 +226,8 @@
                     <span class="font-mono text-xs">{{ card.free }}</span>
                   </ui-table-row>
 
-                  <ui-table-row v-if="row.poolSystemMemory !== null" data-testid="placement-card-row">
-                    <span class="truncate text-xs text-header">System memory</span>
+                  <ui-table-row v-if="row.poolRam !== null" data-testid="placement-card-row">
+                    <span class="truncate text-xs text-header">RAM</span>
 
                     <span class="font-mono text-xs">-</span>
 
@@ -229,7 +237,7 @@
 
                     <span class="font-mono text-xs">-</span>
 
-                    <span class="font-mono text-xs">{{ row.poolSystemMemory }}</span>
+                    <span class="font-mono text-xs">{{ row.poolRam }}</span>
                   </ui-table-row>
                 </ui-table>
               </div>
@@ -238,16 +246,20 @@
         </ui-table>
       </ui-card>
 
-      <ui-card v-if="configuration" title="Settings in use" :subtitle="settingsSubtitle" flush>
+      <ui-card v-if="configuration" title="Settings in use" subtitle="The values this deployment runs with." flush>
+        <template v-if="deployment.presetId !== null" #header-extra>
+          <div class="shrink-0 text-sm text-muted">
+            Preset:
+            <ui-link :to="`/presets/${deployment.presetId}`" data-testid="deployment-preset-link">
+              {{ deployment.presetName }}
+            </ui-link>
+          </div>
+        </template>
+
         <mf-effective-configuration :configuration="configuration" :placement-nodes="placement?.nodes ?? []" />
       </ui-card>
 
-      <ui-card
-        title="Event log"
-        subtitle="Events for this deployment, newest first."
-        flush
-        data-testid="event-log-card"
-      >
+      <ui-card title="Event log" subtitle="Events for this deployment." flush data-testid="event-log-card">
         <mf-event-table
           :events="history"
           :columns="HISTORY_COLUMNS"
@@ -291,7 +303,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watchEffect } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import IconEdit from '~icons/material-symbols/edit-outline-rounded';
 import IconHourglassTop from '~icons/material-symbols/hourglass-top-outline-rounded';
 import IconPlayArrow from '~icons/material-symbols/play-arrow-outline-rounded';
@@ -317,17 +329,15 @@ import { DialogType } from '@/types/dialog';
 import { Notification, NotificationType } from '@/types/notification';
 
 import {
-  describeResidency,
-  expectedUsageSourceTone,
+  describeLaunchFailures,
   formatActivationPolicy,
-  formatExpectedUsageSource,
   formatPlacementFit,
   placementFitTone,
   placementRows,
 } from '@/utils/deployment';
 import { formatDuration, formatRelativeDate } from '@/utils/format/date';
 import { formatCount } from '@/utils/format/number';
-import { describeCapacityNeed } from '@/utils/gpu';
+import { capacityFigures, describeMemory } from '@/utils/gpu';
 import { countInstanceStates, formatInstanceState, instanceStateTone } from '@/utils/instance';
 
 import { useLogService } from '@/services/LogService';
@@ -369,6 +379,8 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
 
 interface IKpiFigures {
@@ -380,7 +392,7 @@ interface IKpiFigures {
 
 const HISTORY_COLUMNS: EventTableColumn[] = ['when', 'event', 'summary', 'actor'];
 
-const PLACEMENT_COLUMNS = 'minmax(0, 1fr) 9rem 6rem 9.5rem 9rem 7.5rem 1rem';
+const PLACEMENT_COLUMNS = 'minmax(0, 1fr) 11rem 11rem 9.5rem 1rem';
 
 const PLACEMENT_CARD_COLUMNS = 'minmax(0, 1fr) repeat(5, 6rem)';
 
@@ -397,7 +409,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/deployments/Deployment');
 
 const route = useRoute();
-const router = useRouter();
+const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
 
 const notificationStore = useNotificationStore();
@@ -410,6 +422,9 @@ const deploymentId = computed(() =>
 );
 
 const deployment = ref<DeploymentDto | null>(null);
+
+usePage({ title: () => deployment.value?.name ?? '', back: '/deployments' });
+
 const configuration = ref<DeploymentConfigurationDto | null>(null);
 const instances = ref<ListInstanceDto[]>([]);
 const placement = ref<InstancePlacementDto | null>(null);
@@ -428,7 +443,11 @@ const eventSubscription = shallowRef<ISseSubscription | null>(null);
 
 const running = computed(() => instances.value.length > 0);
 
-const placementTable = computed(() => placementRows(placement.value?.nodes ?? []));
+const makingRoomNodeIds = computed(() => residency.value?.makingRoomNodeIds ?? []);
+
+const makingRoom = computed(() => makingRoomNodeIds.value.length > 0);
+
+const placementTable = computed(() => placementRows(placement.value?.nodes ?? [], makingRoomNodeIds.value));
 
 // The notice carries its own start, since `startable` counts a failed instance as its node's share.
 const givenUp = computed(() => residency.value?.givenUp === true);
@@ -440,17 +459,7 @@ const startable = computed(
     (placement.value?.nodes ?? []).some(node => node.problem === null && node.running < node.replicas)
 );
 
-const residencyLine = computed(() =>
-  residency.value === null
-    ? 'The containers running this deployment.'
-    : describeResidency(residency.value, running.value)
-);
-
-const settingsSubtitle = computed(() =>
-  deployment.value?.presetName
-    ? `Values from ${deployment.value.presetName}, plus this deployment's overrides.`
-    : 'Values set on this deployment.'
-);
+const launchRetry = computed(() => (residency.value === null ? null : describeLaunchFailures(residency.value)));
 
 const expectedInstances = computed(() =>
   (placement.value?.nodes ?? []).reduce((total, node) => total + node.replicas, 0)
@@ -535,22 +544,46 @@ const onInstances = (response: DeploymentInstancesResponseDto) => {
   residency.value = response.residency;
 };
 
-const doStart = () => {
-  if (deploymentId.value === null) {
+const evictions = computed(() =>
+  makingRoom.value ? [] : (placement.value?.nodes.flatMap(node => node.evictions) ?? [])
+);
+
+const evictedDeploymentNames = computed(() =>
+  [...new Set(evictions.value.map(eviction => eviction.deploymentName))].join(', ')
+);
+
+const requestStart = () => {
+  if (evictions.value.length === 0) {
+    void doStart(false);
+
     return;
   }
 
-  starting.value = true;
-  instanceAdminService
-    .startDeployment(deploymentId.value)
-    .then(started => {
-      if (started.started > 0 && started.refused.length === 0) {
-        notificationStore.addToast('Deployment started', `Started ${formatCount(started.started, 'instance')}.`);
-      } else {
-        const tone = started.started > 0 ? NotificationType.SUCCESS : NotificationType.WARNING;
+  void dialogStore.confirm({
+    type: DialogType.WARNING,
+    title: 'Evict Instances',
+    message:
+      'There is not enough room to run this instance without performing evictions. ' +
+      `The following instances will be evicted: ${evictedDeploymentNames.value}`,
+    confirmLabel: 'Evict and Start',
+    action: () => doStart(true),
+  });
+};
 
-        notificationStore.addNotification(new Notification(startedMessage(started), tone));
-      }
+const doStart = (confirmEviction: boolean): Promise<void> => {
+  if (deploymentId.value === null) {
+    return Promise.resolve();
+  }
+
+  starting.value = true;
+
+  return (
+    confirmEviction
+      ? instanceAdminService.startDeployment(deploymentId.value, null, true)
+      : instanceAdminService.startDeployment(deploymentId.value)
+  )
+    .then(started => {
+      announceStart(started);
 
       doGetInstances();
     })
@@ -562,9 +595,35 @@ const doStart = () => {
     });
 };
 
+const announceStart = (started: StartInstanceResponseDto) => {
+  if (started.evicting.length > 0) {
+    notificationStore.addToast(
+      'Making room',
+      `Evicting ${formatCount(started.evicting.length, 'instance')}. The deployment starts once their memory is free.`
+    );
+  }
+
+  if (started.refused.length > 0) {
+    const tone = started.started > 0 ? NotificationType.SUCCESS : NotificationType.WARNING;
+
+    notificationStore.addNotification(new Notification(startedMessage(started), tone));
+  } else if (started.started > 0) {
+    notificationStore.addToast('Deployment started', `Started ${formatCount(started.started, 'instance')}.`);
+  } else if (started.evicting.length === 0) {
+    notificationStore.addToast(
+      'Nothing to start',
+      'Every node already holds its instances or is waiting for memory to free.'
+    );
+  }
+};
+
 const startedMessage = (started: StartInstanceResponseDto): string => {
   const refusedNodes = started.refused
-    .map(node => (node.capacity === null ? node.nodeName : `${node.nodeName} (${describeCapacityNeed(node.capacity)})`))
+    .map(node =>
+      node.capacity === null
+        ? node.nodeName
+        : `${node.nodeName} (${describeMemory(capacityFigures(node.capacity)).join(', ')})`
+    )
     .join(', ');
 
   if (started.started === 0) {
@@ -653,12 +712,6 @@ const onLiveEvent = (event: EventDto) => {
 const onReconnect = () => {
   doGetDeployment();
   refreshHistory();
-};
-
-const viewDeploymentList = () => {
-  router.push('/deployments').catch((error: unknown) => {
-    logger.error({ error }, 'viewDeploymentList(): Failed to navigate to deployment list');
-  });
 };
 
 const doGetDeployment = () => {
@@ -786,7 +839,7 @@ const doDeleteDeployment = (target: DeploymentDto): Promise<void> => {
     .then(() => {
       notificationStore.addToast('Deployment deleted', `${target.name} no longer takes requests.`);
 
-      viewDeploymentList();
+      goBack({ replace: true });
     })
     .finally(() => {
       deleting.value = false;

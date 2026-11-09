@@ -1,8 +1,8 @@
 import { Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { GpuVendor, InstanceState, ProcessAttribution, TelemetryState } from '@libs/agent-protocol';
-import { GIB, IInstancePins } from '@libs/backends';
+import { GpuVendor, InstanceMemory, InstanceState, ProcessAttribution, TelemetryState } from '@libs/agent-protocol';
+import { GIB, IInstancePins, LaunchMode } from '@libs/backends';
 
 import { Gpu } from '@/core/gpu/entities/gpu.entity';
 
@@ -79,7 +79,7 @@ describe('VramLedgerService', () => {
       lastReportedDate: new Date(),
     });
 
-  const report = (cards: ICardReading[], hostFreeBytes = 0): void => {
+  const report = (cards: ICardReading[], hostFreeBytes = 0, instanceMemory?: InstanceMemory[]): void => {
     telemetryService.recordTelemetry(TEST_NODE_ID, {
       capturedAt: new Date().toISOString(),
       telemetryState: TelemetryState.OK,
@@ -106,14 +106,21 @@ describe('VramLedgerService', () => {
         loadAverage1m: null,
         memoryTotalBytes: 64 * GIB,
         memoryFreeBytes: hostFreeBytes,
+        instanceMemory,
       },
       errors: [],
     });
   };
 
-  const usage = (expectedBytes: number, hostBytes: number, cardShares: number[] | null = null): IAdmittedUsage => ({
+  const usage = (
+    expectedBytes: number,
+    hostBytes: number,
+    cardShares: number[] | null = null,
+    hostCacheBytes = 0
+  ): IAdmittedUsage => ({
     expectedBytes,
     hostBytes,
+    hostCacheBytes,
     cardShares,
   });
 
@@ -374,6 +381,120 @@ describe('VramLedgerService', () => {
       expect(fit).toMatchObject({ refusal: null, hostWeights: { predictedBytes: 0, freeBytes: 6 * GIB } });
     });
 
+    describe('what running instances hold through mapped files', () => {
+      const CARDS = [
+        { deviceKey: CARD_A, usedBytes: 0 },
+        { deviceKey: CARD_B, usedBytes: 0 },
+      ];
+      const SECOND: IInstancePins = { cpu: true, gpus: [CARD_B] };
+
+      const readReady = (hostFreeBytes: number, instanceMemory: InstanceMemory[]): void => {
+        for (const state of [InstanceState.READY, InstanceState.READY]) {
+          observe([{ instanceKey: KEY_1, instanceState: state }]);
+          report(CARDS, hostFreeBytes, instanceMemory);
+        }
+      };
+
+      it('refuses a second CPU-offload deployment once the first has filled the page cache', async () => {
+        report(CARDS, 60 * GIB);
+        await ledger.admit(
+          KEY_1,
+          TEST_DEPLOYMENT_ID,
+          TEST_NODE_ID,
+          { cpu: true, gpus: [CARD_A] },
+          usage(GIB, 55 * GIB)
+        );
+
+        readReady(60 * GIB, [{ instanceKey: KEY_1, heldBytes: 55 * GIB }]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, 20 * GIB));
+
+        expect(fit).toMatchObject({
+          refusal: FitRefusal.HOST_MEMORY,
+          hostFreeBytes: 5 * GIB,
+          hostWeights: { neededBytes: 20 * GIB, predictedBytes: 0, freeBytes: 5 * GIB },
+        });
+      });
+
+      it('takes only file-backed pages off the free figure, since anonymous memory is already out of it', async () => {
+        report(CARDS, 60 * GIB, [{ instanceKey: KEY_2, heldBytes: 2 * GIB, residentBytes: 50 * GIB }]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, GIB));
+
+        expect(fit.hostFreeBytes).toBe(58 * GIB);
+      });
+
+      it('takes what an instance holds off the free figure, whoever started it', async () => {
+        report(CARDS, 60 * GIB, [{ instanceKey: KEY_2, heldBytes: 20 * GIB }]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, 10 * GIB));
+
+        expect(fit.hostFreeBytes).toBe(40 * GIB);
+      });
+
+      it("counts a loading instance's pages once, holding only what its prediction exceeds them by", async () => {
+        report(CARDS, 60 * GIB);
+        await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, 30 * GIB));
+        report(CARDS, 60 * GIB, [{ instanceKey: KEY_1, heldBytes: 12 * GIB }]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, GIB));
+
+        expect(fit).toMatchObject({
+          hostFreeBytes: 30 * GIB,
+          hostWeights: { predictedBytes: 18 * GIB, freeBytes: 30 * GIB },
+        });
+      });
+
+      it('holds nothing beyond the pages of a load that has outrun its prediction', async () => {
+        report(CARDS, 60 * GIB);
+        await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, 10 * GIB));
+        report(CARDS, 60 * GIB, [{ instanceKey: KEY_1, heldBytes: 25 * GIB }]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, GIB));
+
+        expect(fit).toMatchObject({ hostFreeBytes: 35 * GIB, hostWeights: { predictedBytes: 0 } });
+      });
+
+      it('subtracts nothing for an instance whose memory is unknown', async () => {
+        report(CARDS, 60 * GIB, [
+          { instanceKey: KEY_1, heldBytes: null },
+          { instanceKey: KEY_2, heldBytes: 20 * GIB },
+        ]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, GIB));
+
+        expect(fit.hostFreeBytes).toBe(40 * GIB);
+      });
+
+      it('holds the whole prediction of a loading instance whose memory is unknown', async () => {
+        report(CARDS, 60 * GIB);
+        await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, 30 * GIB));
+        report(CARDS, 60 * GIB, [{ instanceKey: KEY_1, heldBytes: null }]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, GIB));
+
+        expect(fit).toMatchObject({ hostFreeBytes: 30 * GIB, hostWeights: { predictedBytes: 30 * GIB } });
+      });
+
+      it('reads no free memory, rather than a negative figure, where instances hold more than the kernel reports', async () => {
+        report(CARDS, 10 * GIB, [{ instanceKey: KEY_2, heldBytes: 20 * GIB }]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, GIB));
+
+        expect(fit).toMatchObject({ refusal: FitRefusal.HOST_MEMORY, hostFreeBytes: 0 });
+      });
+
+      it("hands back a victim's mapped pages without counting them twice", async () => {
+        report(CARDS, 60 * GIB);
+        await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, 55 * GIB));
+        readReady(60 * GIB, [{ instanceKey: KEY_1, heldBytes: 55 * GIB }]);
+
+        const fit = await ledger.checkReleasing(TEST_NODE_ID, SECOND, usage(GIB, 20 * GIB), [KEY_1]);
+
+        expect(fit).toMatchObject({ refusal: null, hostFreeBytes: 60 * GIB });
+      });
+    });
+
     it('holds no host weights for a start it refused', async () => {
       report([{ deviceKey: CARD_A, usedBytes: 0 }], 4 * GIB);
       await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, 10 * GIB));
@@ -541,6 +662,234 @@ describe('VramLedgerService', () => {
     const fit = await ledger.check(TEST_NODE_ID, ON_A, usage(GIB, 0));
 
     expect(fit.cards[0].predictedBytes).toBe(0);
+  });
+
+  describe('a check assuming instances released', () => {
+    const NEEDS_16 = usage(16 * GIB, 0);
+
+    it('fits once the victim is released, and acts on nothing', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 20 * GIB, processes: [{ instanceKey: KEY_1, usedBytes: 18 * GIB }] }]);
+
+      await expect(ledger.check(TEST_NODE_ID, ON_A, NEEDS_16)).resolves.toMatchObject({
+        refusal: FitRefusal.TOO_LARGE,
+      });
+
+      await expect(ledger.checkReleasing(TEST_NODE_ID, ON_A, NEEDS_16, [KEY_1])).resolves.toMatchObject({
+        refusal: null,
+      });
+
+      await expect(ledger.check(TEST_NODE_ID, ON_A, NEEDS_16)).resolves.toMatchObject({
+        refusal: FitRefusal.TOO_LARGE,
+      });
+    });
+
+    it('credits a victim with nothing attributed with nothing', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 20 * GIB, processes: [{ instanceKey: null, usedBytes: 18 * GIB }] }]);
+
+      await expect(ledger.checkReleasing(TEST_NODE_ID, ON_A, NEEDS_16, [KEY_1])).resolves.toMatchObject({
+        refusal: FitRefusal.TOO_LARGE,
+      });
+    });
+
+    it('sums what a victim is attributed across every card', () => {
+      report([
+        { deviceKey: CARD_A, usedBytes: 8 * GIB, processes: [{ instanceKey: KEY_1, usedBytes: 8 * GIB }] },
+        { deviceKey: CARD_B, usedBytes: 4 * GIB, processes: [{ instanceKey: KEY_1, usedBytes: 4 * GIB }] },
+      ]);
+
+      expect(ledger.attributedBytes(TEST_NODE_ID, KEY_1)).toBe(12 * GIB);
+      expect(ledger.attributedBytes(TEST_NODE_ID, KEY_2)).toBe(0);
+    });
+
+    it('frees what a measured victim holds in system memory for a host refusal', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], 2 * GIB);
+
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, GIB));
+
+      for (const state of [InstanceState.READY, InstanceState.READY]) {
+        observe([{ instanceKey: KEY_1, instanceState: state }]);
+        report([{ deviceKey: CARD_A, usedBytes: 0 }], 2 * GIB);
+      }
+
+      const needs = usage(GIB, 3 * GIB);
+
+      await expect(ledger.check(TEST_NODE_ID, ON_A, needs)).resolves.toMatchObject({
+        refusal: FitRefusal.HOST_MEMORY,
+      });
+      await expect(ledger.checkReleasing(TEST_NODE_ID, ON_A, needs, [KEY_1])).resolves.toMatchObject({ refusal: null });
+    });
+  });
+
+  describe('a launch without RAM offloading', () => {
+    const CPU_AND_BOTH: IInstancePins = { cpu: true, gpus: [CARD_A, CARD_B] };
+    const REASON = 'RAM offloading is disabled';
+
+    const cardsOnly = (expectedBytes: number, shares: number[], hostBytes = 0, hostCacheBytes = 0): IAdmittedUsage => ({
+      ...usage(expectedBytes, hostBytes, shares, hostCacheBytes),
+      cardsOnlyReason: REASON,
+    });
+
+    const readBoth = (hostFreeBytes: number): void =>
+      report(
+        [
+          { deviceKey: CARD_A, usedBytes: 0 },
+          { deviceKey: CARD_B, usedBytes: 0 },
+        ],
+        hostFreeBytes
+      );
+
+    it('excludes RAM from available capacity even with a CPU pin', async () => {
+      readBoth(500 * GIB);
+
+      const exact = await ledger.check(TEST_NODE_ID, CPU_AND_BOTH, cardsOnly(46 * GIB, [1, 1]));
+      const over = await ledger.check(TEST_NODE_ID, CPU_AND_BOTH, cardsOnly(46 * GIB + 2, [1, 1]));
+
+      expect(exact).toMatchObject({
+        refusal: null,
+        launchMode: LaunchMode.GPU_ONLY,
+        hostFreeBytes: null,
+        availableBytes: 46 * GIB,
+      });
+      expect(over).toMatchObject({ refusal: FitRefusal.TOO_LARGE, hostFreeBytes: null, cardsOnlyReason: REASON });
+    });
+
+    it('rejects a GPU with insufficient memory even when combined GPU memory is sufficient', async () => {
+      report(
+        [
+          { deviceKey: CARD_A, usedBytes: 20 * GIB },
+          { deviceKey: CARD_B, usedBytes: 0 },
+        ],
+        500 * GIB
+      );
+
+      const fit = await ledger.check(TEST_NODE_ID, CPU_AND_BOTH, cardsOnly(20 * GIB, [1, 1]));
+
+      expect(fit).toMatchObject({ refusal: FitRefusal.CARD_TOO_SMALL, shortCard: CARD_A });
+      expect(fit.availableBytes).toBe(26 * GIB);
+    });
+
+    it('rejects a share that exceeds total GPU memory', async () => {
+      readBoth(500 * GIB);
+
+      const fit = await ledger.check(TEST_NODE_ID, CPU_AND_BOTH, cardsOnly(30 * GIB, [9, 1]));
+
+      expect(fit).toMatchObject({ refusal: FitRefusal.CARD_OUTGROWN, shortCard: CARD_A });
+    });
+
+    it('checks RAM for host weights and prompt cache', async () => {
+      readBoth(8 * GIB);
+
+      const fit = await ledger.check(TEST_NODE_ID, CPU_AND_BOTH, cardsOnly(GIB, [1, 1], GIB, 8 * GIB));
+
+      expect(fit).toMatchObject({
+        refusal: FitRefusal.HOST_MEMORY,
+        hostFreeBytes: null,
+        hostWeights: { neededBytes: 9 * GIB, cacheBytes: 8 * GIB },
+      });
+    });
+
+    it('reserves each GPU share during startup', async () => {
+      readBoth(16 * GIB);
+
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, CPU_AND_BOTH, cardsOnly(12 * GIB, [3, 1]));
+
+      const fit = await ledger.check(TEST_NODE_ID, ON_BOTH, usage(GIB, 0));
+
+      expect(fit.cards.map(card => card.predictedBytes)).toEqual([9 * GIB, 3 * GIB]);
+    });
+
+    it('skips memory checks for CPU-only placements', async () => {
+      const fit = await ledger.check(TEST_NODE_ID, { cpu: true, gpus: [] }, cardsOnly(GIB, []));
+
+      expect(fit).toMatchObject({ launchMode: LaunchMode.CPU_ONLY, refusal: null });
+    });
+
+    it('includes RAM and skips per-GPU checks when offloading is allowed', async () => {
+      readBoth(16 * GIB);
+
+      const fit = await ledger.check(TEST_NODE_ID, CPU_AND_BOTH, usage(60 * GIB, 0, [1, 1]));
+
+      expect(fit).toMatchObject({ refusal: null, launchMode: LaunchMode.CPU_OFFLOAD, hostFreeBytes: 16 * GIB });
+    });
+  });
+
+  describe('the prompt cache', () => {
+    const OFFLOADED: IInstancePins = { cpu: true, gpus: [CARD_A] };
+    const CPU_ALONE: IInstancePins = { cpu: true, gpus: [] };
+    const CACHE = 8 * GIB;
+
+    const measure = (hostFreeBytes: number): void => {
+      for (const state of [InstanceState.READY, InstanceState.READY]) {
+        observe([{ instanceKey: KEY_1, instanceState: state }]);
+        report([{ deviceKey: CARD_A, usedBytes: 0 }], hostFreeBytes);
+      }
+    };
+
+    it('refuses a GPU-only launch for its cache alone, with room on the cards and no host weights', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], CACHE - 1);
+
+      const fit = await ledger.check(TEST_NODE_ID, ON_A, usage(GIB, 0, null, CACHE));
+
+      expect(fit).toMatchObject({
+        refusal: FitRefusal.HOST_MEMORY,
+        hostWeights: { neededBytes: CACHE, cacheBytes: CACHE, freeBytes: CACHE - 1 },
+      });
+    });
+
+    it('admits a GPU-only launch whose cache just fits, keeping system memory out of its pool', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], CACHE);
+
+      const fit = await ledger.check(TEST_NODE_ID, ON_A, usage(23 * GIB, 0, null, CACHE));
+
+      expect(fit).toMatchObject({ refusal: null, hostFreeBytes: null, availableBytes: 23 * GIB });
+    });
+
+    it('counts the cache with the host weights against free system memory', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], 12 * GIB);
+
+      const exact = await ledger.check(TEST_NODE_ID, ON_A, usage(GIB, 4 * GIB, null, CACHE));
+      const over = await ledger.check(TEST_NODE_ID, ON_A, usage(GIB, 4 * GIB + 1, null, CACHE));
+
+      expect(exact).toMatchObject({ refusal: null, hostWeights: { neededBytes: 12 * GIB, cacheBytes: CACHE } });
+      expect(over.refusal).toBe(FitRefusal.HOST_MEMORY);
+    });
+
+    it('counts the cache in an offloading pool', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], 16 * GIB);
+
+      const exact = await ledger.check(TEST_NODE_ID, OFFLOADED, usage(31 * GIB, 0, null, CACHE));
+      const over = await ledger.check(TEST_NODE_ID, OFFLOADED, usage(31 * GIB + 1, 0, null, CACHE));
+
+      expect(exact.refusal).toBeNull();
+      expect(over.refusal).toBe(FitRefusal.TOO_LARGE);
+    });
+
+    it('checks nothing on the CPU alone', async () => {
+      const fit = await ledger.check(TEST_NODE_ID, CPU_ALONE, usage(0, 0, null, CACHE));
+
+      expect(fit).toMatchObject({ refusal: null, hostWeights: null });
+    });
+
+    it('holds no prediction for a starting instance, only its weights', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], 16 * GIB);
+
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, 2 * GIB, null, CACHE));
+
+      const fit = await ledger.check(TEST_NODE_ID, ON_A, usage(GIB, 0, null, CACHE));
+
+      expect(fit.hostWeights).toMatchObject({ predictedBytes: 2 * GIB, freeBytes: 14 * GIB });
+    });
+
+    it('hands nothing back for the cache of an instance being released', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], 10 * GIB);
+
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, 0, null, CACHE));
+      measure(10 * GIB);
+
+      const fit = await ledger.checkReleasing(TEST_NODE_ID, ON_A, usage(GIB, 0, null, 12 * GIB), [KEY_1]);
+
+      expect(fit).toMatchObject({ refusal: FitRefusal.HOST_MEMORY, hostWeights: { freeBytes: 10 * GIB } });
+    });
   });
 
   describe('a load counted once', () => {

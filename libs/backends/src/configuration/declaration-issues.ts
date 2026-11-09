@@ -23,5 +23,18 @@ export function declarationIssues(declaration: BackendDeclaration): IDeclaration
     seen.add(field.name);
   });
 
+  (declaration.referenceRequirements ?? []).forEach((requirement, index) => {
+    const named = [
+      { key: 'choiceField', name: requirement.choiceField },
+      { key: 'referenceField', name: requirement.referenceField },
+    ];
+
+    for (const { key, name } of named) {
+      if (!seen.has(name)) {
+        issues.push({ path: ['referenceRequirements', index, key], message: `${name} is not a field` });
+      }
+    }
+  });
+
   return issues;
 }

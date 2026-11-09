@@ -22,7 +22,7 @@ import { RouteLocationRaw, RouterLink } from 'vue-router';
 
 import UiSpinner from '../feedback/Spinner.vue';
 
-type ButtonType = 'primary' | 'outline' | 'text' | 'danger' | 'danger-outline';
+type ButtonType = 'primary' | 'outline' | 'text' | 'success' | 'warning' | 'danger' | 'danger-outline';
 
 const TYPE_CLASSES: Record<ButtonType, string> = {
   outline:
@@ -30,6 +30,10 @@ const TYPE_CLASSES: Record<ButtonType, string> = {
   primary:
     'border-primary bg-primary text-on-primary interactive:hover:border-primary-hover interactive:hover:bg-primary-hover interactive:focus:border-primary-hover interactive:focus:bg-primary-hover interactive:active:border-primary-pressed interactive:active:bg-primary-pressed',
   text: 'border-transparent bg-transparent text-highlight interactive:hover:bg-inset interactive:focus:bg-inset interactive:active:bg-emphasis',
+  success:
+    'border-success bg-success text-on-danger interactive:hover:brightness-110 interactive:focus-visible:brightness-110 interactive:active:brightness-95',
+  warning:
+    'border-warning bg-warning text-on-danger interactive:hover:brightness-110 interactive:focus-visible:brightness-110 interactive:active:brightness-95',
   danger:
     'border-error bg-error text-on-danger interactive:hover:brightness-110 interactive:focus-visible:brightness-110 interactive:active:brightness-95',
   'danger-outline':

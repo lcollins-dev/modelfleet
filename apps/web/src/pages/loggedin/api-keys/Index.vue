@@ -1,6 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading title="API keys" subtitle="Keys for calling the fleet from any OpenAI-compatible client.">
+    <ui-page-heading>
       <ui-button type="primary" to="/api-keys/create">
         <template #icon>
           <icon-add class="size-4" />
@@ -131,7 +131,13 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
+
+usePage({
+  title: 'API keys',
+  subtitle: 'Keys for calling the fleet from any OpenAI-compatible client.',
+});
 
 const TABLE_COLUMNS = 'minmax(0, 1fr) 11rem 9rem 6.5rem 6.5rem 5.5rem';
 
@@ -154,7 +160,7 @@ const stats = ref<ApiKeyStatsResponseDto>({ total: 0, active: 0, revoked: 0 });
 const statsLoaded = ref(false);
 
 const search = ref('');
-const statusFilter = ref<ApiKeyListStatus>(ApiKeyListStatus.ANY);
+const statusFilter = ref<ApiKeyListStatus>(ApiKeyListStatus.ACTIVE);
 
 const revokingId = ref<number | null>(null);
 
@@ -165,14 +171,12 @@ const listRequest = computed<ApiKeyListRequestDto>(() => ({
   status: statusFilter.value === ApiKeyListStatus.ANY ? undefined : statusFilter.value,
 }));
 
-const unfiltered = computed(() => search.value.length === 0 && statusFilter.value === ApiKeyListStatus.ANY);
-
 const emptyDescription = computed(() => {
   if (search.value.length > 0) {
     return 'No keys match your search.';
   }
 
-  return unfiltered.value
+  return stats.value.total === 0
     ? 'No API keys yet. Create one to let an application call the fleet.'
     : 'No keys in this view.';
 });

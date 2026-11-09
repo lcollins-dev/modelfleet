@@ -69,9 +69,9 @@ interface IPreviewNote {
 
 const NODE_PAGE = 1;
 
-const NO_MODEL_NOTE = 'Choose a model to see whether this selection fits.';
-const PREVIEWING_NOTE = 'Checking whether this selection fits.';
-const PREVIEW_FAILED_NOTE = 'Whether this selection fits could not be checked.';
+const NO_MODEL_NOTE = 'Choose a model to check memory requirements.';
+const PREVIEWING_NOTE = 'Checking available memory...';
+const PREVIEW_FAILED_NOTE = 'Could not check available memory.';
 
 const logService = useLogService();
 const logger = logService.createLogger('components/mf/PlacementField');
@@ -122,13 +122,12 @@ const options: ISegmentedControlOption<PlacementMode>[] = [
 
 const pinNote = computed(() => {
   const offload = rules.value.cpuOffload
-    ? " Tick the CPU as well to let the host's memory take what the GPUs cannot."
-    : ' This backend cannot use host memory beside a GPU, so ticking one clears the other.';
+    ? ' Select CPU alongside GPUs to allow offloading to RAM.'
+    : ' This backend supports either CPU or GPU execution. Selecting one clears the other.';
 
   return (
-    'Each node selected runs one instance on everything ticked on it. GPUs alone hold the whole model, and the ' +
-    `deployment stays pending if they have not the memory for it.${offload} A selection that does not fit can ` +
-    'still be saved.'
+    `Each selected node runs one instance using its selected devices.${offload} ` +
+    'You can save a placement with insufficient memory. It will wait until enough memory is available to start.'
   );
 });
 

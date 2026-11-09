@@ -13,8 +13,10 @@ import {
 
 import {
   describeDownloadTarget,
+  downloadFileBar,
   downloadPercent,
   downloadStateBar,
+  downloadTargetHasProgress,
   formatDownloadAmount,
   formatDownloadSpeed,
   formatDownloadTimeLeft,
@@ -117,6 +119,31 @@ describe('downloadStateBar', () => {
   });
 });
 
+describe('downloadFileBar', () => {
+  it.each([
+    [DownloadFileState.PENDING, 'muted'],
+    [DownloadFileState.VERIFYING, 'primary'],
+    [DownloadFileState.DOWNLOADING, 'primary'],
+    [DownloadFileState.HELD, 'success'],
+    [DownloadFileState.DONE, 'success'],
+    [DownloadFileState.FAILED, 'error'],
+    [null, 'muted'],
+  ])('fills a file in state %s in the %s tone', (state, tone) => {
+    expect(downloadFileBar(state)).toBe(tone);
+  });
+});
+
+describe('downloadTargetHasProgress', () => {
+  it.each([
+    [DownloadTargetState.ACTIVE, true],
+    [DownloadTargetState.SUCCEEDED, true],
+    [DownloadTargetState.FAILED, false],
+    [DownloadTargetState.STOPPED, false],
+  ])('for a target %s is %s', (state, expected) => {
+    expect(downloadTargetHasProgress(buildTarget({ state }))).toBe(expected);
+  });
+});
+
 describe('downloadPercent', () => {
   it('holds at 99 until the last byte arrives', () => {
     expect(downloadPercent(999_999, 1_000_000)).toBe(99);
@@ -186,6 +213,10 @@ describe('describeDownloadSpace', () => {
     loadAverage1m: null,
     memoryTotalBytes: 32 * GIB,
     memoryFreeBytes: 16 * GIB,
+    heldByModelsBytes: 0,
+    heldByModelsUnknown: false,
+    memoryAvailableBytes: 16 * GIB,
+    instanceMemory: [],
     modelDirectories,
   });
 

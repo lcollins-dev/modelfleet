@@ -17,7 +17,7 @@ const whisperInput = buildContainerInput({
   },
   configuration: {},
   pins: { cpu: false, gpus: [FIRST_GPU, SECOND_GPU] },
-  image: 'vllm/vllm-openai:v0.31.0',
+  image: 'vllm/vllm-openai:v0.33.0',
 });
 
 describe('vllmDefinition', () => {

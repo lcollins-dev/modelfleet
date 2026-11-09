@@ -27,6 +27,7 @@ const STAGES: ArchitectureStages[] = [
   { architecture: 'breeze', shares: [0.65, 0.15] },
   { architecture: 'cosyvoice3', shares: [0.4, 0.2] },
   { architecture: 'covo_audio', shares: [0.5, 0.2] },
+  { architecture: 'fish_omni', shares: [0.78, 0.1] },
   { architecture: 'fish_qwen3_omni', shares: [0.6, 0.1] },
   { architecture: 'gepard', shares: [0.3] },
   { architecture: 'glm_tts', shares: [0.55, 0.25] },
@@ -35,6 +36,7 @@ const STAGES: ArchitectureStages[] = [
   { architecture: 'indextts2', shares: [0.4, 0.4] },
   { architecture: 'indextts2_5', shares: [0.4, 0.4] },
   { architecture: 'joyai_vl_interaction', shares: [0.5, 0.2, 0.2] },
+  { architecture: 'joyai_vl_interaction_asr', shares: [0.1, 0.4, 0.2, 0.2] },
   { architecture: 'mammoth_moda2', shares: [0.5, 0.3] },
   { architecture: 'mammoth_moda2_ar', shares: [0.5] },
   { architecture: 'mimo_audio', shares: [0.5, 0.3] },
@@ -51,8 +53,11 @@ const STAGES: ArchitectureStages[] = [
   { architecture: 'nemotron_voicechat', shares: [0.62, 0.12, 0.06] },
   { architecture: 'personaplex', shares: [0.4, 0.3] },
   { architecture: 'qwen3_tts', shares: [0.3, 0.3] },
+  { architecture: 'qwen3_tts_fused', shares: [0.5] },
+  { architecture: 'vibevoice', shares: [0.9] },
   { architecture: 'voxcpm2', shares: [0.9] },
   { architecture: 'voxtral_tts', shares: [0.8, 0.1] },
+  { architecture: 'yue2', shares: [0.7] },
 ];
 
 export const vllmOmniDefinition: BackendDefinition = {
@@ -79,6 +84,9 @@ export const vllmOmniDefinition: BackendDefinition = {
     HF_HUB_OFFLINE: '1',
     VLLM_NO_USAGE_STATS: '1',
     DO_NOT_TRACK: '1',
+
+    // In MiB, matching the gateway's default upload limit.
+    VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: '50',
   },
 
   port: 8000,

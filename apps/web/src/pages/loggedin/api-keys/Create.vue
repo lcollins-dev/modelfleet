@@ -1,11 +1,6 @@
 <template>
   <ui-page-container>
-    <ui-page-heading
-      title="New API key"
-      subtitle="You see the secret once, right after you create the key."
-      back-to="/api-keys"
-      back-label="API keys"
-    />
+    <ui-page-heading />
 
     <ui-form :name="FORM_NAME" @submit="doCreateApiKey">
       <ui-card>
@@ -22,7 +17,7 @@
 
         <template #footer>
           <div class="flex gap-2">
-            <ui-button :disabled="loading" to="/api-keys">Cancel</ui-button>
+            <ui-button :disabled="loading" @click="goBack()">Cancel</ui-button>
 
             <ui-button type="primary" native-type="submit" :loading="loading">Create Key</ui-button>
           </div>
@@ -82,12 +77,23 @@ import {
   UiPageHeading,
 } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
+usePage({
+  title: 'New API key',
+  subtitle: 'You see the secret once, right after you create the key.',
+  back: '/api-keys',
+  transient: true,
+});
+
 const FORM_NAME = 'create-api-key';
 
 const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/api-keys/Create');
 
 const router = useRouter();
+const { goBack } = useGoBack();
 
 const apiKeyAdminService = useApiKeyAdminService();
 const notificationStore = useNotificationStore();

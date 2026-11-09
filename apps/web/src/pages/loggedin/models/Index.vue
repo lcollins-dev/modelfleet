@@ -1,9 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="Models"
-      subtitle="Every model the fleet can serve. Weights held on several nodes are listed once."
-    />
+    <ui-page-heading />
 
     <ui-card flush>
       <mf-filter-toolbar
@@ -67,7 +64,13 @@ import {
   UiTableHead,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
+
+usePage({
+  title: 'Models',
+  subtitle: 'Every model the fleet can serve. Weights held on several nodes are listed once.',
+});
 
 const ANY = 'any';
 

@@ -66,15 +66,18 @@ describe('New preset page', () => {
   });
 
   it('offers the backend settings in a section rail, and cancels back to the list', async () => {
-    const { wrapper } = await mountCreate();
+    const { wrapper, router } = await mountCreate();
 
     const settings = wrapper.get('[data-testid="preset-settings"]');
 
     expect(settings.get('nav[aria-label="Settings sections"]').text()).toContain('Backend');
 
-    const cancel = wrapper.findAll('a').find(link => link.text() === 'Cancel');
+    const cancel = wrapper.findAll('button').find(button => button.text() === 'Cancel');
 
-    expect(cancel?.attributes('href')).toBe('/presets');
+    await cancel?.trigger('click');
+    await flushPromises();
+
+    expect(router.currentRoute.value.path).toBe('/presets');
 
     wrapper.unmount();
   });

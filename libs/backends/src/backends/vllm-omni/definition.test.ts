@@ -20,7 +20,7 @@ const qwenInput = buildContainerInput({
   configuration: {},
   pins: { cpu: false, gpus: [GPU] },
   gpuTotalBytes: new Map([[GPU, 24 * GIB]]),
-  image: 'vllm/vllm-omni:v0.30.0',
+  image: 'vllm/vllm-omni:v0.32.0',
 });
 
 const stageOverrides = (input: IContainerInput): unknown => {

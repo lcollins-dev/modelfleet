@@ -14,6 +14,7 @@ import {
   tap,
 } from 'rxjs';
 
+import { LaunchMode } from '@libs/backends';
 import {
   ActivationPolicy,
   DeploymentInstancesResponseDto,
@@ -25,9 +26,11 @@ import {
   ListInstanceDto,
   NodeInstancesResponseDto,
   PlacementCapacityDto,
+  PlacementEvictionDto,
   PlacementNodeDto,
   PlacementPreviewRequestDto,
   PlacementPreviewResponseDto,
+  PlacementProblemReason,
   StartInstanceResponseDto,
 } from '@libs/dto';
 
@@ -38,15 +41,16 @@ import { Instance } from '@/core/instance/entities/instance.entity';
 import { DeploymentService } from '@/core/deployment/deployment.service';
 import { GpuService } from '@/core/gpu/gpu.service';
 import { IKnownUsage } from '@/core/instance/expected-usage.service';
-import { InstanceService, IPlacementPreview } from '@/core/instance/instance.service';
-import { IFitReport } from '@/core/ledger/vram-ledger.service';
+import { INodePlacement, IPlannedEviction } from '@/core/instance/instance-launch.service';
+import { EvictionPreviewer, InstanceService, IPlacementPreview } from '@/core/instance/instance.service';
+import { FitRefusal, IFitReport } from '@/core/ledger/vram-ledger.service';
 import { NodeStateService } from '@/core/node/node-state.service';
 import { NodeService } from '@/core/node/node.service';
 import { DeploymentSupervisorService } from '@/core/supervisor/deployment-supervisor.service';
 import { SupervisorPolicyService } from '@/core/supervisor/supervisor-policy.service';
 import { TelemetryService } from '@/core/telemetry/telemetry.service';
 
-import { INSTANCE_STATES } from './types/mappings';
+import { FIT_REFUSAL_REASONS, INSTANCE_STATES } from './types/mappings';
 
 /** Short against the cadence nodes report on, five seconds by default. */
 const PLACEMENT_TELEMETRY_AUDIT_MS = 1000;
@@ -74,7 +78,7 @@ export class InstanceAdminService {
     return {
       instances: await this.getIListInstances(instances),
       placement: await this.getIInstancePlacement(
-        await this.instanceService.previewPlacements(deploymentId),
+        await this.instanceService.previewPlacements(deploymentId, this.evictionPreviewer),
         instances
       ),
       residency: this.getIDeploymentResidency(deployment, instances),
@@ -91,7 +95,8 @@ export class InstanceAdminService {
         activationPolicy: request.activationPolicy,
         document: request.document,
       },
-      deploymentId
+      deploymentId,
+      this.evictionPreviewer
     );
     const instances = deploymentId === null ? [] : await this.instanceService.findByDeploymentId(deploymentId);
 
@@ -104,12 +109,16 @@ export class InstanceAdminService {
    * an opening read that rejects. A failed read otherwise leaves the stream open for the next.
    *
    * Reads again on any instance write, on an edit, enable or disable of this deployment, and on telemetry from a node
-   * its placement refuses. A stop drops its row while the container still holds its memory, so only a later reading
+   * its placement refuses or would evict on. A stop drops its row while the container still holds its memory, so only a later reading
    * shows it freed.
    */
   async watchDeploymentInstances(deploymentId: number): Promise<Observable<DeploymentInstancesResponseDto>> {
     const refusingNodeIds = (response: DeploymentInstancesResponseDto) =>
-      new Set(response.placement.nodes.filter(node => node.problem !== null).map(node => node.nodeId));
+      new Set(
+        response.placement.nodes
+          .filter(node => node.problem !== null || node.evictions.length > 0)
+          .map(node => node.nodeId)
+      );
 
     const opening = await this.getDeploymentInstances(deploymentId);
     let watchedNodeIds = refusingNodeIds(opening);
@@ -183,8 +192,12 @@ export class InstanceAdminService {
     );
   }
 
-  async startDeployment(deploymentId: number, actorId: number): Promise<StartInstanceResponseDto> {
-    const outcome = await this.instanceService.start(deploymentId, actorId);
+  async startDeployment(
+    deploymentId: number,
+    actorId: number,
+    confirmEviction: boolean
+  ): Promise<StartInstanceResponseDto> {
+    const outcome = await this.deploymentSupervisorService.startByHand(deploymentId, actorId, confirmEviction);
 
     const refused = [];
 
@@ -199,11 +212,15 @@ export class InstanceAdminService {
       });
     }
 
-    return { started: outcome.started.length, refused };
+    return {
+      started: outcome.started.length,
+      refused,
+      evicting: await this.getIPlacementEvictions(outcome.evicting),
+    };
   }
 
   stopDeployment(deploymentId: number, actorId: number): Promise<void> {
-    return this.instanceService.stop(deploymentId, actorId);
+    return this.deploymentSupervisorService.stopByHand(deploymentId, actorId);
   }
 
   private getIDeploymentResidency(deployment: Deployment, instances: Instance[]): DeploymentResidencyDto {
@@ -220,6 +237,7 @@ export class InstanceAdminService {
       retryDate: !facts.givenUp && this.supervisorPolicyService.backingOff(facts) ? (facts.backoffUntil ?? null) : null,
       givenUp: facts.enabled && facts.givenUp,
       lastLaunchFailure: deployment.lastLaunchFailure,
+      makingRoomNodeIds: facts.makingRoomNodeIds,
     };
   }
 
@@ -240,12 +258,51 @@ export class InstanceAdminService {
         replicas: preview.replicas,
         running: instances.filter(instance => instance.nodeId === placement.nodeId).length,
         problem: placement.problem,
+        problemReason: this.getIProblemReason(placement),
         expectedUsage: this.getIExpectedUsage(placement.expected),
         capacity: await this.getIPlacementCapacity(placement.nodeId, placement.capacity),
+        evictions: await this.getIPlacementEvictions(placement.evictions ?? []),
       });
     }
 
     return { nodes, problem: preview.problem };
+  }
+
+  /** An offloading pool overflows the cards into RAM, so running out of it is RAM running out. */
+  private getIProblemReason(placement: INodePlacement): PlacementProblemReason | null {
+    if (placement.problem === null) {
+      return null;
+    }
+
+    if (placement.modelMissing === true) {
+      return PlacementProblemReason.MODEL_NOT_ON_NODE;
+    }
+
+    const report = placement.capacity;
+
+    if (report === undefined || report.refusal === null) {
+      return PlacementProblemReason.OTHER;
+    }
+
+    return report.refusal === FitRefusal.TOO_LARGE && report.launchMode === LaunchMode.CPU_OFFLOAD
+      ? PlacementProblemReason.NOT_ENOUGH_RAM
+      : FIT_REFUSAL_REASONS[report.refusal];
+  }
+
+  private async getIPlacementEvictions(planned: IPlannedEviction[]): Promise<PlacementEvictionDto[]> {
+    const evictions: PlacementEvictionDto[] = [];
+
+    for (const eviction of planned) {
+      evictions.push({
+        deploymentName: eviction.instance.deployment?.name ?? `deployment ${eviction.instance.deploymentId}`,
+        instanceKey: eviction.instance.instanceKey,
+        devices: await this.getIInstanceDevices(eviction.instance.nodeId, eviction.instance.pins.gpus),
+        idleMs: eviction.idleMs,
+        releasedBytes: eviction.releasedBytes,
+      });
+    }
+
+    return evictions;
   }
 
   private getIExpectedUsage(expected: IKnownUsage | undefined): ExpectedUsageDto | null {
@@ -258,8 +315,12 @@ export class InstanceAdminService {
       source: expected.source,
       hostWeightsBytes: expected.hostWeightsBytes,
       hostResidentBytes: expected.hostResidentBytes,
+      hostCacheBytes: expected.hostCacheBytes,
     };
   }
+
+  private readonly evictionPreviewer: EvictionPreviewer = (deployment, placement) =>
+    this.deploymentSupervisorService.planEvictions(deployment, placement);
 
   private async getIPlacementCapacity(
     nodeId: number,
@@ -284,11 +345,16 @@ export class InstanceAdminService {
         predictedBytes: card.predictedBytes,
         headroomBytes: card.headroomBytes,
         freeBytes: card.freeBytes,
+        short: card.deviceKey === report.shortCard,
       })),
       hostWeights:
         report.hostWeights === null
           ? null
-          : { neededBytes: report.hostWeights.neededBytes, freeBytes: report.hostWeights.freeBytes },
+          : {
+              neededBytes: report.hostWeights.neededBytes,
+              cacheBytes: report.hostWeights.cacheBytes,
+              freeBytes: report.hostWeights.freeBytes,
+            },
     };
   }
 

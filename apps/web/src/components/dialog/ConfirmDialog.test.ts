@@ -30,6 +30,15 @@ const mountDialog = (options: IDialogOptions) => mount(ConfirmDialog, { props: {
 const confirmButton = (wrapper: ReturnType<typeof mountDialog>) => wrapper.get('[data-testid="dialog-confirm"]');
 
 describe('ConfirmDialog', () => {
+  it.each([
+    [DialogType.INFO, 'bg-primary'],
+    [DialogType.SUCCESS, 'bg-success'],
+    [DialogType.WARNING, 'bg-warning'],
+    [DialogType.DANGER, 'bg-error'],
+  ])('colours the confirm button of a %s dialog to match its icon', (type, colour) => {
+    expect(confirmButton(mountDialog({ ...OPTIONS, type })).classes()).toContain(colour);
+  });
+
   it('shows the title, message and a primary confirm button, and closes confirmed on click', async () => {
     const wrapper = mountDialog(OPTIONS);
 

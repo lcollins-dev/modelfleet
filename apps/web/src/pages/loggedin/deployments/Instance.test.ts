@@ -1,10 +1,24 @@
 import { flushPromises, mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ref } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
-import type { DeploymentInstancesResponseDto, InstanceOutputFrameDto, ListInstanceDto } from '@libs/dto';
-import { InstanceOutputEndReason, InstanceState, NodeState, ResidencyRule } from '@libs/dto';
+import type {
+  DeploymentInstancesResponseDto,
+  InstanceOutputFrameDto,
+  ListInstanceDto,
+  NodeTelemetryStatusDto,
+} from '@libs/dto';
+import {
+  GpuProcessAttribution,
+  GpuVendor,
+  InstanceOutputEndReason,
+  InstanceState,
+  NodeState,
+  NodeTelemetryState,
+  ResidencyRule,
+} from '@libs/dto';
 
 import { ISseRefusal, ISseSubscription } from '@/services/api/SseService';
 
@@ -12,12 +26,18 @@ import Instance from './Instance.vue';
 import { OUTPUT_RETRY_MS } from '@/composables/useInstanceOutput';
 
 const KEY = '0199a3f2-6c1e-7b4a-9f00-3d2e1c0b9a87';
+const GIB = 1024 ** 3;
 
 const streamDeploymentInstances = vi.fn();
 const streamInstanceOutput = vi.fn();
+const streamNodeTelemetryStatus = vi.fn();
 
 vi.mock('@/services/api/admin/InstanceAdminService', () => ({
   useInstanceAdminService: () => ({ streamDeploymentInstances, streamInstanceOutput }),
+}));
+
+vi.mock('@/services/api/admin/TelemetryAdminService', () => ({
+  useTelemetryAdminService: () => ({ streamNodeTelemetryStatus }),
 }));
 
 const subscription = (): ISseSubscription => ({
@@ -56,6 +76,7 @@ const instancesResponse = (instances: ListInstanceDto[]): DeploymentInstancesRes
     retryDate: null,
     givenUp: false,
     lastLaunchFailure: null,
+    makingRoomNodeIds: [],
   },
 });
 
@@ -76,6 +97,7 @@ const mountPage = async () => {
     history: createMemoryHistory(),
     routes: [
       { path: '/deployments/:deploymentId(\\d+)/instance/:instanceKey', component: { template: '<div />' } },
+      { path: '/deployments/:deploymentId(\\d+)', component: { template: '<div />' } },
       { path: '/:path(.*)*', component: { template: '<div />' } },
     ],
   });
@@ -88,10 +110,12 @@ const mountPage = async () => {
 };
 
 beforeEach(() => {
+  setActivePinia(createPinia());
   vi.clearAllMocks();
 
   streamDeploymentInstances.mockImplementation(subscription);
   streamInstanceOutput.mockImplementation(subscription);
+  streamNodeTelemetryStatus.mockImplementation(subscription);
 });
 
 afterEach(() => {
@@ -99,6 +123,95 @@ afterEach(() => {
 });
 
 describe('Instance page', () => {
+  const telemetryFor = (
+    heldBytes: number | null,
+    residentBytes = heldBytes,
+    vramBytes = 12 * GIB
+  ): NodeTelemetryStatusDto => ({
+    telemetryState: NodeTelemetryState.OK,
+    capturedAt: new Date(),
+    receivedAt: new Date(),
+    host: {
+      cpuModel: null,
+      cpuCount: 8,
+      loadAverage1m: null,
+      memoryTotalBytes: 64 * GIB,
+      memoryFreeBytes: 32 * GIB,
+      heldByModelsBytes: heldBytes ?? 0,
+      heldByModelsUnknown: heldBytes === null,
+      memoryAvailableBytes: 32 * GIB - (heldBytes ?? 0),
+      instanceMemory: [{ instanceKey: KEY, heldBytes, residentBytes }],
+      modelDirectories: [],
+    },
+    devices: [
+      {
+        deviceKey: 'GPU-1',
+        vendor: GpuVendor.NVIDIA,
+        name: null,
+        pciBusId: null,
+        memoryTotalBytes: 24 * GIB,
+        lastReportedDate: new Date(),
+        index: 0,
+        memoryUsedBytes: vramBytes,
+        utilisationPercent: null,
+        temperatureC: null,
+        powerDrawWatts: null,
+        processAttribution: GpuProcessAttribution.EXACT,
+        processes: [
+          {
+            pid: 1,
+            usedBytes: vramBytes,
+            name: null,
+            containerId: null,
+            containerName: null,
+            instanceKey: KEY,
+            deploymentName: 'llama-70b-chat',
+          },
+        ],
+        predictions: [],
+      },
+    ],
+    errors: [],
+    headroomBytes: GIB,
+  });
+
+  const sendTelemetry = async (status: NodeTelemetryStatusDto) => {
+    const onStatus = streamNodeTelemetryStatus.mock.calls[0][1] as (update: NodeTelemetryStatusDto) => void;
+
+    onStatus(status);
+    await flushPromises();
+  };
+
+  it("shows the instance's whole RAM beside its VRAM, read from its node", async () => {
+    const wrapper = await mountPage();
+
+    await sendInstances([instance(InstanceState.READY)]);
+    await sendTelemetry(telemetryFor(2 * GIB, 40 * GIB));
+
+    expect(streamNodeTelemetryStatus.mock.calls[0][0]).toBe(3);
+    expect(wrapper.text()).not.toContain('System memory');
+    expect(wrapper.get('[data-testid="instance-vram"]').text()).toContain('12 GiB');
+    expect(wrapper.get('[data-testid="instance-resident-memory"]').text()).toContain('40 GiB');
+  });
+
+  it('reads RAM as unknown where the process could not be read', async () => {
+    const wrapper = await mountPage();
+
+    await sendInstances([instance(InstanceState.READY)]);
+    await sendTelemetry(telemetryFor(null));
+
+    expect(wrapper.get('[data-testid="instance-resident-memory"]').text()).toContain('Unknown');
+  });
+
+  it('keeps one telemetry stream as the instance row changes', async () => {
+    await mountPage();
+
+    await sendInstances([instance(InstanceState.STARTING)]);
+    await sendInstances([instance(InstanceState.READY)]);
+
+    expect(streamNodeTelemetryStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('opens the output under its deployment, heading it with the short key and its state', async () => {
     const wrapper = await mountPage();
 
@@ -177,8 +290,8 @@ describe('Instance page', () => {
 
     const failure = wrapper.get('[data-testid="output-failure"]');
 
-    expect(failure.text()).toContain('The backend exited 1');
-    expect(failure.text()).toContain('not its full log');
+    expect(failure.text()).toContain('Saved output');
+    expect(failure.text()).toContain('Final lines captured from the failed backend.');
     expect(failure.get('pre').text()).toBe('error: unknown argument --flash');
     expect(wrapper.find('[data-testid="output-refusal"]').exists()).toBe(false);
   });
@@ -217,7 +330,7 @@ describe('Instance page', () => {
     outputStream(0).refuse({ status: 404, message: 'The node holds no container for this instance' });
     await flushPromises();
 
-    expect(wrapper.get('[data-testid="output-failure"]').text()).toContain('The launch failed');
+    expect(wrapper.get('[data-testid="output-failure"]').text()).toContain('Saved output');
     expect(wrapper.get('[data-testid="output-failure"] pre').text()).toBe(
       'The node reported no output from this backend.'
     );

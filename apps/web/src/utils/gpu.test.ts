@@ -15,7 +15,8 @@ import {
   attributionTag,
   capacityShares,
   cardFigures,
-  describeCapacityNeed,
+  capacityFigures,
+  describeMemory,
   describeReading,
   pooledCapacity,
   formatTelemetryState,
@@ -220,6 +221,7 @@ const card = (overrides: Partial<PlacementCardCapacityDto> = {}): Omit<Placement
   predictedBytes: 6 * GIB,
   headroomBytes: GIB,
   freeBytes: 14 * GIB,
+  short: false,
   ...overrides,
 });
 
@@ -277,7 +279,7 @@ describe('capacityShares', () => {
   });
 });
 
-describe('describeCapacityNeed', () => {
+describe('describeMemory', () => {
   const capacity = (overrides: Partial<PlacementCapacityDto> = {}): PlacementCapacityDto => ({
     expectedBytes: 20 * GIB,
     availableBytes: 13 * GIB,
@@ -287,48 +289,66 @@ describe('describeCapacityNeed', () => {
     ...overrides,
   });
 
-  it('names what the deployment needs against what is free, and the shortfall where it does not fit', () => {
-    expect(describeCapacityNeed(capacity())).toBe('Needs 20 GiB. Free after headroom: 13 GiB. Short by 7 GiB');
+  const lines = (overrides: Partial<PlacementCapacityDto> = {}): string[] =>
+    describeMemory(capacityFigures(capacity(overrides)));
+
+  it('reads VRAM used against free, a shortfall showing as used over free', () => {
+    expect(lines()).toEqual(['VRAM 20 / 13 GiB free']);
   });
 
-  it('names the system memory counted in the pool of an offloading start', () => {
-    expect(describeCapacityNeed(capacity({ availableBytes: 21 * GIB, hostFreeBytes: 8 * GIB }))).toBe(
-      'Needs 20 GiB. Free after headroom: 21 GiB, including 8 GiB of system memory'
-    );
+  it('adds the weights kept in RAM against what is free for them', () => {
+    const hostWeights = { neededBytes: 30 * GIB, cacheBytes: 0, freeBytes: 12 * GIB };
+
+    expect(lines({ availableBytes: 23 * GIB, hostWeights })).toEqual(['VRAM 20 / 23 GiB free', 'RAM 30 / 12 GiB free']);
   });
 
-  it('names the weights kept in system memory and what is free for them, and their shortfall', () => {
-    const hostWeights = { neededBytes: 30 * GIB, freeBytes: 12 * GIB };
+  it('counts the prompt cache in the RAM figure, marked short', () => {
+    const hostWeights = { neededBytes: 8 * GIB, cacheBytes: 8 * GIB, freeBytes: 6 * GIB };
 
-    expect(describeCapacityNeed(capacity({ availableBytes: 23 * GIB, hostWeights }))).toBe(
-      'Needs 20 GiB. Free after headroom: 23 GiB. Weights kept in system memory: 30 GiB, with 12 GiB free. ' +
-        'Short by 18 GiB of system memory'
-    );
+    expect(lines({ availableBytes: 23 * GIB, hostWeights })).toEqual(['VRAM 20 / 23 GiB free', 'RAM 8 / 6 GiB free']);
   });
 
-  it('counts the host weights in the need of an offloading start, since they come out of its pool', () => {
-    const hostWeights = { neededBytes: 5 * GIB, freeBytes: 8 * GIB };
+  it('counts what an offloading start spills past its GPUs as RAM, on top of its weights kept there', () => {
+    const hostWeights = { neededBytes: 5 * GIB, cacheBytes: 0, freeBytes: 16 * GIB };
 
-    expect(describeCapacityNeed(capacity({ availableBytes: 21 * GIB, hostFreeBytes: 8 * GIB, hostWeights }))).toBe(
-      'Needs 25 GiB. Free after headroom: 21 GiB, including 8 GiB of system memory. ' +
-        'Weights kept in system memory: 5 GiB, with 8 GiB free. Short by 4 GiB'
-    );
+    expect(lines({ availableBytes: 23 * GIB, hostFreeBytes: 16 * GIB, hostWeights })).toEqual([
+      'VRAM 7 / 7 GiB free',
+      'RAM 18 / 16 GiB free',
+    ]);
   });
 
-  it('names no system memory where the pool as a whole is unknown', () => {
-    expect(describeCapacityNeed(capacity({ availableBytes: null, hostFreeBytes: 8 * GIB }))).toBe(
-      'Needs 20 GiB. Free after headroom: -'
-    );
+  it('reads an offloading start that spills into RAM it has room for', () => {
+    expect(lines({ availableBytes: 21 * GIB, hostFreeBytes: 8 * GIB })).toEqual([
+      'VRAM 13 / 13 GiB free',
+      'RAM 7 / 8 GiB free',
+    ]);
+  });
+
+  it('leaves out the RAM line of an offloading start its GPUs hold whole', () => {
+    expect(lines({ availableBytes: 32 * GIB, hostFreeBytes: 8 * GIB })).toEqual(['VRAM 20 / 24 GiB free']);
   });
 
   it('reads a pool the node has not reported as a dash, not zero', () => {
-    expect(describeCapacityNeed(capacity({ availableBytes: null }))).toBe('Needs 20 GiB. Free after headroom: -');
+    expect(lines({ availableBytes: null })).toEqual(['VRAM 20 GiB / -']);
   });
 
-  it('names no shortfall where the pool holds it', () => {
-    expect(describeCapacityNeed(capacity({ availableBytes: 20 * GIB }))).toBe(
-      'Needs 20 GiB. Free after headroom: 20 GiB'
-    );
+  it("reads the whole need as VRAM where an offloading start's GPUs have not reported", () => {
+    const hostWeights = { neededBytes: 5 * GIB, cacheBytes: 0, freeBytes: 8 * GIB };
+
+    expect(lines({ availableBytes: null, hostFreeBytes: 8 * GIB, hostWeights })).toEqual([
+      'VRAM 20 GiB / -',
+      'RAM 5 / 8 GiB free',
+    ]);
+  });
+
+  it('keeps both units where they differ', () => {
+    expect(lines({ expectedBytes: 512 * 1024 ** 2 })).toEqual(['VRAM 512 MiB / 13 GiB free']);
+  });
+
+  it('shows only the RAM used where nothing says what is free', () => {
+    const figures = { vramUsedBytes: 20 * GIB, vramFreeBytes: null, ramUsedBytes: 4 * GIB, ramFreeBytes: null };
+
+    expect(describeMemory(figures)).toEqual(['VRAM 20 GiB / -', 'RAM 4 GiB / -']);
   });
 });
 

@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryHistory, createRouter } from 'vue-router';
 
 import { BatchJobId, BatchJobRunResult, type BatchJobDto, type BatchJobRunDto } from '@libs/dto';
 
@@ -13,11 +14,6 @@ const mocks = vi.hoisted(() => ({
   getBatchJobRunList: vi.fn(),
   updateBatchJobState: vi.fn(),
   runBatchJob: vi.fn(),
-}));
-
-vi.mock('vue-router', async importOriginal => ({
-  ...(await importOriginal<typeof import('vue-router')>()),
-  useRoute: () => ({ params: { batchJobId: '100' } }),
 }));
 
 vi.mock('@/services/api/admin/BatchJobAdminService', () => ({
@@ -48,9 +44,16 @@ const buildRun = (result: BatchJobRunResult): BatchJobRunDto => ({
 const runsResponse = (...runs: BatchJobRunDto[]) => ({ batchJobRunList: runs, pages: 1, total: runs.length });
 
 const mountPage = async () => {
-  const wrapper = mount(BatchJob, {
-    global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/batch-jobs', component: { template: '<div />' } },
+      { path: '/batch-jobs/:batchJobId', component: { template: '<div />' } },
+    ],
   });
+  await router.push('/batch-jobs/100');
+
+  const wrapper = mount(BatchJob, { global: { plugins: [router] } });
 
   await flushPromises();
 
@@ -174,7 +177,7 @@ describe('Batch job page', () => {
     mocks.getBatchJob.mockResolvedValue({ ...BATCH_JOB, cronExpression: null });
     const wrapper = await mountPage();
 
-    expect(wrapper.text()).toContain('It has no schedule. Run it by hand with Run Now.');
+    expect(wrapper.text()).toContain('Not scheduled');
     expect(runNowButton(wrapper).attributes('disabled')).toBeUndefined();
   });
 

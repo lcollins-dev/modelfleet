@@ -1,12 +1,14 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading title="Overview" :subtitle="subtitle" />
+    <ui-page-heading />
 
     <ui-notice v-if="!isAdmin" type="info">The fleet overview is available to system administrators.</ui-notice>
 
     <template v-else>
       <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12.5rem),1fr))] gap-4">
         <mf-kpi-tile label="VRAM in use" :icon="IconMemory" v-bind="vramKpi" :stale="vramState === 'stale'" />
+
+        <mf-kpi-tile label="RAM in use" :icon="IconStorage" v-bind="ramKpi" :stale="vramState === 'stale'" />
 
         <mf-kpi-tile label="Nodes" :icon="IconDns" v-bind="nodeKpi" :stale="telemetryState === 'stale'" />
 
@@ -16,17 +18,10 @@
           v-bind="deploymentKpi"
           :stale="instanceState === 'stale'"
         />
-
-        <mf-kpi-tile label="Instances" :icon="IconViewInAr" v-bind="instanceKpi" :stale="instanceState === 'stale'" />
       </div>
 
       <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,26.25rem),1fr))] gap-4">
-        <ui-card
-          title="Nodes"
-          subtitle="Measured VRAM on each node, Modelfleet's instances first."
-          flush
-          data-testid="nodes-card"
-        >
+        <ui-card title="Nodes" subtitle="Node status and GPU memory usage." flush data-testid="nodes-card">
           <ui-table :columns="NODE_COLUMNS" :min-width="0">
             <ui-table-head>
               <span>Node</span>
@@ -85,7 +80,12 @@
           </template>
         </ui-card>
 
-        <ui-card title="Deployments" :subtitle="deploymentsSubtitle" flush data-testid="deployments-card">
+        <ui-card
+          title="Deployments"
+          subtitle="Deployment status, with problems shown first."
+          flush
+          data-testid="deployments-card"
+        >
           <ui-table :columns="DEPLOYMENT_COLUMNS" :min-width="0">
             <ui-table-head>
               <span>Deployment</span>
@@ -154,12 +154,7 @@
         </ui-card>
       </div>
 
-      <ui-card
-        title="Recent activity"
-        subtitle="The latest events across the fleet, newest first."
-        flush
-        data-testid="activity-card"
-      >
+      <ui-card title="Recent activity" subtitle="Events from across the fleet." flush data-testid="activity-card">
         <mf-event-table
           :events="recentEvents ?? []"
           :columns="EVENT_COLUMNS"
@@ -189,7 +184,7 @@ import IconChevronRight from '~icons/material-symbols/chevron-right-rounded';
 import IconDns from '~icons/material-symbols/dns-outline-rounded';
 import IconMemory from '~icons/material-symbols/memory-outline-rounded';
 import IconRocketLaunch from '~icons/material-symbols/rocket-launch-outline-rounded';
-import IconViewInAr from '~icons/material-symbols/view-in-ar-outline-rounded';
+import IconStorage from '~icons/material-symbols/storage-rounded';
 
 import type { EventDto, FleetNodeTelemetryDto, FleetTelemetryResponseDto, ListInstanceDto } from '@libs/dto';
 import { EventPartyType, NodeState, UserRoleId } from '@libs/dto';
@@ -205,8 +200,7 @@ import {
   formatDeploymentRunState,
 } from '@/utils/deployment';
 import { ICount, formatBytes, formatCount } from '@/utils/format/number';
-import { isReadingStale, vramUsage } from '@/utils/gpu';
-import { countInstanceStates, formatInstanceState, instanceStateTone } from '@/utils/instance';
+import { isReadingStale, ramUsage, vramUsage } from '@/utils/gpu';
 import { countNodeStates, describeFleetNode, formatNodeState, nodeStateTone } from '@/utils/node';
 
 import { useLogService } from '@/services/LogService';
@@ -240,6 +234,7 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { useResource } from '@/composables/useResource';
 
 interface IKpiFigures {
@@ -335,23 +330,7 @@ const hasModels = computed(() => (modelPage.value?.modelList.length ?? 0) > 0);
 
 const deploymentCounts = computed(() => countDeploymentRunStates(deploymentTotal.value, instances.value));
 
-const subtitle = computed(() => {
-  if (!isAdmin.value) {
-    return 'View the current state of your fleet.';
-  }
-
-  return `${formatCount(fleetNodes.value?.length ?? 0, 'node')} and ${formatCount(fleetDevices.value.length, 'GPU')}.`;
-});
-
-const deploymentsSubtitle = computed(() => {
-  if (deploymentTotal.value === 0) {
-    return undefined;
-  }
-
-  const ready = deploymentCounts.value.find(entry => entry.key === 'ready')?.count ?? 0;
-
-  return `${ready} of ${deploymentTotal.value} ready. Problems are listed first.`;
-});
+usePage({ title: 'Overview', subtitle: 'Fleet status and recent activity.' });
 
 const deploymentRows = computed(() =>
   (deploymentPage.value?.deploymentList ?? [])
@@ -385,7 +364,32 @@ const vramKpi = computed<IKpiFigures>(() => {
     value: formatBytes(usedBytes),
     unit: `of ${formatBytes(totalBytes)}`,
     bands: [{ tone: 'primary', percent }, { percent: 100 - percent }],
-    legend: [{ label: `${percent}% in use`, tone: 'primary' }, { label: `${formatBytes(freeBytes)} free` }],
+    legend: [
+      { label: `${percent}% in use`, tone: 'primary' },
+      { label: `${formatBytes(freeBytes)} free`, alignEnd: true },
+    ],
+  };
+});
+
+const ramKpi = computed<IKpiFigures>(() => {
+  const { usedBytes, totalBytes, freeBytes, freeUnknown } = ramUsage(
+    (fleetNodes.value ?? []).map(node => node.status.host)
+  );
+
+  if (totalBytes === 0) {
+    return { value: '-', bands: [], legend: [{ label: 'No readings yet' }] };
+  }
+
+  const percent = Math.round((usedBytes / totalBytes) * 100);
+
+  return {
+    value: formatBytes(usedBytes),
+    unit: `of ${formatBytes(totalBytes)}`,
+    bands: [{ tone: 'primary', percent }, { percent: 100 - percent }],
+    legend: [
+      { label: `${percent}% in use`, tone: 'primary' },
+      { label: `${freeUnknown ? 'At most ' : ''}${formatBytes(freeBytes)} free`, alignEnd: true },
+    ],
   };
 });
 
@@ -402,11 +406,6 @@ const nodeKpi = computed<IKpiFigures>(() => ({
 const deploymentKpi = computed<IKpiFigures>(() => ({
   value: deploymentTotal.value,
   ...stateBreakdown(deploymentCounts.value, formatDeploymentRunState, deploymentRunTone),
-}));
-
-const instanceKpi = computed<IKpiFigures>(() => ({
-  value: instances.value.length,
-  ...stateBreakdown(countInstanceStates(instances.value), formatInstanceState, instanceStateTone),
 }));
 
 const hasVram = (node: FleetNodeTelemetryDto): boolean =>

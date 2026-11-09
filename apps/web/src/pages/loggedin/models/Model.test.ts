@@ -50,6 +50,7 @@ describe('Model', () => {
       history: createMemoryHistory(),
       routes: [
         { path: '/models/:modelId', component: { template: '<div />' } },
+        { path: '/models', component: { template: '<div />' } },
         { path: '/:path(.*)*', component: { template: '<div />' } },
       ],
     });

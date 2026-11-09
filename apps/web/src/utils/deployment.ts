@@ -2,37 +2,49 @@ import type {
   ConfigurationDocument,
   DeploymentResidencyDto,
   EffectiveConfigurationEntryDto,
+  ExpectedUsageDto,
   ListDeploymentDto,
   ListInstanceDto,
+  PlacementEvictionDto,
   PlacementNodeDto,
 } from '@libs/dto';
-import { ActivationPolicy, ConfigurationSource, ExpectedUsageSource, InstanceState, ResidencyRule } from '@libs/dto';
+import {
+  ActivationPolicy,
+  ConfigurationSource,
+  ExpectedUsageSource,
+  InstanceState,
+  PlacementProblemReason,
+} from '@libs/dto';
 
-import { formatDuration, formatRelativeDate } from './format/date';
+import { formatDuration } from './format/date';
 import { ICount, formatBytes, orderCounts } from './format/number';
-import { describeCapacityNeed, hostShortBytes, pooledNeedBytes } from './gpu';
+import { capacityFigures, type IMemoryCell, type IMemoryFigures, memoryCells, UNKNOWN_MEMORY } from './gpu';
 import { formatDevices } from './instance';
 
 export type DeploymentRunState = 'ready' | 'starting' | 'failed' | 'idle';
 
 export type DeploymentRunTone = 'success' | 'warning' | 'error' | 'default';
 
-export interface IPlacementRow {
+export interface IPlacementMemoryCell extends IMemoryCell {
+  label: 'VRAM' | 'RAM';
+  title: string | null;
+}
+
+export interface IPlacementMemory {
+  vram: IPlacementMemoryCell;
+  ram: IPlacementMemoryCell;
+}
+
+export interface IPlacementRow extends IPlacementMemory {
   nodeId: number;
   nodeName: string;
-  source: ExpectedUsageSource | null;
-  expected: string;
-  free: string;
-  offGpus: string;
-  systemMemory: string;
-  expectedShort: boolean;
-  systemMemoryShort: boolean;
   fit: PlacementFit;
   reason: string | null;
+  expandable: boolean;
   cards: IPlacementCardRow[];
 
-  /** Null unless the pool takes in system memory. */
-  poolSystemMemory: string | null;
+  /** Null unless the pool takes in RAM. */
+  poolRam: string | null;
 }
 
 export interface IPlacementCardRow {
@@ -45,12 +57,20 @@ export interface IPlacementCardRow {
 
   /** Before headroom. */
   free: string;
+
+  short: boolean;
 }
 
 export enum PlacementFit {
   FITS = 'fits',
-  SHORT = 'short',
-  BLOCKED = 'blocked',
+  EVICTS = 'evicts',
+  MAKING_ROOM = 'makingRoom',
+  NOT_ENOUGH_VRAM = 'notEnoughVram',
+  NOT_ENOUGH_RAM = 'notEnoughRam',
+  MODEL_NOT_ON_NODE = 'modelNotOnNode',
+  NO_READINGS = 'noReadings',
+  GPU_NOT_MEASURED = 'gpuNotMeasured',
+  CANNOT_RUN = 'cannotRun',
   HELD = 'held',
   CPU_ONLY = 'cpuOnly',
 }
@@ -71,27 +91,43 @@ const RUN_TONES: Record<DeploymentRunState, DeploymentRunTone> = {
   idle: 'default',
 };
 
+const MAKING_ROOM_REASON = 'Waiting for the node to report freed memory.';
+
 const FIT_LABELS: Record<PlacementFit, string> = {
   [PlacementFit.FITS]: 'Fits',
-  [PlacementFit.SHORT]: 'Does not fit',
-  [PlacementFit.BLOCKED]: 'Cannot place',
+  [PlacementFit.EVICTS]: 'Fits after evicting',
+  [PlacementFit.MAKING_ROOM]: 'Making room',
+  [PlacementFit.NOT_ENOUGH_VRAM]: 'Not enough VRAM',
+  [PlacementFit.NOT_ENOUGH_RAM]: 'Not enough RAM',
+  [PlacementFit.MODEL_NOT_ON_NODE]: 'Model not on node',
+  [PlacementFit.NO_READINGS]: 'No readings',
+  [PlacementFit.GPU_NOT_MEASURED]: 'GPU not measured',
+  [PlacementFit.CANNOT_RUN]: 'Cannot run here',
   [PlacementFit.HELD]: 'Running',
   [PlacementFit.CPU_ONLY]: 'CPU only',
 };
 
 const FIT_TONES: Record<PlacementFit, DeploymentRunTone> = {
   [PlacementFit.FITS]: 'success',
-  [PlacementFit.SHORT]: 'error',
-  [PlacementFit.BLOCKED]: 'warning',
+  [PlacementFit.EVICTS]: 'warning',
+  [PlacementFit.MAKING_ROOM]: 'warning',
+  [PlacementFit.NOT_ENOUGH_VRAM]: 'error',
+  [PlacementFit.NOT_ENOUGH_RAM]: 'error',
+  [PlacementFit.MODEL_NOT_ON_NODE]: 'warning',
+  [PlacementFit.NO_READINGS]: 'warning',
+  [PlacementFit.GPU_NOT_MEASURED]: 'warning',
+  [PlacementFit.CANNOT_RUN]: 'warning',
   [PlacementFit.HELD]: 'default',
   [PlacementFit.CPU_ONLY]: 'default',
 };
 
-const EXPECTED_USAGE_SOURCES: Record<ExpectedUsageSource, string> = {
-  [ExpectedUsageSource.CONFIGURED]: 'the share of each GPU its backend is configured to take',
-  [ExpectedUsageSource.DECLARED]: 'as declared on the deployment',
-  [ExpectedUsageSource.MEASURED]: 'measured on an earlier run',
-  [ExpectedUsageSource.ESTIMATED]: 'estimated from the model and configuration',
+const REASON_FITS: Record<PlacementProblemReason, PlacementFit> = {
+  [PlacementProblemReason.NOT_ENOUGH_VRAM]: PlacementFit.NOT_ENOUGH_VRAM,
+  [PlacementProblemReason.NOT_ENOUGH_RAM]: PlacementFit.NOT_ENOUGH_RAM,
+  [PlacementProblemReason.MODEL_NOT_ON_NODE]: PlacementFit.MODEL_NOT_ON_NODE,
+  [PlacementProblemReason.NO_READINGS]: PlacementFit.NO_READINGS,
+  [PlacementProblemReason.GPU_NOT_MEASURED]: PlacementFit.GPU_NOT_MEASURED,
+  [PlacementProblemReason.OTHER]: PlacementFit.CANNOT_RUN,
 };
 
 const EXPECTED_USAGE_LABELS: Record<ExpectedUsageSource, string> = {
@@ -99,13 +135,6 @@ const EXPECTED_USAGE_LABELS: Record<ExpectedUsageSource, string> = {
   [ExpectedUsageSource.DECLARED]: 'Declared',
   [ExpectedUsageSource.MEASURED]: 'Measured',
   [ExpectedUsageSource.ESTIMATED]: 'Estimated',
-};
-
-const EXPECTED_USAGE_TONES: Record<ExpectedUsageSource, DeploymentRunTone> = {
-  [ExpectedUsageSource.CONFIGURED]: 'success',
-  [ExpectedUsageSource.DECLARED]: 'default',
-  [ExpectedUsageSource.MEASURED]: 'success',
-  [ExpectedUsageSource.ESTIMATED]: 'default',
 };
 
 export const formatActivationPolicy = (policy: ActivationPolicy): string =>
@@ -116,20 +145,6 @@ export const describeActivationPolicy = (policy: ActivationPolicy): string =>
     ? 'Start the deployment with the server and keep it running.'
     : 'Start the deployment when it receives a request. Stop it after its idle timeout.';
 
-export const describeResidency = (residency: DeploymentResidencyDto, running: boolean): string => {
-  if (residency.givenUp) {
-    return (
-      `Given up: the last ${residency.launchFailures} launches failed, so the scheduler will not start this ` +
-      'deployment again until it is started by hand or its configuration changes.'
-    );
-  }
-
-  const rule = describeResidencyRule(residency, running);
-  const failures = describeLaunchFailures(residency);
-
-  return failures === null ? rule : `${rule} ${failures}`;
-};
-
 /** Null unless failed launches are holding the next start back. */
 export const describeLaunchFailures = (residency: DeploymentResidencyDto, now = new Date()): string | null => {
   if (residency.launchFailures === 0 || residency.retryDate === null) {
@@ -137,42 +152,10 @@ export const describeLaunchFailures = (residency: DeploymentResidencyDto, now = 
   }
 
   const launches =
-    residency.launchFailures === 1 ? 'Its last launch failed' : `Its last ${residency.launchFailures} launches failed`;
+    residency.launchFailures === 1 ? 'Last start failed' : `Last ${residency.launchFailures} starts failed`;
   const wait = formatDuration((residency.retryDate.getTime() - now.getTime()) / 1000);
 
-  return `${launches}, so it is not started again for another ${wait}.`;
-};
-
-const describeResidencyRule = (residency: DeploymentResidencyDto, running: boolean): string => {
-  const timeout = formatDuration((residency.idleTimeoutMs ?? 0) / 1000);
-
-  if (residency.rule === ResidencyRule.DISABLED) {
-    return running
-      ? 'Disabled: the scheduler will stop this deployment after its current requests finish.'
-      : 'Disabled: this deployment will not run until it is enabled.';
-  }
-
-  if (residency.rule === ResidencyRule.ALWAYS) {
-    return running
-      ? 'Always on: the scheduler keeps this deployment running and replaces any instance that exits.'
-      : 'Always on: the scheduler will start this deployment during its next pass.';
-  }
-
-  if (!running) {
-    return `On demand: the first request starts this deployment, and it stops after ${timeout} of inactivity.`;
-  }
-
-  if (residency.inFlight > 0) {
-    const requests = residency.inFlight === 1 ? '1 request' : `${residency.inFlight} requests`;
-
-    return `On demand: stops after ${timeout} of inactivity. It will remain running while serving ${requests}.`;
-  }
-
-  if (residency.lastUsedDate === null) {
-    return `On demand: stops after ${timeout} of inactivity. It has not received a request yet.`;
-  }
-
-  return `On demand: stops after ${timeout} of inactivity. Last used ${formatRelativeDate(residency.lastUsedDate)}.`;
+  return `${launches}. Retry available in ${wait}.`;
 };
 
 /** Empty where the deployment names no preset, since every entry is then attributed to the deployment. */
@@ -254,77 +237,58 @@ export const describeDeploymentPlacement = (deployment: ListDeploymentDto, insta
   return `${policy} · on ${placements.join(', ')}`;
 };
 
-export const describeExpectedUsage = (node: PlacementNodeDto): string | null => {
-  const usage = node.expectedUsage;
-
-  if (usage === null) {
-    return null;
-  }
-
-  const described =
-    `Expected to take ${formatBytes(usage.bytes)} on ${node.nodeName}, ` + EXPECTED_USAGE_SOURCES[usage.source];
-
-  return usage.hostWeightsBytes > 0
-    ? `${described}, excluding ${formatBytes(usage.hostWeightsBytes)} kept off the GPUs`
-    : described;
-};
-
-export const placementRows = (nodes: PlacementNodeDto[]): IPlacementRow[] =>
+export const placementRows = (nodes: PlacementNodeDto[], makingRoomNodeIds: number[] = []): IPlacementRow[] =>
   nodes.map(node => {
-    const usage = node.expectedUsage;
     const capacity = node.capacity;
-    const availableBytes = capacity?.availableBytes ?? null;
-    const hostWeights = capacity?.hostWeights ?? null;
     const hostFreeBytes = capacity?.hostFreeBytes ?? null;
-    const fit = placementFit(node);
-
-    const systemMemory =
-      hostWeights === null
-        ? nonZeroBytes(usage?.hostResidentBytes ?? 0)
-        : `${formatBytes(hostWeights.neededBytes)} (${formatBytes(hostWeights.freeBytes)} free)`;
+    const reason = placementReason(node, makingRoomNodeIds);
+    const cards = (capacity?.cards ?? []).map(card => ({
+      deviceKey: card.deviceKey,
+      name: card.name,
+      total: nonZeroBytes(card.totalBytes ?? 0),
+      used: nonZeroBytes(card.usedBytes ?? 0),
+      starting: nonZeroBytes(card.predictedBytes),
+      headroom: nonZeroBytes(card.headroomBytes),
+      free: nonZeroBytes(card.freeBytes ?? 0),
+      short: card.short,
+    }));
 
     return {
       nodeId: node.nodeId,
       nodeName: node.nodeName,
-      source: usage?.source ?? null,
-      expected: usage === null ? '-' : formatBytes(usage.bytes),
-      free: availableBytes === null ? '-' : formatBytes(availableBytes),
-      offGpus: nonZeroBytes(usage?.hostWeightsBytes ?? 0),
-      systemMemory,
-      expectedShort: capacity !== null && availableBytes !== null && availableBytes < pooledNeedBytes(capacity),
-      systemMemoryShort: capacity !== null && hostShortBytes(capacity) > 0,
-      fit,
-      reason: node.problem,
-      cards: (capacity?.cards ?? []).map(card => ({
-        deviceKey: card.deviceKey,
-        name: card.name,
-        total: nonZeroBytes(card.totalBytes ?? 0),
-        used: nonZeroBytes(card.usedBytes ?? 0),
-        starting: nonZeroBytes(card.predictedBytes),
-        headroom: nonZeroBytes(card.headroomBytes),
-        free: nonZeroBytes(card.freeBytes ?? 0),
-      })),
-      poolSystemMemory: hostFreeBytes === null ? null : formatBytes(hostFreeBytes),
+      ...placementMemory(node, makingRoomNodeIds),
+      fit: placementFit(node, makingRoomNodeIds),
+      reason,
+      expandable: reason !== null && (cards.length > 0 || hostFreeBytes !== null),
+      cards,
+      poolRam: hostFreeBytes === null ? null : formatBytes(hostFreeBytes),
     };
   });
 
-export const formatExpectedUsageSource = (source: ExpectedUsageSource): string => EXPECTED_USAGE_LABELS[source];
+export const placementReason = (node: PlacementNodeDto, makingRoomNodeIds: number[] = []): string | null => {
+  if (placementFit(node, makingRoomNodeIds) === PlacementFit.MAKING_ROOM) {
+    return MAKING_ROOM_REASON;
+  }
 
-export const expectedUsageSourceTone = (source: ExpectedUsageSource): DeploymentRunTone => EXPECTED_USAGE_TONES[source];
+  return node.evictions.length > 0 ? describeEvictions(node.evictions) : node.problem;
+};
 
 const nonZeroBytes = (bytes: number): string => (bytes > 0 ? formatBytes(bytes) : '-');
 
 /** Reads the server's verdict rather than reaching its own, so the picker and the deployment screen agree. */
-export const placementFit = (node: PlacementNodeDto): PlacementFit => {
+export const placementFit = (node: PlacementNodeDto, makingRoomNodeIds: number[] = []): PlacementFit => {
   const capacity = node.capacity;
 
-  if (node.problem !== null) {
-    const short =
-      capacity !== null &&
-      ((capacity.availableBytes !== null && capacity.availableBytes < pooledNeedBytes(capacity)) ||
-        hostShortBytes(capacity) > 0);
+  if (capacity !== null && makingRoomNodeIds.includes(node.nodeId) && node.running < node.replicas) {
+    return PlacementFit.MAKING_ROOM;
+  }
 
-    return short ? PlacementFit.SHORT : PlacementFit.BLOCKED;
+  if (node.evictions.length > 0) {
+    return PlacementFit.EVICTS;
+  }
+
+  if (node.problem !== null) {
+    return REASON_FITS[node.problemReason ?? PlacementProblemReason.OTHER];
   }
 
   if (capacity !== null) {
@@ -336,20 +300,68 @@ export const placementFit = (node: PlacementNodeDto): PlacementFit => {
 
 export const formatPlacementFit = (fit: PlacementFit): string => FIT_LABELS[fit];
 
+export const describeEviction = (eviction: PlacementEvictionDto): string =>
+  `${eviction.deploymentName} (idle ${formatDuration(eviction.idleMs / 1000)}, ` +
+  `frees ${formatBytes(eviction.releasedBytes)})`;
+
+export const describeEvictions = (evictions: PlacementEvictionDto[]): string =>
+  `Fits after evicting ${evictions.map(eviction => describeEviction(eviction)).join(', ')}`;
+
 export const placementFitTone = (fit: PlacementFit): DeploymentRunTone => FIT_TONES[fit];
 
-/** A shortfall's refusal is left out, since the figures beside it already say it. */
-export const describePlacementFit = (node: PlacementNodeDto): string[] => {
-  const fit = placementFit(node);
-  const lines = [describeExpectedUsage(node)];
+/** A refusal for one card marks VRAM short even where the pooled figure fits. */
+export const placementMemory = (node: PlacementNodeDto, makingRoomNodeIds: number[] = []): IPlacementMemory => {
+  const figures = placementFigures(node);
+  const { vram, ram } = figures === null ? { vram: UNKNOWN_MEMORY, ram: UNKNOWN_MEMORY } : memoryCells(figures);
+  const fit = placementFit(node, makingRoomNodeIds);
+  const marked = fit !== PlacementFit.MAKING_ROOM;
 
-  if (fit === PlacementFit.BLOCKED) {
-    lines.push(node.problem);
-  }
+  return {
+    vram: {
+      ...vram,
+      label: 'VRAM',
+      short: marked && (vram.short || fit === PlacementFit.NOT_ENOUGH_VRAM),
+      title: node.expectedUsage === null ? null : EXPECTED_USAGE_LABELS[node.expectedUsage.source],
+    },
+    ram: {
+      ...ram,
+      label: 'RAM',
+      short: marked && (ram.short || fit === PlacementFit.NOT_ENOUGH_RAM),
+      title: ramBreakdown(node.expectedUsage),
+    },
+  };
+};
 
+const ramBreakdown = (usage: ExpectedUsageDto | null): string | null => {
+  const weights = usage?.hostResidentBytes ?? 0;
+  const cache = usage?.hostCacheBytes ?? 0;
+  const parts = [
+    ...(weights > 0 ? [`Weights ${formatBytes(weights)}`] : []),
+    ...(cache > 0 ? [`Prompt cache up to ${formatBytes(cache)}`] : []),
+  ];
+
+  return parts.length === 0 ? null : parts.join(', ');
+};
+
+export const describePlacementFit = (node: PlacementNodeDto): IPlacementMemoryCell[] => {
+  const { vram, ram } = placementMemory(node);
+
+  return [vram, ram].filter(cell => cell.text !== UNKNOWN_MEMORY.text);
+};
+
+const placementFigures = (node: PlacementNodeDto): IMemoryFigures | null => {
   if (node.capacity !== null) {
-    lines.push(describeCapacityNeed(node.capacity));
+    return capacityFigures(node.capacity);
   }
 
-  return lines.filter(line => line !== null);
+  if (node.expectedUsage === null) {
+    return null;
+  }
+
+  return {
+    vramUsedBytes: node.expectedUsage.bytes,
+    vramFreeBytes: null,
+    ramUsedBytes: node.expectedUsage.hostResidentBytes + node.expectedUsage.hostCacheBytes,
+    ramFreeBytes: null,
+  };
 };

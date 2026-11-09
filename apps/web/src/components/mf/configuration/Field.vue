@@ -1,11 +1,7 @@
 <template>
   <ui-form-field :label="field.label" :path="field.name" data-testid="configuration-field">
     <template #label>
-      <span class="inline-flex flex-wrap items-center gap-2">
-        {{ field.label }}
-
-        <ui-tag v-if="overridden" type="primary">Overridden</ui-tag>
-      </span>
+      <mf-configuration-field-label :label="field.label" :overridden="overridden" :from-preset="fromPreset" />
     </template>
 
     <template #help>
@@ -109,17 +105,9 @@ import {
   tidyListText,
 } from '@/utils/configuration/fields';
 
-import {
-  ISelectOption,
-  UiButton,
-  UiFormField,
-  UiInput,
-  UiNumberInput,
-  UiSelect,
-  UiTag,
-  UiTextarea,
-} from '@/components/ui';
+import { ISelectOption, UiButton, UiFormField, UiInput, UiNumberInput, UiSelect, UiTextarea } from '@/components/ui';
 
+import MfConfigurationFieldLabel from './FieldLabel.vue';
 import MfConfigurationModelReference from './ModelReference.vue';
 
 interface IBounds {
@@ -167,14 +155,16 @@ const inherits = computed(() => props.inherited !== undefined);
 
 const overridden = computed(() => inherits.value && value.value !== null);
 
+const fromPreset = computed(() => inherits.value && !overridden.value);
+
 const placeholder = computed(() =>
-  inherits.value && !overridden.value
+  fromPreset.value
     ? `Inherited: ${describeConfigurationValue(props.inherited ?? null)}`
     : `Default: ${props.defaultText ?? describeDefault(props.field)}`
 );
 
 const listPlaceholder = computed(() => {
-  if (inherits.value && !overridden.value) {
+  if (fromPreset.value) {
     return placeholder.value;
   }
 

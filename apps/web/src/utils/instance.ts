@@ -2,7 +2,7 @@ import type { InstanceDeviceDto, ListInstanceDto } from '@libs/dto';
 import { InstanceState } from '@libs/dto';
 
 import { formatDuration } from './format/date';
-import { ICount, orderCounts } from './format/number';
+import { ICount, formatBytes, orderCounts } from './format/number';
 
 export type InstanceStateTone = 'success' | 'warning' | 'error';
 
@@ -42,6 +42,14 @@ export const formatDevices = (devices: InstanceDeviceDto[]): string =>
 
 export const formatUptime = (startedDate: Date | null): string | null =>
   startedDate === null ? null : formatDuration((Date.now() - startedDate.getTime()) / 1000);
+
+export const formatResidentMemory = (residentBytes: number | null | undefined): string => {
+  if (residentBytes === undefined) {
+    return '-';
+  }
+
+  return residentBytes === null ? 'Unknown' : formatBytes(residentBytes);
+};
 
 export const countInstanceStates = (instances: ListInstanceDto[]): ICount<InstanceState>[] => {
   const counts = new Map<InstanceState, number>();

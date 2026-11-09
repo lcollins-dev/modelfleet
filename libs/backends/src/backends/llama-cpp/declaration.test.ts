@@ -5,6 +5,7 @@ import {
   EXTRA_FLAGS_FIELD,
   IMAGE_FIELD,
   backendField,
+  declarationIssues,
   modelReferenceFields,
   validateConfiguration,
 } from '../../configuration';
@@ -34,6 +35,8 @@ describe('llamaCppDeclaration', () => {
       'cacheTypeV',
       'noKvOffload',
       'loadMode',
+      'lazyMode',
+      'promptCache',
       'threads',
       'threadsBatch',
       'numa',
@@ -42,6 +45,9 @@ describe('llamaCppDeclaration', () => {
       'ropeFreqBase',
       'ropeFreqScale',
       'mmproj',
+      'draftModel',
+      'speculativeType',
+      'draftTokens',
       'contBatching',
       'jinja',
       'chatTemplate',
@@ -75,7 +81,6 @@ describe('llamaCppDeclaration', () => {
     const declared = llamaCppDeclaration.fields.filter(field => field.default !== undefined);
 
     expect(declared.map(field => field.name)).toEqual([
-      IMAGE_FIELD,
       'contextSize',
       'ubatchSize',
       'parallel',
@@ -172,5 +177,132 @@ describe('llamaCppDeclaration', () => {
       'contextSize: belowMinimum',
       'cacheTypeK: notAChoice',
     ]);
+  });
+
+  it('offers the three lazy modes and declares no default, so an unset field reaches the backend as its own', () => {
+    expect(backendField(llamaCppDeclaration, 'lazyMode')).toMatchObject({
+      flag: '--lazy-mode',
+      group: 'memory',
+      type: BackendFieldType.CHOICE,
+      choices: ['auto', 'on', 'off'],
+    });
+    expect(backendField(llamaCppDeclaration, 'lazyMode')?.default).toBeUndefined();
+  });
+
+  it('passes the lazy mode the estimate reads', () => {
+    expect(declaredArguments(llamaCppDeclaration, { lazyMode: 'off' })).toEqual(
+      expect.arrayContaining(['--lazy-mode', 'off'])
+    );
+  });
+
+  it('explains tensor-mode memory requirements and default GPU shares', () => {
+    const description = backendField(llamaCppDeclaration, 'splitMode')?.description ?? '';
+
+    expect(description).toContain('disables automatic fitting');
+    expect(description).toContain('whole model must fit in VRAM');
+    expect(description).toContain('divided equally unless you set Tensor split');
+  });
+
+  it('declares the prompt cache in MiB with no default, so an unset field passes no flag', () => {
+    expect(backendField(llamaCppDeclaration, 'promptCache')).toMatchObject({
+      flag: '--cache-ram',
+      group: 'memory',
+      type: BackendFieldType.INTEGER,
+      min: 0,
+    });
+    expect(backendField(llamaCppDeclaration, 'promptCache')?.default).toBeUndefined();
+    expect(declaredArguments(llamaCppDeclaration, {})).not.toContain('--cache-ram');
+  });
+
+  it.each([
+    [2048, '2048'],
+    [0, '0'],
+  ])('passes a prompt cache of %d MiB', (promptCache, argument) => {
+    expect(declaredArguments(llamaCppDeclaration, { promptCache })).toEqual(
+      expect.arrayContaining(['--cache-ram', argument])
+    );
+  });
+
+  it('refuses a negative prompt cache, which llama.cpp reads as no byte limit', () => {
+    const result = validateConfiguration(llamaCppDeclaration, { promptCache: -1 });
+
+    expect(result.issues.map(issue => issue.field)).toEqual(['promptCache']);
+  });
+
+  it('refuses a lazy mode the backend does not take', () => {
+    const result = validateConfiguration(llamaCppDeclaration, { lazyMode: 'sometimes' });
+
+    expect(result.issues.map(issue => `${issue.field}: ${issue.reason}`)).toEqual(['lazyMode: notAChoice']);
+  });
+
+  it('takes the draft model as a reference to a catalogued draft', () => {
+    expect(backendField(llamaCppDeclaration, 'draftModel')).toMatchObject({
+      flag: '--spec-draft-model',
+      type: BackendFieldType.MODEL_REFERENCE,
+      modelType: ModelType.DRAFT,
+    });
+  });
+
+  it('offers the purpose-built speculative types and no draft-simple', () => {
+    expect(backendField(llamaCppDeclaration, 'speculativeType')).toMatchObject({
+      flag: '--spec-type',
+      type: BackendFieldType.CHOICE,
+      choices: ['draft-mtp', 'draft-dflash', 'draft-dspark', 'draft-eagle3'],
+    });
+  });
+
+  it('launches a draft from its mounted path, with its type and token limit as set', () => {
+    const companions = new Map([['draftModel', '/models/draftModel/dspark.gguf']]);
+    const args = declaredArguments(
+      llamaCppDeclaration,
+      { draftModel: FINGERPRINT, speculativeType: 'draft-dspark', draftTokens: 16 },
+      companions
+    );
+
+    expect(args).toEqual(
+      expect.arrayContaining([
+        '--spec-draft-model',
+        '/models/draftModel/dspark.gguf',
+        '--spec-type',
+        'draft-dspark',
+        '--spec-draft-n-max',
+        '16',
+      ])
+    );
+  });
+
+  it('passes a speculative type with no draft named, since MTP can run from the main model', () => {
+    expect(declaredArguments(llamaCppDeclaration, { speculativeType: 'draft-mtp' })).toEqual(
+      expect.arrayContaining(['--spec-type', 'draft-mtp'])
+    );
+  });
+
+  it('requires a dflash file for the two types llama.cpp aborts on otherwise', () => {
+    expect(llamaCppDeclaration.referenceRequirements).toEqual([
+      {
+        choiceField: 'speculativeType',
+        choices: ['draft-dflash', 'draft-dspark'],
+        referenceField: 'draftModel',
+        architecture: 'dflash',
+      },
+    ]);
+  });
+
+  it('declares a requirement over fields it holds', () => {
+    expect(declarationIssues(llamaCppDeclaration)).toEqual([]);
+    expect(
+      declarationIssues({
+        ...llamaCppDeclaration,
+        referenceRequirements: [
+          { choiceField: 'nope', choices: ['a'], referenceField: 'draftModel', architecture: 'dflash' },
+        ],
+      })
+    ).toEqual([{ path: ['referenceRequirements', 0, 'choiceField'], message: 'nope is not a field' }]);
+  });
+
+  it('refuses a row split, which the CUDA build no longer loads', () => {
+    const result = validateConfiguration(llamaCppDeclaration, { splitMode: 'row' });
+
+    expect(result.issues.map(issue => `${issue.field}: ${issue.reason}`)).toEqual(['splitMode: notAChoice']);
   });
 });

@@ -20,3 +20,10 @@ export const SEVERITY_DISC_CLASSES: Record<Severity, string> = {
   warning: 'bg-warning',
   error: 'bg-error',
 };
+
+export const SEVERITY_BUTTON_TYPES: Record<Severity, 'primary' | 'success' | 'warning' | 'danger'> = {
+  info: 'primary',
+  success: 'success',
+  warning: 'warning',
+  error: 'danger',
+};

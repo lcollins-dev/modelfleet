@@ -1,12 +1,6 @@
 <template>
   <ui-page-container>
-    <ui-page-heading
-      v-if="batchJob"
-      :title="batchJob.name"
-      :subtitle="batchJob.desc"
-      back-to="/batch-jobs"
-      back-label="Batch jobs"
-    >
+    <ui-page-heading v-if="batchJob">
       <ui-switch-label
         :value="batchJob.enabled"
         :aria-label="`Run ${batchJob.name} on its schedule`"
@@ -19,9 +13,9 @@
       </ui-switch-label>
     </ui-page-heading>
 
-    <ui-back-link v-else to="/batch-jobs" label="Batch jobs" />
+    <ui-back-link v-else />
 
-    <ui-card v-if="batchJob" title="Schedule" :subtitle="scheduleDescription">
+    <ui-card v-if="batchJob" title="Schedule" subtitle="Run schedule and latest results.">
       <ui-stat-grid>
         <ui-stat label="Cron" mono>{{ batchJob.cronExpression ?? 'Not scheduled' }}</ui-stat>
         <ui-stat label="Last success" mono>{{ formatOptional(batchJob.lastSuccessDate) }}</ui-stat>
@@ -29,12 +23,7 @@
       </ui-stat-grid>
     </ui-card>
 
-    <ui-card
-      v-if="batchJob"
-      title="Recent runs"
-      subtitle="Newest first. The oldest are pruned as new runs finish."
-      flush
-    >
+    <ui-card v-if="batchJob" title="Recent runs" subtitle="Run times, duration and results." flush>
       <template #header-extra>
         <ui-button
           type="primary"
@@ -103,6 +92,7 @@ import {
   UiTableHead,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
 import { useResource } from '@/composables/useResource';
 
@@ -129,6 +119,8 @@ const { data: batchJob, reload: reloadBatchJob } = useResource({
   fetch: (targetId: number) => batchJobAdminService.getBatchJob(targetId),
 });
 
+usePage({ title: () => batchJob.value?.name ?? '', subtitle: () => batchJob.value?.desc, back: '/batch-jobs' });
+
 const total = ref(0);
 
 const {
@@ -154,16 +146,6 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let unmounted = false;
 
 const formatOptional = (date: Date | null): string => (date === null ? 'Never' : formatDateTime(date));
-
-const scheduleDescription = computed(() => {
-  if (batchJob.value?.enabled !== true) {
-    return "Paused. It won't run on its schedule until you enable it.";
-  }
-
-  return batchJob.value.cronExpression === null
-    ? 'It has no schedule. Run it by hand with Run Now.'
-    : "Runs on the server's clock.";
-});
 
 // The response carries no page size, so a full page's length stands in for it and the last page ends at the total.
 const countLabel = computed(() => {

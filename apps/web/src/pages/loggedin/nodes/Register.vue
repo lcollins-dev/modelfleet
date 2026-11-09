@@ -1,11 +1,6 @@
 <template>
   <ui-page-container>
-    <ui-page-heading
-      title="Register node"
-      subtitle="Name the machine, then give its agent the credentials we show you."
-      back-to="/nodes"
-      back-label="Nodes"
-    />
+    <ui-page-heading />
 
     <ui-form :name="FORM_NAME" layout="row" align="end" @submit="doRegisterNode">
       <ui-card title="Node details" rows>
@@ -42,7 +37,7 @@
 
         <template #footer>
           <div class="flex gap-2">
-            <ui-button :disabled="loading" to="/nodes">Cancel</ui-button>
+            <ui-button :disabled="loading" @click="goBack()">Cancel</ui-button>
 
             <ui-button type="primary" native-type="submit" :loading="loading">Register Node</ui-button>
           </div>
@@ -125,12 +120,23 @@ import {
   UiSpinner,
 } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
+usePage({
+  title: 'Register node',
+  subtitle: 'Name the machine, then give its agent the credentials we show you.',
+  back: '/nodes',
+  transient: true,
+});
+
 const FORM_NAME = 'register-node';
 
 const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/nodes/Register');
 
 const router = useRouter();
+const { goBack } = useGoBack();
 
 const nodeAdminService = useNodeAdminService();
 const eventAdminService = useEventAdminService();

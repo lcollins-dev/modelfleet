@@ -16,6 +16,7 @@
         v-model="fieldValues"
         :declaration="declaration"
         :inherited="inherited"
+        :own="own"
         :inheriting="hasPreset"
         :lead="DEPLOYMENT_LEAD"
         @submit="emit('submit')"
@@ -31,20 +32,25 @@
           />
 
           <ui-form-field
-            v-slot="{ input }"
             path="replicas"
             label="Replicas"
             help="Set the instances kept on each selected node. Existing instances do not restart when this changes."
           >
-            <ui-number-input
-              v-bind="input"
-              :value="replicasValue"
-              :min="1"
-              :precision="0"
-              :placeholder="replicasPlaceholder"
-              clearable
-              @update:value="setReplicas"
-            />
+            <template #label>
+              <mf-configuration-field-label label="Replicas" :from-preset="fromPreset(REPLICAS_KEY)" />
+            </template>
+
+            <template #default="{ input }">
+              <ui-number-input
+                v-bind="input"
+                :value="replicasValue"
+                :min="1"
+                :precision="0"
+                :placeholder="replicasPlaceholder"
+                clearable
+                @update:value="setReplicas"
+              />
+            </template>
           </ui-form-field>
 
           <ui-form-field
@@ -63,37 +69,47 @@
 
           <ui-form-field
             v-if="activationPolicy === ActivationPolicy.ON_DEMAND"
-            v-slot="{ input }"
             path="idleTimeout"
             label="Idle timeout"
             help="Choose when to stop an unused deployment. The minimum is 1 minute, for example 30m."
           >
-            <ui-input
-              v-bind="input"
-              :value="idleTimeoutValue ?? ''"
-              class="font-mono"
-              :placeholder="idleTimeoutPlaceholder"
-              clearable
-              @update:value="setIdleTimeout"
-            />
+            <template #label>
+              <mf-configuration-field-label label="Idle timeout" :from-preset="fromPreset(IDLE_TIMEOUT_KEY)" />
+            </template>
+
+            <template #default="{ input }">
+              <ui-input
+                v-bind="input"
+                :value="idleTimeoutValue ?? ''"
+                class="font-mono"
+                :placeholder="idleTimeoutPlaceholder"
+                clearable
+                @update:value="setIdleTimeout"
+              />
+            </template>
           </ui-form-field>
 
           <ui-form-field
-            v-slot="{ input }"
             path="vramGib"
             label="Declared VRAM (GiB)"
             help="Set what this deployment takes across its GPUs. It is used in place of a measured figure or an estimate."
           >
-            <ui-number-input
-              v-bind="input"
-              :value="declaredVramValue"
-              :min="0.1"
-              :max="4096"
-              :step="0.5"
-              :placeholder="declaredVramPlaceholder"
-              clearable
-              @update:value="setDeclaredVram"
-            />
+            <template #label>
+              <mf-configuration-field-label label="Declared VRAM (GiB)" :from-preset="fromPreset(DECLARED_VRAM_KEY)" />
+            </template>
+
+            <template #default="{ input }">
+              <ui-number-input
+                v-bind="input"
+                :value="declaredVramValue"
+                :min="0.1"
+                :max="4096"
+                :step="0.5"
+                :placeholder="declaredVramPlaceholder"
+                clearable
+                @update:value="setDeclaredVram"
+              />
+            </template>
           </ui-form-field>
 
           <mf-placement-field
@@ -170,6 +186,7 @@ import {
 
 import MfEffectiveConfiguration from './Effective.vue';
 import MfConfigurationField from './Field.vue';
+import MfConfigurationFieldLabel from './FieldLabel.vue';
 import MfConfigurationFields, { IConfigurationLead } from './Fields.vue';
 import MfPlacementField from './Placement.vue';
 
@@ -301,6 +318,8 @@ const fieldValues = computed<ConfigurationFormValues>({
 
 const describeInherited = (key: string, fallback: string): string =>
   holdsKey(props.inherited, key) ? `Inherited: ${describeConfigurationValue(props.inherited[key])}` : fallback;
+
+const fromPreset = (key: string): boolean => holdsKey(props.inherited, key) && (own.value?.[key] ?? null) === null;
 
 const applyEdits = (edits: DocumentEdits) => {
   document.value = applyToDocument(document.value, edits);

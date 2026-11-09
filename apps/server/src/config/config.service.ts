@@ -275,6 +275,10 @@ export class ConfigService {
     return this.env.SCHEDULER_LAUNCH_FAILURE_LIMIT;
   }
 
+  get schedulerMinResidencyMs() {
+    return ms(this.env.SCHEDULER_MIN_RESIDENCY);
+  }
+
   // Instance output
   get instanceOutputTailLines() {
     return this.env.INSTANCE_OUTPUT_TAIL_LINES;

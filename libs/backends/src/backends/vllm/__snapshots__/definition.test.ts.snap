@@ -26,9 +26,10 @@ exports[`vllmDefinition > renders the same container from a fixed input 1`] = `
   "environment": {
     "DO_NOT_TRACK": "1",
     "HF_HUB_OFFLINE": "1",
+    "VLLM_MAX_AUDIO_CLIP_FILESIZE_MB": "50",
     "VLLM_NO_USAGE_STATS": "1",
   },
-  "image": "vllm/vllm-openai:v0.31.0",
+  "image": "vllm/vllm-openai:v0.33.0",
   "labels": {
     "modelfleet.backend": "vllm",
     "modelfleet.instance": "inst_01hq9v",

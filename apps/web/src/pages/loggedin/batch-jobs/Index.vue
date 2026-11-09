@@ -1,9 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="Batch jobs"
-      subtitle="Scheduled jobs registered on this system. Schedules run on the server's clock."
-    />
+    <ui-page-heading />
 
     <ui-card flush>
       <ui-table :columns="TABLE_COLUMNS">
@@ -78,7 +75,13 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { useResource } from '@/composables/useResource';
+
+usePage({
+  title: 'Batch jobs',
+  subtitle: "Scheduled jobs registered on this system. Schedules run on the server's clock.",
+});
 
 const TABLE_COLUMNS = 'minmax(0, 1fr) 9rem 6rem 2.75rem 1.25rem';
 

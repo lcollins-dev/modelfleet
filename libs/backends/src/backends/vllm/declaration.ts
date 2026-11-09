@@ -9,7 +9,7 @@ import {
 import { BackendImages, imageField } from '../../definition';
 import { ModelFormat } from '../../model';
 
-export const VLLM_IMAGES: BackendImages = { cuda: 'vllm/vllm-openai:v0.31.0' };
+export const VLLM_IMAGES: BackendImages = { cuda: 'vllm/vllm-openai:v0.33.0' };
 
 export const GPU_MEMORY_UTILIZATION_FIELD = 'gpuMemoryUtilization';
 

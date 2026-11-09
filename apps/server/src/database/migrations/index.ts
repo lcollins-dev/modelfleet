@@ -23,6 +23,7 @@ import { MustChangePassword1791903696040 } from './1791903696040-MustChangePassw
 import { BatchJobRuns1791920160755 } from './1791920160755-BatchJobRuns';
 import { UnprefixedPageUrls1791933356935 } from './1791933356935-UnprefixedPageUrls';
 import { VllmOmniMemoryGib1792014138968 } from './1792014138968-VllmOmniMemoryGib';
+import { LlamaCppRowSplit1793713187976 } from './1793713187976-LlamaCppRowSplit';
 import { TestData9000000000000 } from './test/9000000000000-TestData';
 
 export const migrations = [
@@ -51,5 +52,6 @@ export const migrations = [
   BatchJobRuns1791920160755,
   UnprefixedPageUrls1791933356935,
   VllmOmniMemoryGib1792014138968,
+  LlamaCppRowSplit1793713187976,
 ];
 export const testMigrations = [TestData9000000000000];

@@ -3,6 +3,7 @@ export enum ModelType {
   PROJECTOR = 'projector',
   LORA = 'lora',
   CONTROL_VECTOR = 'control-vector',
+  DRAFT = 'draft',
 }
 
 export enum ModelFormat {

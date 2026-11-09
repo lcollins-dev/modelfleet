@@ -57,7 +57,7 @@ test.describe('batch jobs', () => {
       const newestBefore = await getNewestBatchJobRunId(request, RESIDENCY_BATCH_JOB_ID);
 
       await batchJobPage.goto(RESIDENCY_BATCH_JOB_ID);
-      await expect(page.getByText('It has no schedule. Run it by hand with Run Now.')).toBeVisible();
+      await expect(page.getByText('Not scheduled')).toBeVisible();
 
       await batchJobPage.runNow.click();
       await batchJobPage.confirmRunNow.click();

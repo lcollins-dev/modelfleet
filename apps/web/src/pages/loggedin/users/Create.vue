@@ -1,11 +1,6 @@
 <template>
   <ui-page-container>
-    <ui-page-heading
-      title="New user"
-      subtitle="Set their password here and share it with them. They can change it once signed in."
-      back-to="/users"
-      back-label="Users"
-    />
+    <ui-page-heading />
 
     <ui-form :name="CREATE_FORM" @submit="doCreateUser">
       <ui-card>
@@ -73,7 +68,7 @@
 
         <template #footer>
           <div class="flex gap-2">
-            <ui-button :disabled="loading" to="/users">Cancel</ui-button>
+            <ui-button :disabled="loading" @click="goBack()">Cancel</ui-button>
 
             <ui-button type="primary" native-type="submit" :loading="loading">Create User</ui-button>
           </div>
@@ -108,12 +103,23 @@ import {
 } from '@/components/ui';
 import RoleSelect from '@/components/user/RoleSelect.vue';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
+usePage({
+  title: 'New user',
+  subtitle: 'Set their password here and share it with them. They can change it once signed in.',
+  back: '/users',
+  transient: true,
+});
+
 const CREATE_FORM = 'create-user';
 
 const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/users/Create');
 
 const router = useRouter();
+const { goBack } = useGoBack();
 
 const errorStore = useErrorStore();
 const notificationStore = useNotificationStore();

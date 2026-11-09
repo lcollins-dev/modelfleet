@@ -1,9 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="Event log"
-      subtitle="Sign-ins, key changes, and node and deployment activity, newest first."
-    />
+    <ui-page-heading />
 
     <ui-card flush>
       <mf-filter-toolbar>
@@ -145,7 +142,13 @@ import {
   UiSelect,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
+
+usePage({
+  title: 'Event log',
+  subtitle: 'Sign-ins, key changes, and node and deployment activity.',
+});
 
 interface IFilters {
   type: EventType[];

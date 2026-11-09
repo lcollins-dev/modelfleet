@@ -6,6 +6,7 @@ import { InstanceState, NodeState } from '@libs/dto';
 import {
   countInstanceStates,
   formatDevices,
+  formatResidentMemory,
   formatInstanceFailure,
   formatInstanceKey,
   formatInstanceState,
@@ -94,6 +95,14 @@ describe('formatUptime', () => {
 
   it('reads nothing while the node has reported no uptime', () => {
     expect(formatUptime(null)).toBeNull();
+  });
+});
+
+describe('formatResidentMemory', () => {
+  it('reads a number as bytes, null as unknown and no figure as -', () => {
+    expect(formatResidentMemory(40 * 1024 ** 3)).toBe('40 GiB');
+    expect(formatResidentMemory(null)).toBe('Unknown');
+    expect(formatResidentMemory(undefined)).toBe('-');
   });
 });
 

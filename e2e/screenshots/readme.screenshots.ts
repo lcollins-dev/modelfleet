@@ -16,11 +16,18 @@ const INSTANCE_READY_MS = 5 * 60_000;
 const GPU_ATTEMPT_MS = 60_000;
 
 // What a 4B GGUF takes on a 32 GiB card, shown where the instance ran on the CPU.
-const FAKE_HOST = { cpu: 'AMD EPYC 9124 16-Core Processor', owner: 'gemma-3-4b' };
-const FAKE_PLACEMENT = { expected: '3.4 GiB', free: '28.4 GiB', offGpus: '-', systemMemory: '-' };
+const FAKE_HOST = {
+  cpu: 'AMD EPYC 9124 16-Core Processor',
+  owner: 'gemma-3-4b',
+  modelDirectory: '/var/lib/modelfleet/models',
+};
+const FAKE_PLACEMENT = { vram: '3.4 GiB / 28.4 GiB free', ram: '8.2 GiB / 9.9 GiB free' };
 
 interface IFleetTelemetry {
-  nodes: { nodeId: number; status: { devices: { deviceKey: string; name: string | null }[] } }[];
+  nodes: {
+    nodeId: number;
+    status: { telemetryState: string | null; devices: { deviceKey: string; name: string | null }[] };
+  }[];
 }
 
 interface IPinnedGpu {
@@ -64,7 +71,8 @@ const firstGpu = async (request: APIRequestContext, headers: Record<string, stri
       async () => {
         const response = await request.get('/api/v1/admin/telemetry', { headers });
         const { nodes } = (await response.json()) as IFleetTelemetry;
-        const node = nodes.find(entry => entry.status.devices.length > 0);
+        // An offline node still lists the GPUs it last reported.
+        const node = nodes.find(entry => entry.status.telemetryState !== null && entry.status.devices.length > 0);
         const device = node?.status.devices[0];
 
         gpu =
@@ -213,62 +221,79 @@ const disguiseCpuAsGpu = async (page: Page, gpu: IPinnedGpu): Promise<void> => {
       for (const kpi of document.querySelectorAll('[data-testid="host-kpis"] span')) {
         if (kpi.children.length === 0 && kpi.textContent.includes('Processor')) {
           kpi.textContent = host.cpu;
+        } else if (kpi.children.length === 0 && kpi.textContent.endsWith('/models')) {
+          kpi.textContent = host.modelDirectory;
         }
       }
 
       for (const legend of document.querySelectorAll('[data-testid="gpus-card"] [data-testid="meter-legend"]')) {
-        const segments = legend.previousElementSibling;
+        const bar = legend.previousElementSibling;
         const items = [...legend.children];
-        const kept = new Set<number>();
-        let owner = false;
+        const segments = [...(bar?.querySelectorAll<HTMLElement>(':scope > *') ?? [])];
+        let ownerIndex = -1;
+        let ownedPercent = 0;
 
         items.forEach((item, index) => {
           const label = item.querySelector('.truncate');
 
           if (label === null || label.textContent === 'Headroom') {
-            kept.add(index);
-          } else if (!owner) {
-            owner = true;
+            return;
+          }
+
+          ownedPercent += Number.parseFloat(segments.at(index)?.style.width ?? '0');
+
+          if (ownerIndex === -1) {
+            ownerIndex = index;
             label.textContent = host.owner;
-            kept.add(index);
-          }
-        });
-
-        items.forEach((item, index) => {
-          if (!kept.has(index)) {
+          } else {
             item.remove();
-            segments?.children.item(index)?.remove();
+            segments.at(index)?.remove();
           }
         });
-      }
 
-      for (const row of document.querySelectorAll('[data-testid="placement-row"]')) {
-        const badge = [...row.querySelectorAll('*')].find(element => element.textContent.trim() === 'CPU only');
-
-        if (badge === undefined) {
+        if (ownerIndex === -1) {
           continue;
         }
 
-        const blanks = [...row.querySelectorAll('*')].filter(
-          element => element.children.length === 0 && element.textContent.trim() === '-'
-        );
+        const ownerSegment = segments.at(ownerIndex);
+        const ownerValue = items.at(ownerIndex)?.querySelector('.font-mono');
+        const used = bar?.previousElementSibling?.firstElementChild?.textContent.split(' of ').at(0);
 
-        placement.forEach((value, index) => {
-          const blank = blanks.at(index);
+        if (ownerSegment !== undefined) {
+          ownerSegment.style.width = `${ownedPercent}%`;
+        }
 
-          if (blank !== undefined) {
-            blank.textContent = value;
-          }
-        });
+        if (ownerValue !== null && ownerValue !== undefined && used !== undefined) {
+          ownerValue.textContent = used;
+        }
+      }
 
-        badge.textContent = 'Fits';
-        badge.classList.replace('bg-emphasis', 'bg-success-soft');
-        badge.classList.replace('text-highlight', 'text-success');
+      for (const row of document.querySelectorAll('[data-testid="placement-row"]')) {
+        const status = row.querySelector('[data-testid="placement-status"]');
+
+        if (status === null || status.textContent.trim() !== 'CPU only') {
+          continue;
+        }
+
+        const vram = row.querySelector('[data-testid="placement-vram"]');
+        const ram = row.querySelector('[data-testid="placement-ram"]');
+
+        if (vram !== null) {
+          vram.textContent = placement.vram;
+        }
+
+        if (ram !== null) {
+          ram.textContent = placement.ram;
+        }
+
+        status.textContent = 'Fits';
+        status.classList.replace('bg-emphasis', 'bg-success-soft');
+        status.classList.replace('text-highlight', 'text-success');
       }
     },
     {
       name: gpu.name,
-      placement: [FAKE_PLACEMENT.expected, FAKE_PLACEMENT.free, FAKE_PLACEMENT.offGpus, FAKE_PLACEMENT.systemMemory],
+      placement: FAKE_PLACEMENT,
       host: FAKE_HOST,
     }
   );
@@ -288,7 +313,7 @@ const open = async (page: Page, path: string, rows: Locator): Promise<void> => {
 };
 
 test('README screenshots', async ({ page, request }) => {
-  test.setTimeout(GPU_ATTEMPT_MS + INSTANCE_READY_MS + 2 * NODE_REPORT_MS + 60_000);
+  test.setTimeout(GPU_ATTEMPT_MS + INSTANCE_READY_MS + 3 * NODE_REPORT_MS + 60_000);
 
   await page.addInitScript(() => localStorage.setItem('isDarkMode', 'true'));
   await new SignInPage(page).signIn({ email: 'alex@example.com', password: TEST_USER.password });
@@ -314,6 +339,8 @@ test('README screenshots', async ({ page, request }) => {
     await shoot(page, 'dashboard', gpu);
 
     await open(page, `/nodes/${gpu.nodeId}`, page.getByTestId('instance-row'));
+    // The node reports a new instance's memory a few seconds after it becomes ready.
+    await expect(page.getByTestId('host-kpis')).toContainText(DEPLOYMENT.name, { timeout: NODE_REPORT_MS });
     await page.getByRole('heading', { level: 1 }).evaluate(title => {
       window.scrollTo(0, title.getBoundingClientRect().top + window.scrollY - 72);
     });

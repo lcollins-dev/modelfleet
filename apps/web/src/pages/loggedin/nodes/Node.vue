@@ -1,6 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading v-if="node" back-to="/nodes" back-label="Nodes" :subtitle="node.description ?? undefined">
+    <ui-page-heading v-if="node">
       <template #title>
         <span class="font-mono">{{ node.name }}</span>
       </template>
@@ -13,7 +13,7 @@
       </ui-button>
     </ui-page-heading>
 
-    <ui-back-link v-else to="/nodes" label="Nodes" />
+    <ui-back-link v-else />
 
     <div v-if="loadingNode && !node" class="flex justify-center py-8">
       <ui-spinner />
@@ -51,9 +51,29 @@
       >
         <mf-kpi-tile label="CPU" :icon="IconDeveloperBoard" v-bind="hostKpis.cpu" :stale="telemetryStale" />
 
-        <mf-kpi-tile label="Host memory" :icon="IconStorage" v-bind="hostKpis.memory" :stale="telemetryStale" />
+        <mf-kpi-tile
+          label="RAM"
+          :icon="IconStorage"
+          v-bind="hostKpis.memory"
+          :detail="memoryMeter?.detail"
+          :stale="telemetryStale"
+        >
+          <template v-if="memoryMeter" #meter>
+            <mf-meter :bands="memoryMeter.bands" legend />
+          </template>
+        </mf-kpi-tile>
 
-        <mf-kpi-tile label="Load" :icon="IconSpeed" v-bind="hostKpis.load" :stale="telemetryStale" />
+        <mf-kpi-tile
+          label="Model storage"
+          :icon="IconHardDrive"
+          v-bind="hostKpis.storage"
+          :detail="storageMeter?.detail"
+          :stale="telemetryStale"
+        >
+          <template v-if="storageMeter" #meter>
+            <mf-meter :bands="storageMeter.bands" legend />
+          </template>
+        </mf-kpi-tile>
       </div>
 
       <ui-card title="Details">
@@ -64,7 +84,6 @@
             }}</ui-tag>
           </ui-stat>
           <ui-stat label="Node key" mono>{{ node.nodeKey }}</ui-stat>
-          <ui-stat label="GPUs">{{ gpuSummary }}</ui-stat>
           <ui-stat label="Last heartbeat">
             {{ node.lastSeenDate === null ? 'Never' : formatRelativeDate(node.lastSeenDate) }}
           </ui-stat>
@@ -101,6 +120,7 @@
           party="deployment"
           :loading="loadingInstances"
           :vram-by-instance="vramByInstance"
+          :resident-bytes-by-instance="residentBytesByInstance"
           empty-description="No Modelfleet instances are running on this node. Start one from its deployment."
         />
       </ui-card>
@@ -149,7 +169,7 @@
         </ui-table>
       </ui-card>
 
-      <ui-card title="Event log" subtitle="Events for this node, newest first." flush data-testid="event-log-card">
+      <ui-card title="Event log" subtitle="Events for this node." flush data-testid="event-log-card">
         <mf-event-table
           :events="history"
           :columns="HISTORY_COLUMNS"
@@ -219,12 +239,12 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watchEffect } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import IconChevronRight from '~icons/material-symbols/chevron-right-rounded';
 import IconDeveloperBoard from '~icons/material-symbols/developer-board-outline-rounded';
 import IconEdit from '~icons/material-symbols/edit-outline-rounded';
+import IconHardDrive from '~icons/material-symbols/hard-drive-outline-rounded';
 import IconRefresh from '~icons/material-symbols/refresh-rounded';
-import IconSpeed from '~icons/material-symbols/speed-outline-rounded';
 import IconStorage from '~icons/material-symbols/storage-rounded';
 
 import type {
@@ -243,7 +263,7 @@ import { DialogType } from '@/types/dialog';
 
 import { formatDate, formatRelativeDate } from '@/utils/format/date';
 import { formatBytes } from '@/utils/format/number';
-import { formatTelemetryState, gpuName, usageTone } from '@/utils/gpu';
+import { formatTelemetryState, usageTone } from '@/utils/gpu';
 import { companionLabel, formatModelKind, modelLabel } from '@/utils/model';
 import { formatNodeState, nodeStateTone } from '@/utils/node';
 
@@ -262,6 +282,7 @@ import {
   EventTableColumn,
   IKpiBand,
   IKpiLegendItem,
+  IMeterBand,
   MeterTone,
   MfDangerCard,
   MfEventTable,
@@ -269,6 +290,8 @@ import {
   MfGpuDeviceRow,
   MfInstanceTable,
   MfKpiTile,
+  MfMeter,
+  PROCESS_METER_TONES,
   STATUS_METER_TONES,
 } from '@/components/mf';
 import {
@@ -293,13 +316,28 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
 
 interface IKpiFigures {
   value: string | number;
   unit?: string;
-  bands: IKpiBand[];
-  legend: IKpiLegendItem[];
+  bands?: IKpiBand[];
+  legend?: IKpiLegendItem[];
+}
+
+interface IMemoryOwner {
+  label: string;
+  residentBytes: number;
+  mappedBytes: number;
+  tone: MeterTone;
+}
+
+interface IStorageFolder {
+  path: string;
+  freeBytes: number;
+  totalBytes: number;
 }
 
 type PendingAction = 'update' | 'state' | 'scan' | 'delete';
@@ -316,7 +354,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/nodes/Node');
 
 const route = useRoute();
-const router = useRouter();
+const { goBack } = useGoBack();
 
 const dialogStore = useDialogStore();
 const notificationStore = useNotificationStore();
@@ -331,6 +369,9 @@ const instanceAdminService = useInstanceAdminService();
 const nodeId = computed(() => (typeof route.params.nodeId === 'string' ? parseInt(route.params.nodeId, 10) : null));
 
 const node = ref<NodeDto | null>(null);
+
+usePage({ title: () => node.value?.name ?? '', subtitle: () => node.value?.description ?? undefined, back: '/nodes' });
+
 const nameField = ref('');
 const descriptionField = ref('');
 const showEditModal = ref(false);
@@ -368,20 +409,6 @@ const deviceEmptyDescription = computed(() => {
     : 'This node has not reported its devices yet.';
 });
 
-const gpuSummary = computed(() => {
-  if (devices.value.length === 0) {
-    return cpuOnly.value ? 'None' : '-';
-  }
-
-  const counts = new Map<string, number>();
-
-  for (const device of devices.value) {
-    counts.set(gpuName(device), (counts.get(gpuName(device)) ?? 0) + 1);
-  }
-
-  return [...counts].map(([name, count]) => `${count} × ${name}`).join(', ');
-});
-
 const vramByInstance = computed(() => {
   const held: Record<string, number> = {};
 
@@ -394,36 +421,29 @@ const vramByInstance = computed(() => {
   return held;
 });
 
-const percentOf = (part: number, whole: number): number => Math.round((part / whole) * 100);
+const residentBytesByInstance = computed(() => {
+  const resident: Record<string, number | null> = {};
 
-const cpuKpi = (host: NodeHostTelemetryDto): IKpiFigures => ({
-  value: host.cpuCount,
-  unit: host.cpuCount === 1 ? 'core' : 'cores',
-  bands: [],
-  legend: [{ label: host.cpuModel ?? 'Model not reported' }],
-});
-
-const memoryKpi = (host: NodeHostTelemetryDto): IKpiFigures => {
-  if (host.memoryTotalBytes === 0) {
-    return { value: '-', bands: [], legend: [{ label: 'Not reported' }] };
+  for (const reading of telemetryStatus.value?.host?.instanceMemory ?? []) {
+    resident[reading.instanceKey] = reading.residentBytes;
   }
 
-  const usedBytes = host.memoryTotalBytes - host.memoryFreeBytes;
-  const percent = percentOf(usedBytes, host.memoryTotalBytes);
-  const tone = usageTone(percent);
-  const fill: MeterTone = tone === 'success' ? 'primary' : STATUS_METER_TONES[tone];
+  return resident;
+});
 
-  return {
-    value: formatBytes(usedBytes),
-    unit: `of ${formatBytes(host.memoryTotalBytes)}`,
-    bands: [{ tone: fill, percent }, { percent: 100 - percent }],
-    legend: [{ label: `${percent}% used`, tone: fill }, { label: `${formatBytes(host.memoryFreeBytes)} free` }],
-  };
+const percentOf = (part: number, whole: number): number => Math.round((part / whole) * 100);
+
+const cpuLegend = (host: NodeHostTelemetryDto): IKpiLegendItem[] => {
+  const cores = host.cpuCount > 0 ? `${host.cpuCount} ${host.cpuCount === 1 ? 'core' : 'cores'}` : 'Cores not reported';
+
+  return host.cpuModel === null ? [{ label: cores }] : [{ label: cores }, { label: host.cpuModel }];
 };
 
-const loadKpi = (host: NodeHostTelemetryDto): IKpiFigures => {
+const cpuKpi = (host: NodeHostTelemetryDto): IKpiFigures => {
+  const legend = cpuLegend(host);
+
   if (host.loadAverage1m === null || host.cpuCount === 0) {
-    return { value: '-', unit: '1-minute average', bands: [], legend: [{ label: 'Not reported' }] };
+    return { value: '-', unit: '1-minute average', legend };
   }
 
   const percent = Math.min(100, percentOf(host.loadAverage1m, host.cpuCount));
@@ -433,21 +453,166 @@ const loadKpi = (host: NodeHostTelemetryDto): IKpiFigures => {
     value: host.loadAverage1m.toFixed(2),
     unit: '1-minute average',
     bands: [{ tone: fill, percent }, { percent: 100 - percent }],
-    legend: [{ label: `About ${percent}% of ${host.cpuCount} cores`, tone: fill }],
+    legend,
   };
+};
+
+const memoryKpi = (host: NodeHostTelemetryDto): IKpiFigures => {
+  if (host.memoryTotalBytes === 0) {
+    return { value: '-', legend: [{ label: 'Not reported' }] };
+  }
+
+  const usedBytes = host.memoryTotalBytes - host.memoryFreeBytes;
+
+  return {
+    value: formatBytes(usedBytes + shownHeldBytes(host)),
+    unit: `of ${formatBytes(host.memoryTotalBytes)}`,
+  };
+};
+
+// Two instances mapping one file count twice, so what is held can exceed what the kernel calls free.
+const shownHeldBytes = (host: NodeHostTelemetryDto): number => Math.min(host.heldByModelsBytes, host.memoryFreeBytes);
+
+const memoryOwners = (
+  host: NodeHostTelemetryDto
+): { owners: IMemoryOwner[]; unknown: string[]; unmatchedMappedBytes: number } => {
+  const deployments = new Map<string, { residentBytes: number; mappedBytes: number }>();
+  const unknown = new Set<string>();
+
+  let unmatchedMappedBytes = 0;
+
+  for (const { instanceKey, heldBytes, residentBytes } of host.instanceMemory) {
+    const deploymentName = instances.value.find(candidate => candidate.instanceKey === instanceKey)?.deploymentName;
+
+    if (residentBytes === null) {
+      unknown.add(deploymentName ?? 'Models');
+    } else if (deploymentName === undefined) {
+      unmatchedMappedBytes += heldBytes ?? 0;
+    } else {
+      const deployment = deployments.get(deploymentName) ?? { residentBytes: 0, mappedBytes: 0 };
+
+      deployment.residentBytes += residentBytes;
+      deployment.mappedBytes += heldBytes ?? 0;
+
+      deployments.set(deploymentName, deployment);
+    }
+  }
+
+  const owners = [...deployments].map(
+    ([label, figures], index): IMemoryOwner => ({
+      label,
+      ...figures,
+      tone: PROCESS_METER_TONES[index % PROCESS_METER_TONES.length],
+    })
+  );
+
+  if (host.heldByModelsUnknown && host.instanceMemory.length === 0) {
+    unknown.add('Models');
+  }
+
+  return { owners, unknown: [...unknown], unmatchedMappedBytes };
+};
+
+const modelStorage = computed(() => {
+  const folders: IStorageFolder[] = [];
+  const unread: string[] = [];
+  const counted = new Set<string>();
+
+  for (const { path, freeBytes, totalBytes } of telemetryStatus.value?.host?.modelDirectories ?? []) {
+    if (freeBytes === null || totalBytes === null) {
+      unread.push(path);
+    } else if (!counted.has(`${freeBytes}/${totalBytes}`)) {
+      // Folders on one filesystem report the same pair and the DTO has no filesystem id, so the pair counts once.
+      counted.add(`${freeBytes}/${totalBytes}`);
+      folders.push({ path, freeBytes, totalBytes });
+    }
+  }
+
+  const totalBytes = folders.reduce((total, folder) => total + folder.totalBytes, 0);
+  const freeBytes = folders.reduce((total, folder) => total + folder.freeBytes, 0);
+
+  return totalBytes === 0 ? null : { folders, unread, totalBytes, freeBytes };
+});
+
+const storageKpi = (): IKpiFigures => {
+  if (modelStorage.value === null) {
+    return { value: '-', legend: [{ label: 'Not reported' }] };
+  }
+
+  const { totalBytes, freeBytes } = modelStorage.value;
+
+  return { value: formatBytes(totalBytes - freeBytes), unit: `of ${formatBytes(totalBytes)}` };
 };
 
 const hostKpis = computed(() => {
   const host = telemetryStatus.value?.host ?? null;
 
-  return host === null ? null : { cpu: cpuKpi(host), memory: memoryKpi(host), load: loadKpi(host) };
+  return host === null ? null : { cpu: cpuKpi(host), memory: memoryKpi(host), storage: storageKpi() };
 });
 
-const viewNodeList = () => {
-  router.push('/nodes').catch((error: unknown) => {
-    logger.error({ error }, 'viewNodeList(): Failed to navigate to node list');
-  });
-};
+const memoryMeter = computed(() => {
+  const host = telemetryStatus.value?.host ?? null;
+
+  if (host === null || host.memoryTotalBytes === 0) {
+    return null;
+  }
+
+  const barPercent = (bytes: number): number => (bytes / host.memoryTotalBytes) * 100;
+
+  const usedBytes = host.memoryTotalBytes - host.memoryFreeBytes;
+  const heldBytes = shownHeldBytes(host);
+
+  const { owners, unknown, unmatchedMappedBytes } = memoryOwners(host);
+  const mappedBytes = owners.reduce((total, owner) => total + owner.mappedBytes, unmatchedMappedBytes);
+  const anonymousBytes = owners.reduce((total, owner) => total + owner.residentBytes - owner.mappedBytes, 0);
+  const mappedShare = mappedBytes > heldBytes ? heldBytes / mappedBytes : 1;
+
+  // Processes are read a moment after the kernel's figure, so anonymous memory can briefly pass used.
+  const anonymousShare = anonymousBytes > usedBytes ? usedBytes / anonymousBytes : 1;
+
+  const otherUsedBytes = Math.max(usedBytes - anonymousBytes, 0);
+
+  const bands: IMeterBand[] = [
+    ...owners.map(owner => ({
+      label: owner.label,
+      tone: owner.tone,
+      value: formatBytes(owner.residentBytes),
+      percent: barPercent((owner.residentBytes - owner.mappedBytes) * anonymousShare + owner.mappedBytes * mappedShare),
+    })),
+    ...unknown.map((label): IMeterBand => ({ label, tone: 'muted', value: 'Unknown', percent: 0 })),
+    {
+      label: 'Other',
+      tone: 'muted',
+      value: formatBytes(otherUsedBytes + unmatchedMappedBytes),
+      percent: barPercent(otherUsedBytes + unmatchedMappedBytes * mappedShare),
+    },
+  ];
+
+  return {
+    detail: `${host.heldByModelsUnknown ? 'At most ' : ''}${formatBytes(host.memoryAvailableBytes)} free`,
+    bands,
+  };
+});
+
+const storageMeter = computed(() => {
+  if (modelStorage.value === null) {
+    return null;
+  }
+
+  const { folders, unread, totalBytes, freeBytes } = modelStorage.value;
+
+  const bands: IMeterBand[] = [
+    ...folders.map((folder, index) => ({
+      label: folder.path,
+      tone: PROCESS_METER_TONES[index % PROCESS_METER_TONES.length],
+      value: formatBytes(folder.totalBytes - folder.freeBytes),
+      percent: ((folder.totalBytes - folder.freeBytes) / totalBytes) * 100,
+    })),
+    ...unread.map((label): IMeterBand => ({ label, tone: 'muted', value: 'Unknown', percent: 0 })),
+  ];
+
+  return { detail: `${unread.length > 0 ? 'At least ' : ''}${formatBytes(freeBytes)} free`, bands };
+});
 
 const doGetNode = () => {
   if (nodeId.value === null) {
@@ -672,7 +837,7 @@ const doDeleteNode = (target: NodeDto): Promise<void> => {
     .then(() => {
       notificationStore.addToast('Node deleted', `${target.name} is removed from the fleet.`);
 
-      viewNodeList();
+      goBack({ replace: true });
     })
     .finally(() => {
       pending.value = null;

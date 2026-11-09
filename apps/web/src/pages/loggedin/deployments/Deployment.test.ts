@@ -12,7 +12,15 @@ import type {
   ListInstanceDto,
   PlacementNodeDto,
 } from '@libs/dto';
-import { ActivationPolicy, ConfigurationSource, InstanceState, NodeState, ResidencyRule } from '@libs/dto';
+import {
+  ActivationPolicy,
+  ConfigurationSource,
+  ExpectedUsageSource,
+  InstanceState,
+  NodeState,
+  PlacementProblemReason,
+  ResidencyRule,
+} from '@libs/dto';
 
 import { useDialogStore } from '@/stores/dialog';
 import { useNotificationStore } from '@/stores/notification';
@@ -109,8 +117,10 @@ const placementNode = (extra: Partial<PlacementNodeDto> = {}): PlacementNodeDto 
   replicas: 2,
   running: 1,
   problem: null,
+  problemReason: null,
   expectedUsage: null,
   capacity: null,
+  evictions: [],
   ...extra,
 });
 
@@ -127,6 +137,7 @@ const instancesResponse = (extra: Partial<DeploymentInstancesResponseDto> = {}):
     retryDate: null,
     givenUp: false,
     lastLaunchFailure: null,
+    makingRoomNodeIds: [],
   },
   ...extra,
 });
@@ -135,6 +146,7 @@ const mountDeployment = async () => {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
+      { path: '/deployments', component: { template: '<div />' } },
       { path: '/deployments/:deploymentId', component: { template: '<div />' } },
       { path: '/:path(.*)*', component: { template: '<div />' } },
     ],
@@ -168,21 +180,32 @@ beforeEach(() => {
   applyDeployment.mockResolvedValue(undefined);
   updateDeploymentState.mockResolvedValue(undefined);
   deleteDeployment.mockResolvedValue(undefined);
-  startDeployment.mockResolvedValue({ started: 1, refused: [] });
+  startDeployment.mockResolvedValue({ started: 1, refused: [], evicting: [] });
   stopDeployment.mockResolvedValue(undefined);
   streamEvents.mockImplementation(subscription);
   streamDeploymentInstances.mockImplementation(subscription);
 });
 
 describe('Deployment page', () => {
-  it('heads the page with its name, model and preset, linking to its settings', async () => {
+  it('heads the page with its name and model, linking to its settings', async () => {
     const { wrapper } = await mountDeployment();
 
     expect(wrapper.get('h1').text()).toBe('llama-70b-chat');
-    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Llama-3.1-70B on llama.cpp · preset llama.cpp standard');
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Llama-3.1-70B on llama.cpp');
+    expect(wrapper.text()).not.toContain('Llama-3.1-70B on llama.cpp ·');
     expect(wrapper.get('a[href="/deployments/5/configuration"]').text()).toBe('Edit Settings');
     expect(wrapper.get('[data-testid="deployment-model-link"]').attributes('href')).toBe('/models/9');
-    expect(wrapper.get('[data-testid="deployment-preset-link"]').attributes('href')).toBe('/presets/2');
+  });
+
+  it('links the preset from the settings card', async () => {
+    const { wrapper } = await mountDeployment();
+
+    const link = wrapper.get('[data-testid="deployment-preset-link"]');
+
+    expect(link.attributes('href')).toBe('/presets/2');
+    expect(link.text()).toBe('llama.cpp standard');
+    expect(wrapper.text()).toContain('The values this deployment runs with.');
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Preset: llama.cpp standard');
   });
 
   it('links no preset for a deployment on its own settings', async () => {
@@ -190,8 +213,34 @@ describe('Deployment page', () => {
 
     const { wrapper } = await mountDeployment();
 
-    expect(wrapper.text()).toContain('Llama-3.1-70B on llama.cpp · its own settings');
+    expect(wrapper.text()).not.toContain('its own settings');
+    expect(wrapper.text()).toContain('The values this deployment runs with.');
+    expect(wrapper.text()).not.toContain('Preset:');
     expect(wrapper.find('[data-testid="deployment-preset-link"]').exists()).toBe(false);
+  });
+
+  it('notices a launch backoff only while it holds the next start back and the deployment is not given up', async () => {
+    const response = instancesResponse();
+    const holding = { ...response.residency, launchFailures: 3, retryDate: new Date(Date.now() + 120_000) };
+
+    getDeploymentInstances.mockResolvedValue({ ...response, residency: holding });
+
+    const { wrapper: backingOff } = await mountDeployment();
+
+    expect(backingOff.get('[data-testid="launch-retry"]').text()).toContain('Last 3 starts failed');
+
+    getDeploymentInstances.mockResolvedValue({ ...response, residency: { ...holding, givenUp: true } });
+
+    const { wrapper: gaveUp } = await mountDeployment();
+
+    expect(gaveUp.find('[data-testid="launch-retry"]').exists()).toBe(false);
+    expect(gaveUp.text()).toContain('The scheduler has given up on this deployment');
+
+    getDeploymentInstances.mockResolvedValue(response);
+
+    const { wrapper: normal } = await mountDeployment();
+
+    expect(normal.find('[data-testid="launch-retry"]').exists()).toBe(false);
   });
 
   it('reads its instances, activation and requests in flight into tiles', async () => {
@@ -225,76 +274,144 @@ describe('Deployment page', () => {
     expect(wrapper.get('[data-testid="instances-card"]').text()).toContain('No instances are running.');
   });
 
-  it('expands a refused node to its refusal and the figures of each card it was checked on', async () => {
+  describe('the placement table', () => {
     const gib = 1024 ** 3;
 
-    getDeploymentInstances.mockResolvedValue(
-      instancesResponse({
-        placement: {
-          nodes: [
-            placementNode({
-              problem: 'This deployment needs 40.0 GiB on GPU-1, more than it has free',
-              capacity: {
-                expectedBytes: 40 * gib,
-                availableBytes: 70 * gib,
-                hostFreeBytes: null,
-                cards: [
-                  {
-                    deviceKey: 'GPU-1',
-                    name: 'NVIDIA A100-SXM4-80GB',
-                    totalBytes: 80 * gib,
-                    usedBytes: 50 * gib,
-                    predictedBytes: 0,
-                    headroomBytes: 2 * gib,
-                    freeBytes: 30 * gib,
-                  },
-                ],
-                hostWeights: null,
-              },
-            }),
-          ],
-          problem: null,
+    const CARD = {
+      deviceKey: 'GPU-1',
+      name: 'NVIDIA A100-SXM4-80GB',
+      totalBytes: 80 * gib,
+      usedBytes: 50 * gib,
+      predictedBytes: 0,
+      headroomBytes: 2 * gib,
+      freeBytes: 30 * gib,
+      short: true,
+    };
+
+    const USAGE = {
+      bytes: 40 * gib,
+      source: ExpectedUsageSource.DECLARED,
+      hostWeightsBytes: 30 * gib,
+      hostResidentBytes: 30 * gib,
+      hostCacheBytes: 8 * gib,
+    };
+
+    const mountRow = async (extra: Partial<PlacementNodeDto>) => {
+      getDeploymentInstances.mockResolvedValue(
+        instancesResponse({ placement: { nodes: [placementNode(extra)], problem: null } })
+      );
+
+      const { wrapper } = await mountDeployment();
+
+      return { wrapper, row: wrapper.get('[data-testid="placement-row"]') };
+    };
+
+    it('heads the columns Node, VRAM, RAM and Status', async () => {
+      const { wrapper } = await mountRow({});
+      const text = wrapper.get('[data-testid="placement-card"]').text();
+
+      expect(text).toContain('NodeVRAMRAMStatus');
+      expect(text).not.toContain('Kept off the GPUs');
+      expect(text).not.toContain('System memory');
+    });
+
+    it('reads needed against free in each cell, turning the short one red with hovers for source and parts', async () => {
+      const { row } = await mountRow({
+        problem: 'Not enough RAM for 30.0 GiB of model weights and up to 8.0 GiB of prompt cache',
+        problemReason: PlacementProblemReason.NOT_ENOUGH_RAM,
+        expectedUsage: USAGE,
+        capacity: {
+          expectedBytes: 40 * gib,
+          availableBytes: 70 * gib,
+          hostFreeBytes: null,
+          cards: [],
+          hostWeights: { neededBytes: 38 * gib, cacheBytes: 8 * gib, freeBytes: 12 * gib },
         },
-      })
-    );
+      });
 
-    const { wrapper } = await mountDeployment();
+      const vram = row.get('[data-testid="placement-vram"]');
+      const ram = row.get('[data-testid="placement-ram"]');
 
-    const row = wrapper.get('[data-testid="placement-row"]');
+      expect(vram.text()).toBe('40 / 70 GiB free');
+      expect(vram.classes()).not.toContain('text-error');
+      expect(vram.attributes('title')).toBe('Declared');
+      expect(ram.text()).toBe('38 / 12 GiB free');
+      expect(ram.classes()).toContain('text-error');
+      expect(ram.attributes('title')).toBe('Weights 30 GiB, Prompt cache up to 8 GiB');
+      expect(row.text()).not.toContain('Declared');
+    });
 
-    expect(row.text()).toContain('Cannot place');
-    expect(row.find('[data-testid="placement-refusal"]').exists()).toBe(false);
+    it('moves the refusal to a hover on the status, marking the short card in the expansion', async () => {
+      const { row } = await mountRow({
+        problem: 'Not enough memory on GPU-1 for 40.0 GiB',
+        problemReason: PlacementProblemReason.NOT_ENOUGH_VRAM,
+        capacity: {
+          expectedBytes: 40 * gib,
+          availableBytes: 70 * gib,
+          hostFreeBytes: null,
+          cards: [CARD],
+          hostWeights: null,
+        },
+      });
 
-    await row.get('button[aria-label="Show details"]').trigger('click');
+      const status = row.get('[data-testid="placement-status"]');
 
-    const refusal = row.get('[data-testid="placement-refusal"]');
+      expect(status.text()).toBe('Not enough VRAM');
+      expect(status.attributes('title')).toBe('Not enough memory on GPU-1 for 40.0 GiB');
+      expect(row.get('[data-testid="placement-vram"]').classes()).toContain('text-error');
+      expect(row.find('[data-testid="placement-refusal"]').exists()).toBe(false);
 
-    expect(refusal.text()).toContain('This deployment needs 40.0 GiB on GPU-1, more than it has free');
+      await row.get('button[aria-label="Show details"]').trigger('click');
 
-    const card = refusal.get('[data-testid="placement-card-row"]');
+      const refusal = row.get('[data-testid="placement-refusal"]');
 
-    expect(card.findAll('span').map(cell => cell.text())).toEqual(['80 GiB', '50 GiB', '-', '2 GiB', '30 GiB']);
-    expect(card.text()).toContain('GPU-1');
-    expect(card.text()).toContain('NVIDIA A100-SXM4-80GB');
-  });
+      expect(refusal.text()).not.toContain('Not enough memory on GPU-1 for 40.0 GiB');
 
-  it('expands a node refused without figures to its refusal alone', async () => {
-    getDeploymentInstances.mockResolvedValue(
-      instancesResponse({ placement: { nodes: [placementNode({ problem: 'The node is offline' })], problem: null } })
-    );
+      const card = refusal.get('[data-testid="placement-card-row"]');
 
-    const { wrapper } = await mountDeployment();
+      expect(card.findAll('span').map(cell => cell.text())).toEqual(['80 GiB', '50 GiB', '-', '2 GiB', '30 GiB']);
+      expect(card.text()).toContain('GPU-1');
+      expect(card.text()).toContain('NVIDIA A100-SXM4-80GB');
+      expect(card.classes()).toContain('text-error');
+    });
 
-    const row = wrapper.get('[data-testid="placement-row"]');
+    it('leaves a card that is not short its usual colour', async () => {
+      const { row } = await mountRow({
+        problem: 'Not enough GPU memory for 40.0 GiB',
+        problemReason: PlacementProblemReason.NOT_ENOUGH_VRAM,
+        capacity: {
+          expectedBytes: 40 * gib,
+          availableBytes: 20 * gib,
+          hostFreeBytes: null,
+          cards: [{ ...CARD, short: false }],
+          hostWeights: null,
+        },
+      });
 
-    await row.get('button[aria-label="Show details"]').trigger('click');
+      await row.get('button[aria-label="Show details"]').trigger('click');
 
-    expect(row.get('[data-testid="placement-refusal"]').text()).toBe('The node is offline');
+      expect(row.get('[data-testid="placement-card-row"]').classes()).not.toContain('text-error');
+    });
+
+    it('offers no expansion for a refusal without figures, its reason on the status alone', async () => {
+      const { row } = await mountRow({ problem: 'The node is offline', problemReason: PlacementProblemReason.OTHER });
+
+      const status = row.get('[data-testid="placement-status"]');
+
+      expect(status.text()).toBe('Cannot run here');
+      expect(status.attributes('title')).toBe('The node is offline');
+      expect(row.find('button[aria-label="Show details"]').exists()).toBe(false);
+    });
   });
 
   it('opens a refused node from its name without expanding the row', async () => {
     getDeploymentInstances.mockResolvedValue(
-      instancesResponse({ placement: { nodes: [placementNode({ problem: 'The node is offline' })], problem: null } })
+      instancesResponse({
+        placement: {
+          nodes: [placementNode({ problem: 'The node is offline', problemReason: PlacementProblemReason.OTHER })],
+          problem: null,
+        },
+      })
     );
 
     const { wrapper, router } = await mountDeployment();
@@ -336,11 +453,80 @@ describe('Deployment page', () => {
     expect(useNotificationStore().notifications.at(-1)?.title).toBe('Changes applied');
   });
 
+  describe('starting over idle instances', () => {
+    const EVICTION = {
+      deploymentName: 'qwen-idle',
+      instanceKey: 'key-1',
+      devices: [{ deviceKey: 'GPU-a', name: null }],
+      idleMs: 300_000,
+      releasedBytes: 8 * 1024 ** 3,
+    };
+
+    const evictingResponse = () =>
+      instancesResponse({
+        instances: [],
+        placement: { nodes: [placementNode({ evictions: [EVICTION] })], problem: null },
+      });
+
+    it('asks first, naming what goes, and only then says the operator confirmed', async () => {
+      getDeploymentInstances.mockResolvedValue(evictingResponse());
+      startDeployment.mockResolvedValue({ started: 0, refused: [], evicting: [EVICTION] });
+
+      const { wrapper } = await mountDeployment();
+      const dialogStore = useDialogStore();
+
+      await buttonNamed(wrapper, 'Start Now').trigger('click');
+      await flushPromises();
+
+      expect(dialogStore.top?.options.title).toBe('Evict Instances');
+      expect(dialogStore.top?.options.message).toBe(
+        'There is not enough room to run this instance without performing evictions. ' +
+          'The following instances will be evicted: qwen-idle'
+      );
+      expect(startDeployment).not.toHaveBeenCalled();
+
+      await dialogStore.top?.options.action?.();
+      await flushPromises();
+
+      expect(startDeployment).toHaveBeenCalledWith(5, null, true);
+    });
+
+    it('says it is making room rather than refused', async () => {
+      const response = instancesResponse({
+        instances: [],
+        placement: { nodes: [placementNode({ evictions: [EVICTION] })], problem: 'Not yet' },
+      });
+
+      getDeploymentInstances.mockResolvedValue({
+        ...response,
+        residency: { ...response.residency, makingRoomNodeIds: [placementNode().nodeId] },
+      });
+
+      const { wrapper } = await mountDeployment();
+
+      expect(wrapper.get('[data-testid="making-room"]').text()).toContain('Making room for this deployment');
+      expect(wrapper.text()).not.toContain('This deployment cannot be started');
+    });
+
+    it('starts at once with no confirmation where nothing would be evicted', async () => {
+      getDeploymentInstances.mockResolvedValue(instancesResponse({ instances: [] }));
+
+      const { wrapper } = await mountDeployment();
+
+      await buttonNamed(wrapper, 'Start Now').trigger('click');
+      await flushPromises();
+
+      expect(startDeployment).toHaveBeenCalledWith(5);
+      expect(useDialogStore().top).toBeNull();
+    });
+  });
+
   it('reports a start that every node refused as a warning', async () => {
     getDeploymentInstances.mockResolvedValue(instancesResponse({ instances: [] }));
     startDeployment.mockResolvedValue({
       started: 0,
       refused: [{ nodeId: 3, nodeName: 'gpu-a-01', problem: 'The node is offline', capacity: null }],
+      evicting: [],
     });
 
     const { wrapper } = await mountDeployment();
@@ -352,6 +538,45 @@ describe('Deployment page', () => {
     expect(useNotificationStore().notifications.at(-1)?.content).toBe(
       'No instances started. These nodes could not run an instance: gpu-a-01'
     );
+  });
+
+  it('says so where a start finds nothing to do, naming no nodes', async () => {
+    getDeploymentInstances.mockResolvedValue(instancesResponse({ instances: [] }));
+    startDeployment.mockResolvedValue({ started: 0, refused: [], evicting: [] });
+
+    const { wrapper } = await mountDeployment();
+
+    await buttonNamed(wrapper, 'Start Now').trigger('click');
+    await flushPromises();
+
+    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Nothing to start');
+  });
+
+  it('reports a refused node alongside the room being made on another', async () => {
+    getDeploymentInstances.mockResolvedValue(instancesResponse({ instances: [] }));
+    startDeployment.mockResolvedValue({
+      started: 0,
+      refused: [{ nodeId: 3, nodeName: 'gpu-a-01', problem: 'The node is offline', capacity: null }],
+      evicting: [
+        {
+          deploymentName: 'qwen-idle',
+          instanceKey: 'key-1',
+          devices: [{ deviceKey: 'GPU-a', name: null }],
+          idleMs: 300_000,
+          releasedBytes: 8 * 1024 ** 3,
+        },
+      ],
+    });
+
+    const { wrapper } = await mountDeployment();
+
+    await buttonNamed(wrapper, 'Start Now').trigger('click');
+    await flushPromises();
+
+    const notifications = useNotificationStore().notifications;
+
+    expect(notifications.some(notification => notification.title === 'Making room')).toBe(true);
+    expect(notifications.at(-1)?.content).toBe('No instances started. These nodes could not run an instance: gpu-a-01');
   });
 
   it('disables the deployment once confirmed', async () => {

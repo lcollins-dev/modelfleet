@@ -57,6 +57,7 @@ const render = async (roles: UserRoleId[] = [UserRoleId.USER_ADMIN, UserRoleId.S
     history: createMemoryHistory(),
     routes: [
       { path: '/users/:userId', component: { template: '<div />' } },
+      { path: '/users', component: { template: '<div />' } },
       { path: '/:path(.*)*', component: { template: '<div />' } },
     ],
   });

@@ -1,11 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="Edit settings"
-      :subtitle="subtitle"
-      :back-to="backTo"
-      :back-label="deployment?.name ?? 'Deployment'"
-    />
+    <ui-page-heading />
 
     <div v-if="loadingDeployment" class="flex justify-center py-8">
       <ui-spinner />
@@ -48,7 +43,7 @@
       >
         <template #footer>
           <div class="flex gap-2">
-            <ui-button :to="backTo">Cancel</ui-button>
+            <ui-button @click="goBack()">Cancel</ui-button>
 
             <ui-button type="primary" :loading="saving" @click="doSave">Save Changes</ui-button>
           </div>
@@ -95,6 +90,9 @@ import {
   UiSpinner,
 } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
 interface IDeploymentForm {
   name: string;
   description: string;
@@ -110,6 +108,7 @@ const logger = logService.createLogger('pages/loggedin/deployments/Configuration
 
 const route = useRoute();
 const router = useRouter();
+const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
 const notificationStore = useNotificationStore();
 const deploymentAdminService = useDeploymentAdminService();
@@ -150,14 +149,11 @@ const presetName = computed(() =>
   swapped.value ? swappedPresetName.value : (configuration.value?.presetName ?? null)
 );
 
-const subtitle = computed(() => {
-  if (deployment.value === null) {
-    return undefined;
-  }
-
-  return presetName.value === null
-    ? `${deployment.value.name} · holds its own settings`
-    : `${deployment.value.name} · starts from ${presetName.value}`;
+usePage({
+  title: 'Edit settings',
+  subtitle: "Configure this deployment's model, backend and runtime settings.",
+  back: backTo,
+  transient: true,
 });
 
 const inherited = computed<ConfigurationDocument>(() => {

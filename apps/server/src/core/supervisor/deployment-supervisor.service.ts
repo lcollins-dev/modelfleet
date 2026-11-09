@@ -7,8 +7,11 @@ import { Deployment } from '../deployment/entities/deployment.entity';
 import { Instance } from '../instance/entities/instance.entity';
 
 import { DeploymentService, ILaunchFailureCount } from '../deployment/deployment.service';
-import { InstanceService } from '../instance/instance.service';
+import { INodePlacement, IPlannedEviction } from '../instance/instance-launch.service';
+import { InstanceService, IRoomOutcome, IStartOutcome } from '../instance/instance.service';
 import { DeploymentActionsService } from './deployment-actions.service';
+import { EvictionPlannerService, IEvictionPlan } from './eviction-planner.service';
+import { InstanceEvictionService } from './instance-eviction.service';
 import { InstanceLeaseService } from './instance-lease.service';
 import { ISupervisorFacts, SupervisorAction, SupervisorPolicyService } from './supervisor-policy.service';
 import { ConfigService } from '@/config/config.service';
@@ -17,6 +20,14 @@ import { AcquireRefusal, IAcquireOptions, IAcquireResult, IReadyInstance, IStart
 import { WaitingRequests } from './waiting-requests';
 
 const DISABLED_MESSAGE = 'This deployment is disabled. Enable it before starting an instance';
+
+/** Bounds a drain and the wait for a stopped container's memory to leave telemetry. */
+const MAKING_ROOM_TIMEOUT_MS = 300_000;
+
+interface IMakingRoom {
+  deadlineMs: number;
+  nodeIds: Set<number>;
+}
 
 interface IRun {
   /** Something changed while this run was reconciling, so it reconciles once more before it ends. */
@@ -40,12 +51,17 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
   /** By deployment id. */
   private readonly runs = new Map<number, IRun>();
 
+  /** By requesting deployment id. */
+  private readonly makingRoom = new Map<number, IMakingRoom>();
+
   private subscriptions: Subscription[] = [];
 
   constructor(
     private readonly configService: ConfigService,
     private readonly deploymentActionsService: DeploymentActionsService,
     private readonly deploymentService: DeploymentService,
+    private readonly evictionPlannerService: EvictionPlannerService,
+    private readonly instanceEvictionService: InstanceEvictionService,
     private readonly instanceLeaseService: InstanceLeaseService,
     private readonly instanceService: InstanceService,
     private readonly supervisorPolicyService: SupervisorPolicyService
@@ -129,10 +145,29 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
     return run.done;
   }
 
+  /** Evicts only where the operator confirmed it, so a scripted or older caller never evicts by surprise. */
+  startByHand(deploymentId: number, actorId: number, confirmEviction: boolean): Promise<IStartOutcome> {
+    return this.instanceService.start(
+      deploymentId,
+      actorId,
+      confirmEviction ? (deployment, refused, started) => this.makeRoom(deployment, refused, started) : null
+    );
+  }
+
+  /** Drops the mark first, since the retry it asks for would start again what this stops. */
+  stopByHand(deploymentId: number, actorId: number): Promise<void> {
+    this.dropMark(deploymentId);
+
+    return this.instanceService.stop(deploymentId, actorId);
+  }
+
+  async planEvictions(deployment: Deployment, placement: INodePlacement): Promise<IPlannedEviction[] | null> {
+    return (await this.planFor(deployment, placement))?.victims ?? null;
+  }
+
   /** The facts a reconcile decides on, which the deployment screen explains its residency from. */
   factsFor(deployment: Deployment, instances: Instance[]): ISupervisorFacts {
     const configuration = this.deploymentService.resolveConfiguration(deployment).configuration;
-    const newest = instances.map(instance => (instance.readyDate ?? instance.createdDate).getTime());
 
     return {
       activationPolicy: deployment.activationPolicy,
@@ -142,13 +177,14 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
       starting: instances.filter(instance => this.instanceLeaseService.startingOnLiveNode(instance)).length,
       inFlight: this.instanceLeaseService.inFlightAcross(instances),
       waiting: this.waiting.open(deployment.id).length,
+      makingRoomNodeIds: [...(this.makingRoom.get(deployment.id)?.nodeIds ?? [])],
       idleTimeoutMs: this.supervisorPolicyService.idleTimeoutMsFor(
         configuration,
         this.configService.schedulerIdleTimeoutMs
       ),
       idleSince: this.supervisorPolicyService.idleSince(
         deployment.lastUsedDate,
-        newest.length === 0 ? null : new Date(Math.max(...newest))
+        this.supervisorPolicyService.newestInstanceDate(instances)
       ),
       backoffUntil: this.supervisorPolicyService.backoffUntil(
         deployment.launchFailures,
@@ -197,6 +233,14 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
       return;
     }
 
+    if (!deployment.enabled) {
+      this.dropMark(deployment.id);
+    }
+
+    if (await this.instanceEvictionService.stopDrained(instances)) {
+      return;
+    }
+
     const facts = this.factsFor(deployment, instances);
     const action = this.supervisorPolicyService.decide(facts);
     let refused: IStartRefusal | null = null;
@@ -204,27 +248,132 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
     switch (action) {
       case SupervisorAction.START:
         this.instanceLeaseService.stopDraining(instances);
-        refused = await this.deploymentActionsService.start(deployment, instances, facts.live);
+        refused = await this.deploymentActionsService.start(
+          deployment,
+          instances,
+          facts.live,
+          (requester, placements, started) => this.makeRoom(requester, placements, started)
+        );
+
+        if (refused !== null) {
+          this.dropMark(deployment.id);
+        }
+
+        break;
+
+      case SupervisorAction.GIVEN_UP:
+        this.dropMark(deployment.id);
+        this.instanceLeaseService.stopDraining(instances);
         break;
 
       case SupervisorAction.BACK_OFF:
-      case SupervisorAction.GIVEN_UP:
       case SupervisorAction.NONE:
         this.instanceLeaseService.stopDraining(instances);
         break;
 
       case SupervisorAction.STOP_IDLE:
         // A request arriving mid-stop is answered by the reconcile the stop's own write sets off, from fresh rows.
-        await this.stopIdle(instances, facts);
+        await this.stopIdle(this.withoutClaimed(instances), facts);
 
         return;
 
       case SupervisorAction.STOP_DISABLED:
-        await this.stopDisabled(instances);
+        await this.stopDisabled(this.withoutClaimed(instances));
         break;
     }
 
     await this.answerWaiters(deployment, instances, facts, action === SupervisorAction.START, refused);
+  }
+
+  /** A refusal on a marked node waits for the retry; anything else is planned for, and a plan that fits is claimed. */
+  private async makeRoom(
+    deployment: Deployment,
+    refused: INodePlacement[],
+    started: Instance[]
+  ): Promise<IRoomOutcome> {
+    const mark = this.makingRoom.get(deployment.id);
+
+    if (mark !== undefined) {
+      return this.roomAlreadyBeingMade(deployment.id, refused, started, mark);
+    }
+
+    const plans: IEvictionPlan[] = [];
+    const standing: INodePlacement[] = [];
+    const nodeIds = new Set<number>();
+
+    for (const placement of refused) {
+      const plan = await this.planFor(deployment, placement);
+
+      if (plan !== null && this.instanceEvictionService.claim(plan, deployment)) {
+        plans.push(plan);
+        nodeIds.add(placement.nodeId);
+      } else {
+        standing.push(placement);
+      }
+    }
+
+    // Ahead of the empty check: a claim lost to a concurrent start of this deployment is no refusal.
+    if (this.makingRoom.has(deployment.id)) {
+      this.instanceEvictionService.releasePlans(plans);
+
+      return { standing, makingRoom: true, evicting: [] };
+    }
+
+    if (plans.length === 0) {
+      return { standing, makingRoom: false, evicting: [] };
+    }
+
+    this.makingRoom.set(deployment.id, { deadlineMs: Date.now() + MAKING_ROOM_TIMEOUT_MS, nodeIds });
+
+    const evicting = plans.flatMap(plan => plan.victims);
+
+    await this.instanceEvictionService.stopDrained(evicting.map(victim => victim.instance));
+
+    return { standing, makingRoom: true, evicting };
+  }
+
+  private roomAlreadyBeingMade(
+    deploymentId: number,
+    refused: INodePlacement[],
+    started: Instance[],
+    mark: IMakingRoom
+  ): IRoomOutcome {
+    // A start on a node spends its room, so a refusal there now is a further replica.
+    for (const instance of started) {
+      mark.nodeIds.delete(instance.nodeId);
+    }
+
+    const short = refused.filter(placement => mark.nodeIds.has(placement.nodeId) && placement.capacity !== undefined);
+
+    if (short.length > 0 && Date.now() < mark.deadlineMs) {
+      return { standing: refused.filter(placement => !short.includes(placement)), makingRoom: true, evicting: [] };
+    }
+
+    if (short.length > 0) {
+      this.logger.warn({ deploymentId }, 'makeRoom(): The room being made did not free in time');
+    }
+
+    this.dropMark(deploymentId);
+
+    return { standing: refused, makingRoom: false, evicting: [] };
+  }
+
+  private planFor(deployment: Deployment, placement: INodePlacement): Promise<IEvictionPlan | null> {
+    return this.evictionPlannerService.plan(
+      deployment,
+      placement,
+      deploymentId => this.waiting.open(deploymentId).length
+    );
+  }
+
+  private dropMark(deploymentId: number): void {
+    if (this.makingRoom.delete(deploymentId)) {
+      this.instanceEvictionService.abandon(deploymentId);
+    }
+  }
+
+  private withoutClaimed(instances: Instance[]): Instance[] {
+    return instances.filter(instance => !this.instanceLeaseService.isClaimed(instance));
   }
 
   /**
@@ -351,6 +500,8 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
   private forget(deploymentId: number): void {
     this.waiting.settleAll(deploymentId, this.resultOf({ refusal: AcquireRefusal.NOT_AVAILABLE }));
     this.deploymentActionsService.forget(deploymentId);
+    this.instanceEvictionService.forget(deploymentId);
+    this.makingRoom.delete(deploymentId);
   }
 
   private async findDeployment(deploymentId: number): Promise<Deployment | null> {

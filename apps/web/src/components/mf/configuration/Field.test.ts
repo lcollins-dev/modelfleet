@@ -76,6 +76,74 @@ describe('MfConfigurationField', () => {
     expect(choice.findComponent({ name: 'Select' }).exists()).toBe(true);
   });
 
+  describe('a value from the preset', () => {
+    const contextSize = field({ name: 'contextSize', type: BackendFieldType.INTEGER });
+    const flashAttention = field({ name: 'flashAttention', type: BackendFieldType.BOOLEAN });
+    const splitMode = field({ name: 'splitMode', type: BackendFieldType.CHOICE, choices: ['none', 'layer'] });
+
+    const renderInherited = (
+      given: BackendField,
+      inherited: string | number | boolean | null,
+      modelValue: string | number | boolean | null = null
+    ) => mount(Field, { props: { field: given, inherited, modelValue } });
+
+    it('tags the field and keeps the inherited value as the placeholder', () => {
+      const wrapper = renderInherited(contextSize, 8192);
+
+      expect(wrapper.text()).toContain('From preset');
+      expect(wrapper.findComponent(UiNumberInput).props('placeholder')).toBe('Inherited: 8192');
+      expect(wrapper.findComponent(UiNumberInput).props('value')).toBeNull();
+    });
+
+    it('leaves a field no preset sets untagged', () => {
+      const wrapper = render(contextSize);
+
+      expect(wrapper.text()).not.toContain('From preset');
+      expect(wrapper.text()).not.toContain('Overridden');
+    });
+
+    it('swaps the tag for Overridden once the deployment sets the field', () => {
+      const wrapper = renderInherited(contextSize, 8192, 4096);
+
+      expect(wrapper.text()).toContain('Overridden');
+      expect(wrapper.text()).not.toContain('From preset');
+    });
+
+    it('writes nothing into the form on its own', () => {
+      const wrapper = renderInherited(contextSize, 8192);
+
+      expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+    });
+
+    it('tags a boolean and clears an override back to the preset', async () => {
+      const wrapper = renderInherited(flashAttention, false, true);
+
+      expect(wrapper.text()).toContain('Overridden');
+
+      await wrapper.get('[aria-label="Clear"]').trigger('click');
+
+      expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([null]);
+
+      await wrapper.setProps({ modelValue: null });
+
+      expect(wrapper.text()).toContain('From preset');
+      expect(writeFieldValues([flashAttention], { flashAttention: null })).toEqual({ flashAttention: undefined });
+    });
+
+    it('tags a select and clears an override back to the preset', async () => {
+      const wrapper = renderInherited(splitMode, 'layer', 'none');
+
+      await wrapper.get('[aria-label="Clear"]').trigger('click');
+
+      expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([null]);
+
+      await wrapper.setProps({ modelValue: null });
+
+      expect(wrapper.text()).toContain('From preset');
+      expect(wrapper.text()).not.toContain('Overridden');
+    });
+  });
+
   describe('a list field', () => {
     const tensorSplit = field({ name: 'tensorSplit', type: BackendFieldType.NUMBER_LIST });
     const tensorOverrides = field({ name: 'tensorOverrides', type: BackendFieldType.TEXT_LIST });

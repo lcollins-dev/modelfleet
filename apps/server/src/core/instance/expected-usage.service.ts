@@ -33,7 +33,10 @@ export interface IKnownUsage {
   /** The share of them system memory must hold, which counts nothing for a table read from a mapped file. */
   hostResidentBytes: number;
 
+  hostCacheBytes: number;
+
   cardShares: number[] | null;
+  cardsOnlyReason?: string;
 }
 
 export interface IUnknownUsage {
@@ -49,6 +52,7 @@ interface ISizing {
   halves: IDocumentHalves;
   estimate: IVramEstimate;
   cardShares: number[] | null;
+  cardsOnlyReason?: string;
 }
 
 type UsageSource = (sizing: ISizing) => Promise<IKnownUsage | null>;
@@ -78,8 +82,8 @@ export class ExpectedUsageService {
   async expectedFor(deployment: Deployment, nodeId: number, pins: IInstancePins): Promise<IExpectedUsage> {
     const halves = splitByOwner(this.deploymentService.resolveConfiguration(deployment).configuration);
     const estimateInput = await this.estimateInputFor(deployment, nodeId, pins, halves);
-    const { estimate, cardShares } = backendFor(this.deploymentService.getBackend(deployment)).sizeVram(estimateInput);
-    const sizing = { deployment, pins, halves, estimate, cardShares };
+    const sized = backendFor(this.deploymentService.getBackend(deployment)).sizeVram(estimateInput);
+    const sizing = { ...sized, deployment, pins, halves };
     const missing = sizing.estimate.computed ? [] : [...sizing.estimate.missing];
     const missingDevices = missing.filter(input => input.source === EstimateInputSource.DEVICE);
 
@@ -111,7 +115,9 @@ export class ExpectedUsageService {
       source,
       hostWeightsBytes: estimate.hostWeightsBytes,
       hostResidentBytes: estimate.hostResidentBytes,
+      hostCacheBytes: estimate.hostCacheBytes,
       cardShares: sizing.cardShares,
+      cardsOnlyReason: sizing.cardsOnlyReason,
     });
   }
 
@@ -140,7 +146,9 @@ export class ExpectedUsageService {
       source,
       hostWeightsBytes: estimate.computed ? estimate.hostWeightsBytes : 0,
       hostResidentBytes: estimate.computed ? estimate.hostResidentBytes : 0,
+      hostCacheBytes: estimate.hostCacheBytes,
       cardShares: sizing.cardShares,
+      cardsOnlyReason: sizing.cardsOnlyReason,
     };
   }
 
@@ -172,7 +180,9 @@ export class ExpectedUsageService {
     );
 
     return references.flatMap(reference =>
-      reference.model === undefined ? [] : [{ field: reference.field, sizeBytes: reference.model.sizeBytes }]
+      reference.model === undefined
+        ? []
+        : [{ field: reference.field, sizeBytes: reference.model.sizeBytes, metadata: reference.model.ggufMetadata }]
     );
   }
 }

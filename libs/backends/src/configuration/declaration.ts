@@ -8,6 +8,15 @@ export type BackendConfiguration = Readonly<Record<string, unknown>>;
 
 const text = z.string().min(1);
 
+export const ReferenceRequirement = z.strictObject({
+  choiceField: text,
+  choices: z.array(text).min(1),
+  referenceField: text,
+  architecture: text,
+});
+
+export type ReferenceRequirement = z.infer<typeof ReferenceRequirement>;
+
 export const BackendDeclaration = z.strictObject({
   /** The document shape this declaration was written for, so a stored document can be migrated to it. */
   schemaVersion: z.number().int().min(1),
@@ -18,6 +27,9 @@ export const BackendDeclaration = z.strictObject({
   groups: z.array(z.strictObject({ group: text, label: text })),
 
   fields: z.array(BackendField),
+
+  /** Choices that crash the backend unless the file another field names has one architecture. */
+  referenceRequirements: z.array(ReferenceRequirement).optional(),
 });
 
 export type BackendDeclaration = z.infer<typeof BackendDeclaration>;

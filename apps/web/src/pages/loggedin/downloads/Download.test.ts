@@ -17,6 +17,8 @@ import {
 import { useDialogStore } from '@/stores/dialog';
 import { useNotificationStore } from '@/stores/notification';
 
+import { UiPageContainer } from '@/components/ui';
+
 import Download from './Download.vue';
 
 const getDownload = vi.fn();
@@ -82,6 +84,7 @@ const mountDownload = async () => {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
+      { path: '/downloads', component: { template: '<div />' } },
       { path: '/downloads/:downloadId', component: { template: '<div />' } },
       { path: '/:path(.*)*', component: { template: '<div />' } },
     ],
@@ -134,13 +137,55 @@ describe('Download page', () => {
 
     expect(wrapper.get('[data-testid="download-state"]').text()).toBe('Downloading');
     expect(wrapper.get('[data-testid="download-details"]').text()).toContain('huggingface/owner/repo');
-    expect(wrapper.get('[data-testid="download-details"]').text()).toContain('mmproj.gguf');
 
     const rows = wrapper.findAll('[data-testid="download-target"]');
 
     expect(rows[0].text()).toContain('Waiting for the node to report');
     expect(rows[1].text()).toContain('10 MiB/s');
     expect(rows[1].text()).toContain('20s');
+    expect(rows[1].text()).toContain('100 MiB / 300 MiB (33%)');
+  });
+
+  it('leaves the files and the repository the title names out of the details', async () => {
+    getDownload.mockResolvedValue(download(DownloadState.ACTIVE, [target()]));
+
+    const { wrapper } = await mountDownload();
+    const details = wrapper.get('[data-testid="download-details"]').text();
+
+    expect(details).not.toContain('Repository');
+    expect(details).not.toContain('Files');
+    expect(details).not.toContain('mmproj.gguf');
+  });
+
+  it('uses the wide container', async () => {
+    getDownload.mockResolvedValue(download(DownloadState.ACTIVE, [target()]));
+
+    const { wrapper } = await mountDownload();
+
+    expect(wrapper.findComponent(UiPageContainer).props('wide')).toBe(true);
+  });
+
+  it('lists every file with its size in a scrolling table above the nodes', async () => {
+    const files = Array.from({ length: 64 }, (_, index) => ({
+      path: `Q4/model-${String(index + 1).padStart(5, '0')}-of-00064.gguf`,
+      sizeBytes: 2 * MIB,
+    }));
+
+    getDownload.mockResolvedValue({ ...download(DownloadState.ACTIVE, [target()]), files });
+
+    const { wrapper } = await mountDownload();
+    const card = wrapper.get('[data-testid="download-files"]');
+    const rows = card.findAll('[data-testid="download-file"]');
+
+    expect(rows).toHaveLength(64);
+    expect(rows[4].text()).toBe('Q4/model-00005-of-00064.gguf2 MiB');
+    expect(card.text()).toContain('64 files · 128 MiB');
+    expect(card.get('[role="region"]').classes()).toContain('max-h-72');
+    expect(card.get('[data-testid="table-head"]').classes()).toContain('sticky');
+
+    const html = wrapper.html();
+
+    expect(html.indexOf('download-files')).toBeLessThan(html.indexOf('download-target'));
   });
 
   it('stops one node alone where the download names several', async () => {
@@ -216,10 +261,72 @@ describe('Download page', () => {
 
     await wrapper.get('[data-testid="download-target"] button[aria-label="Show details"]').trigger('click');
 
-    const files = wrapper.get('[data-testid="download-target-files"]').text();
+    const files = wrapper.findAll('[data-testid="download-target-file"]').map(row => row.text());
 
-    expect(files).toContain('Done · 200 MiB / 200 MiB (100%)');
-    expect(files).toContain('Downloading · 50 MiB / 100 MiB (50%)');
+    expect(files).toEqual(['model.ggufDone200 MiB / 200 MiB (100%)', 'mmproj.ggufDownloading50 MiB / 100 MiB (50%)']);
+  });
+
+  it.each([
+    ['done', DownloadTargetState.SUCCEEDED, DownloadState.COMPLETED],
+    ['failed', DownloadTargetState.FAILED, DownloadState.FAILED],
+    ['stopped', DownloadTargetState.STOPPED, DownloadState.STOPPED],
+  ])('has nothing to expand on a %s node', async (_name, state, downloadState) => {
+    getDownload.mockResolvedValue(
+      download(downloadState, [
+        target({
+          state,
+          files: [
+            { path: 'model.gguf', state: null, bytesDone: 0 },
+            { path: 'mmproj.gguf', state: null, bytesDone: 0 },
+          ],
+        }),
+      ])
+    );
+
+    const { wrapper } = await mountDownload();
+
+    expect(wrapper.find('[data-testid="download-target"] button[aria-label="Show details"]').exists()).toBe(false);
+  });
+
+  it('keeps the chevron to the node still downloading where another has settled', async () => {
+    getDownload.mockResolvedValue(
+      download(DownloadState.ACTIVE, [
+        target({ state: DownloadTargetState.SUCCEEDED, bytesDone: 300 * MIB }),
+        target({ nodeId: 2, nodeName: 'rig-02' }),
+      ])
+    );
+
+    const { wrapper } = await mountDownload();
+    const chevrons = wrapper
+      .findAll('[data-testid="download-target"]')
+      .map(row => row.find('button[aria-label="Show details"]').exists());
+
+    expect(chevrons).toEqual([false, true]);
+  });
+
+  it.each([
+    ['failed', DownloadTargetState.FAILED, DownloadState.FAILED],
+    ['stopped', DownloadTargetState.STOPPED, DownloadState.STOPPED],
+  ])('reads a %s node as a dash rather than 0%%', async (_name, state, downloadState) => {
+    getDownload.mockResolvedValue(download(downloadState, [target({ state })]));
+
+    const { wrapper } = await mountDownload();
+    const row = wrapper.get('[data-testid="download-target"]');
+
+    expect(row.get('[data-testid="download-target-no-progress"]').text()).toBe('-');
+    expect(row.text()).not.toContain('0%');
+  });
+
+  it('keeps the bytes and percentage of a done node', async () => {
+    getDownload.mockResolvedValue(
+      download(DownloadState.COMPLETED, [target({ state: DownloadTargetState.SUCCEEDED, bytesDone: 300 * MIB })])
+    );
+
+    const { wrapper } = await mountDownload();
+    const row = wrapper.get('[data-testid="download-target"]');
+
+    expect(row.find('[data-testid="download-target-no-progress"]').exists()).toBe(false);
+    expect(row.text()).toContain('300 MiB / 300 MiB (100%)');
   });
 
   it('opens a node from its name without expanding its row', async () => {

@@ -32,6 +32,7 @@ const size: VramSizingHook = (input, declaration) => ({
   estimate: {
     computed: false,
     missing: [{ source: EstimateInputSource.CONFIGURATION, field: declaration.fields.at(-1)?.name ?? '' }],
+    hostCacheBytes: 0,
   },
   cardShares: input.devices.map(() => GIB),
 });
@@ -55,7 +56,7 @@ const passthrough = (overrides: Partial<BackendDefinition> = {}): BackendDefinit
 
 const estimateInput = {
   model: buildEstimatedModel({ sizeBytes: 2 * GIB }),
-  companions: [{ field: 'mmproj', sizeBytes: GIB }],
+  companions: [{ field: 'mmproj', sizeBytes: GIB, metadata: null }],
   configuration: { fraction: 0.5 },
   deviceCount: 1,
   devices: [{ deviceKey: 'GPU-0', totalBytes: 24 * GIB }],
@@ -152,7 +153,7 @@ describe('resolveBackend', () => {
 
   it('sizes nothing where the definition declares no estimate', () => {
     expect(resolveBackend(passthrough(), new Map()).sizeVram(estimateInput)).toEqual({
-      estimate: { computed: false, missing: [] },
+      estimate: { computed: false, missing: [], hostCacheBytes: 0 },
       cardShares: null,
     });
   });
@@ -197,7 +198,11 @@ describe('resolveBackend', () => {
     const definition = passthrough({ declaration, vram: { estimate: { source: VramSource.HOOK, hook: 'x/size' } } });
 
     expect(resolveBackend(definition, hooks).sizeVram(estimateInput)).toEqual({
-      estimate: { computed: false, missing: [{ source: EstimateInputSource.CONFIGURATION, field: 'own' }] },
+      estimate: {
+        computed: false,
+        missing: [{ source: EstimateInputSource.CONFIGURATION, field: 'own' }],
+        hostCacheBytes: 0,
+      },
       cardShares: [GIB],
     });
   });

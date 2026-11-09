@@ -35,6 +35,7 @@ interface ITableProps {
   party: 'deployment' | 'node';
   loading?: boolean;
   vramByInstance?: Record<string, number>;
+  residentBytesByInstance?: Record<string, number | null>;
 }
 
 const mountTable = (props: ITableProps) => {
@@ -140,6 +141,49 @@ describe('MfInstanceTable', () => {
     expect(table.text()).toContain('VRAM');
     expect(rows[0].text()).toContain('40 GiB');
     expect(rows[1].text()).toContain('-');
+  });
+
+  it('adds a RAM column after VRAM only when given the figures', () => {
+    const without = mountTable({ instances: [instance('a', InstanceState.READY)], party: 'deployment' });
+
+    expect(without.text()).not.toContain('RAM');
+    expect(without.find('[data-testid="instance-resident-memory"]').exists()).toBe(false);
+
+    const table = mountTable({
+      instances: [instance('a', InstanceState.READY)],
+      party: 'deployment',
+      vramByInstance: {},
+      residentBytesByInstance: {},
+    });
+
+    const headings = table.get('[data-testid="table-head"]').findAll('span');
+
+    expect(headings.map(heading => heading.text())).toEqual([
+      'Instance',
+      'Deployment',
+      'State',
+      'Device',
+      'Uptime',
+      'VRAM',
+      'RAM',
+      '',
+    ]);
+  });
+
+  it('reads RAM as the figure, Unknown for an unread process and - for an instance with no figure', () => {
+    const table = mountTable({
+      instances: [
+        instance('a', InstanceState.READY),
+        instance('b', InstanceState.READY),
+        instance('c', InstanceState.READY),
+      ],
+      party: 'deployment',
+      residentBytesByInstance: { a: 40 * GIB, b: null },
+    });
+
+    const cells = table.findAll('[data-testid="instance-resident-memory"]');
+
+    expect(cells.map(cell => cell.text())).toEqual(['40 GiB', 'Unknown', '-']);
   });
 
   it('says what an empty set means once loaded', () => {

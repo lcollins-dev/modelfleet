@@ -8,6 +8,7 @@ import { BackendId } from '@libs/backends';
 import type {
   EventDto,
   FleetNodeTelemetryDto,
+  NodeHostTelemetryDto,
   FleetTelemetryResponseDto,
   InstanceListResponseDto,
   ListDeploymentDto,
@@ -26,6 +27,8 @@ import {
 } from '@libs/dto';
 
 import { useUserStore } from '@/stores/user';
+
+import { MfKpiTile } from '@/components/mf';
 
 import Dashboard from './Dashboard.vue';
 
@@ -61,7 +64,26 @@ vi.mock('@/services/api/admin/InstanceAdminService', () => ({
 
 const subscription = () => ({ connected: ref(true), lastActivityDate: ref(new Date()), close: vi.fn() });
 
-const fleetNode = (nodeId: number, nodeName: string, nodeState: NodeState): FleetNodeTelemetryDto => ({
+const host = (extra: Partial<NodeHostTelemetryDto> = {}): NodeHostTelemetryDto => ({
+  cpuModel: null,
+  cpuCount: 8,
+  loadAverage1m: null,
+  memoryTotalBytes: 100 * GIB,
+  memoryFreeBytes: 80 * GIB,
+  heldByModelsBytes: 20 * GIB,
+  heldByModelsUnknown: false,
+  memoryAvailableBytes: 60 * GIB,
+  instanceMemory: [],
+  modelDirectories: [],
+  ...extra,
+});
+
+const fleetNode = (
+  nodeId: number,
+  nodeName: string,
+  nodeState: NodeState,
+  hostTelemetry: NodeHostTelemetryDto | null = null
+): FleetNodeTelemetryDto => ({
   nodeId,
   nodeName,
   nodeState,
@@ -69,7 +91,7 @@ const fleetNode = (nodeId: number, nodeName: string, nodeState: NodeState): Flee
     telemetryState: nodeState === NodeState.ONLINE ? NodeTelemetryState.OK : null,
     capturedAt: null,
     receivedAt: nodeState === NodeState.ONLINE ? new Date() : null,
-    host: null,
+    host: hostTelemetry,
     devices:
       nodeState === NodeState.ONLINE
         ? [
@@ -195,7 +217,7 @@ describe('Overview page', () => {
 
     await sendFleet([fleetNode(1, 'gpu-a-01', NodeState.ONLINE), fleetNode(2, 'gpu-b-02', NodeState.OFFLINE)]);
 
-    expect(wrapper.text()).toContain('2 nodes and 1 GPU.');
+    expect(wrapper.text()).toContain('Fleet status and recent activity.');
     expect(wrapper.text()).toContain('20 GiB');
     expect(wrapper.text()).toContain('of 80 GiB');
     expect(wrapper.text()).toContain('25% in use');
@@ -210,6 +232,64 @@ describe('Overview page', () => {
     ]);
     expect(nodeRows[1].text()).toContain('Offline');
     expect(nodeRows[1].text()).toContain('No data');
+  });
+
+  interface ITile {
+    props: (key: 'label') => unknown;
+    text: () => string;
+  }
+
+  const tileLabels = (tiles: ITile[]): unknown[] => tiles.map(tile => tile.props('label'));
+
+  const tileText = (tiles: ITile[], label: string): string =>
+    tiles.find(tile => tile.props('label') === label)?.text() ?? '';
+
+  it('reads the tiles as VRAM in use, RAM in use, Nodes and Deployments', async () => {
+    const wrapper = await mountDashboard();
+
+    expect(tileLabels(wrapper.findAllComponents(MfKpiTile))).toEqual([
+      'VRAM in use',
+      'RAM in use',
+      'Nodes',
+      'Deployments',
+    ]);
+  });
+
+  it('sums RAM across the fleet from what each node has available', async () => {
+    const wrapper = await mountDashboard();
+
+    await sendFleet([
+      fleetNode(1, 'gpu-a-01', NodeState.ONLINE, host()),
+      fleetNode(2, 'gpu-b-02', NodeState.ONLINE, host({ memoryAvailableBytes: 40 * GIB })),
+      fleetNode(3, 'gpu-c-03', NodeState.OFFLINE),
+    ]);
+
+    const tile = tileText(wrapper.findAllComponents(MfKpiTile), 'RAM in use');
+
+    expect(tile).toContain('100 GiB');
+    expect(tile).toContain('of 200 GiB');
+    expect(tile).toContain('50% in use');
+    expect(tile).toContain('100 GiB free');
+    expect(tile).not.toContain('At most');
+  });
+
+  it('reads free RAM as a ceiling where a node could not say what models hold', async () => {
+    const wrapper = await mountDashboard();
+
+    await sendFleet([
+      fleetNode(1, 'gpu-a-01', NodeState.ONLINE, host()),
+      fleetNode(2, 'gpu-b-02', NodeState.ONLINE, host({ heldByModelsUnknown: true, memoryAvailableBytes: 40 * GIB })),
+    ]);
+
+    expect(tileText(wrapper.findAllComponents(MfKpiTile), 'RAM in use')).toContain('At most 100 GiB free');
+  });
+
+  it('reads RAM as unknown until a node has reported', async () => {
+    const wrapper = await mountDashboard();
+
+    await sendFleet([fleetNode(1, 'gpu-a-01', NodeState.ONLINE)]);
+
+    expect(tileText(wrapper.findAllComponents(MfKpiTile), 'RAM in use')).toContain('No readings yet');
   });
 
   it('lists deployments with problems first, five at most, and counts every one', async () => {
@@ -230,7 +310,7 @@ describe('Overview page', () => {
     expect(rows[0]).toContain('deployment-4');
     expect(rows[0]).toContain('Failed');
     expect(rows[1]).toContain('deployment-1');
-    expect(card.text()).toContain('1 of 9 ready. Problems are listed first.');
+    expect(card.text()).toContain('Deployment status, with problems shown first.');
     expect(wrapper.text()).toContain('7 idle');
   });
 

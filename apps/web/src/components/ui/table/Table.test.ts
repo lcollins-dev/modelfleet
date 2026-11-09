@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { h } from 'vue';
 
 import Table from './Table.vue';
+import TableHead from './TableHead.vue';
 import TableRow from './TableRow.vue';
 
 describe('UiTable', () => {
@@ -12,6 +13,35 @@ describe('UiTable', () => {
 
     expect(fixed.get('[data-testid="row"]').element.parentElement?.getAttribute('style')).toContain('min-width: 640px');
     expect(narrow.get('.overflow-x-auto > div').attributes('style')).toContain('min-width: 0px');
+  });
+
+  it('stays one flow with the page unless given a scroll label', () => {
+    const wrapper = mount(Table, { props: { columns: '1fr' }, slots: { default: '<div />' } });
+
+    expect(wrapper.find('[role="region"]').exists()).toBe(false);
+    expect(wrapper.get('.overflow-x-auto').classes()).not.toContain('max-h-72');
+  });
+
+  it('scrolls its rows in a named region the keyboard can reach, under a head that sticks', () => {
+    const wrapper = mount(Table, {
+      props: { columns: '1fr', scrollLabel: 'Files' },
+      slots: { default: () => [h(TableHead, { sticky: true }, () => 'Path'), h(TableRow, () => 'model.gguf')] },
+    });
+
+    const region = wrapper.get('[role="region"]');
+
+    expect(region.attributes('aria-label')).toBe('Files');
+    expect(region.attributes('tabindex')).toBe('0');
+    expect(region.classes()).toEqual(expect.arrayContaining(['max-h-72', 'overflow-y-auto']));
+    expect(region.get('[data-testid="table-head"]').classes()).toEqual(
+      expect.arrayContaining(['sticky', 'top-0', 'bg-surface'])
+    );
+  });
+
+  it('leaves a head in the flow unless told to stick', () => {
+    const head = mount(TableHead, { slots: { default: 'Path' } });
+
+    expect(head.classes()).not.toContain('sticky');
   });
 
   it('frames a toolbar above the rows and a footer below them', () => {

@@ -78,8 +78,8 @@ export const environment = z.object({
 
   GATEWAY_REQUEST_MAX_SIZE_JSON: text('32mb'),
 
-  /** OpenAI's and vLLM's own cap on a transcription upload. */
-  GATEWAY_REQUEST_MAX_SIZE_AUDIO: text('25mb'),
+  /** Matched to the cap the vLLM backends are given, so an upload the gateway passes is one vLLM accepts. */
+  GATEWAY_REQUEST_MAX_SIZE_AUDIO: text('50mb'),
 
   GATEWAY_RATE_LIMIT_WINDOW_SECS: integer(60, 1),
   GATEWAY_RATE_LIMIT_MAX_REQUESTS: integer(600, 1),
@@ -115,6 +115,8 @@ export const environment = z.object({
 
   /** Starts that may fail in a row before a deployment is given up on, until an operator starts it by hand. */
   SCHEDULER_LAUNCH_FAILURE_LIMIT: integer(10, 1),
+
+  SCHEDULER_MIN_RESIDENCY: duration('2m'),
 
   // Instance output
   INSTANCE_OUTPUT_TAIL_LINES: integer(1000, 1, RELAY_MAX_LOG_TAIL),

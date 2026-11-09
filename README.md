@@ -18,10 +18,11 @@ a model when a request arrives, stop it after it becomes idle and check availabl
 - Runs llama.cpp, vLLM, vLLM-Omni, whisper.cpp and Kokoro on NVIDIA GPUs, configured through forms or YAML.
 - Catalogues and fingerprints model files across nodes, so a deployment can use the same weights on different machines.
 - Places deployments on selected nodes and GPUs, either always on or loaded on demand and stopped when idle.
-- Checks available GPU memory before starting a deployment.
+- Checks available VRAM and RAM before starting a deployment, and stops idle on-demand deployments to make room.
+- Supports speculative decoding in llama.cpp with a draft model.
 - Exposes an OpenAI-compatible gateway on its own port, with API keys issued from the console.
 - Downloads public, private and gated Hugging Face models directly to a node.
-- Shows live GPU telemetry, with memory matched to the container holding it.
+- Shows live GPU and RAM telemetry, with memory matched to the container holding it.
 - Provides user and system administration, a fleet event log and scheduled jobs.
 
 ## Architecture
@@ -66,8 +67,8 @@ Docker socket, and shares its model files with them.
 Modelfleet does not yet support:
 
 - GPUs other than NVIDIA, or hosts other than Linux on x86-64.
-- Stopping one model to make room for another. A request for an on-demand model that doesn't fit in free GPU memory
-  is refused.
+- Stopping a busy or always-on model to make room for another. A request for an on-demand model is refused if stopping
+  idle on-demand models can't free enough memory.
 - Automatic node selection. Each deployment runs only on the nodes and GPUs you select for it.
 - Limiting what an API key can reach. Every key can call every deployment, and only system admins can create keys.
 - Gateway endpoints beyond chat completions, embeddings, audio and the model list. The legacy completions, Responses

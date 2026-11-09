@@ -7,7 +7,7 @@ export const ModelListRequestDto = requestBody({
   /** Matches a model's name, its display name or its fingerprint. */
   search: optionalText(512),
   state: selection(enumValue(ModelState), 1, 2).optional(),
-  type: selection(enumValue(ModelType), 1, 4).optional(),
+  type: selection(enumValue(ModelType), 1, Object.values(ModelType).length).optional(),
   task: selection(
     z.union([enumValue(ModelTask), z.literal(UNKNOWN_MODEL_TASK)], { error: 'Choose an option from the list.' }),
     1,

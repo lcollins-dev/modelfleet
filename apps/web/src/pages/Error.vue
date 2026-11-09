@@ -64,7 +64,14 @@ const errorStack = computed(() => {
 const errorDetails = computed(() => `${errorMessage.value}\n\n${errorStack.value}`);
 
 const doRetry = () => {
-  router.back();
+  if (typeof router.options.history.state.back === 'string') {
+    router.back();
+    return;
+  }
+
+  router.push('/').catch((error: unknown) => {
+    logger.error({ error }, 'doRetry(): Failed to navigate home');
+  });
 };
 
 watchEffect(() => {

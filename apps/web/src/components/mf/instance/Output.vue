@@ -1,11 +1,5 @@
 <template>
-  <ui-card title="Output" flush data-testid="instance-output">
-    <template #subtitle>
-      <span data-testid="output-span">{{
-        span ?? (props.waiting ? 'Waiting for the container' : 'Reading the latest lines')
-      }}</span>
-    </template>
-
+  <ui-card title="Output" subtitle="Container logs for this instance." flush data-testid="instance-output">
     <template #header-extra>
       <ui-tag :type="status.type" data-testid="output-status">{{ status.label }}</ui-tag>
     </template>
@@ -94,7 +88,7 @@ import { InstanceOutputEndReason } from '@libs/dto';
 
 import { formatDateTime, formatTime } from '@/utils/format/date';
 import { formatNumber } from '@/utils/format/number';
-import { IInstanceOutput, OUTPUT_LINE_CAP, describeOutputSpan } from '@/utils/instanceOutput';
+import { IInstanceOutput, OUTPUT_LINE_CAP } from '@/utils/instanceOutput';
 
 import { TagType, UiButton, UiCard, UiNotice, UiTag } from '@/components/ui';
 
@@ -127,8 +121,6 @@ const pane = useTemplateRef<HTMLElement>('pane');
 const following = ref(true);
 
 const missed = ref(0);
-
-const span = computed(() => describeOutputSpan(props.output));
 
 const status = computed<{ type: TagType; label: string }>(() => {
   if (props.output.ended === InstanceOutputEndReason.EXITED) {

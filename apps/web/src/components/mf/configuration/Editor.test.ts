@@ -6,6 +6,8 @@ import { BackendId } from '@libs/backends';
 import type { DeploymentConfigurationDto } from '@libs/dto';
 import { ActivationPolicy, ConfigurationSource } from '@libs/dto';
 
+import { readDocument } from '@/utils/yaml';
+
 import Editor from './Editor.vue';
 
 vi.mock('@/services/api/admin/NodeAdminService', () => ({
@@ -116,6 +118,68 @@ describe('MfConfigurationEditor', () => {
     await wrapper.setProps({ activationPolicy: ActivationPolicy.ON_DEMAND });
 
     expect(wrapper.text()).toContain('Idle timeout');
+  });
+
+  describe('under a preset', () => {
+    const INHERITED = { image: 'engine:gpu', replicas: 2, idleTimeout: '45m', vramGib: 12 };
+
+    const renderInherited = (modelValue = '') =>
+      render({
+        modelValue,
+        hasPreset: true,
+        presetId: 1,
+        presetName: 'Fast',
+        inherited: INHERITED,
+        activationPolicy: ActivationPolicy.ON_DEMAND,
+      });
+
+    const fieldLabelled = (wrapper: EditorWrapper, label: string) =>
+      wrapper
+        .findAll('[data-testid="form-field"], [data-testid="configuration-field"]')
+        .find(field => field.text().startsWith(label));
+
+    it('tags every lead field the preset sets', () => {
+      const wrapper = renderInherited();
+
+      for (const label of ['Replicas', 'Idle timeout', 'Declared VRAM (GiB)', 'Container image']) {
+        expect(fieldLabelled(wrapper, label)?.text()).toContain('From preset');
+      }
+    });
+
+    it('drops the tag from a lead field the deployment sets', () => {
+      const wrapper = renderInherited('replicas: 3\n');
+
+      expect(fieldLabelled(wrapper, 'Replicas')?.text()).not.toContain('From preset');
+      expect(fieldLabelled(wrapper, 'Declared VRAM (GiB)')?.text()).toContain('From preset');
+    });
+
+    it('counts the lead keys of both layers in the rail', () => {
+      const wrapper = renderInherited('replicas: 3\nplacement:\n  nodes: []\n');
+
+      const deployment = wrapper.get('nav').findAll('button')[0];
+
+      expect(deployment.get('[title]').attributes('title')).toBe('5 set, 3 from the preset');
+    });
+
+    it('omits inherited keys from the document it saves', async () => {
+      const wrapper = renderInherited();
+      await flushPromises();
+
+      await wrapper.get('input[role="spinbutton"]').setValue('3');
+
+      expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual(['replicas: 3\n']);
+
+      await wrapper.setProps({ modelValue: 'replicas: 3\n' });
+      await wrapper.get('input[role="spinbutton"]').setValue('');
+
+      expect(readDocument(wrapper.emitted<[string]>('update:modelValue')!.at(-1)![0])).toEqual({});
+    });
+  });
+
+  it('leaves the lead fields untagged without a preset', () => {
+    const wrapper = render();
+
+    expect(wrapper.text()).not.toContain('From preset');
   });
 
   it('shows the applied configuration in its own view', async () => {

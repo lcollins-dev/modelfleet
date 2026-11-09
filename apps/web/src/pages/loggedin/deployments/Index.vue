@@ -1,9 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading
-      title="Deployments"
-      subtitle="Named endpoints your apps call. Each one pairs a model with its settings."
-    >
+    <ui-page-heading>
       <ui-button type="primary" to="/deployments/create">
         <template #icon>
           <icon-add class="size-4" />
@@ -60,7 +57,13 @@ import { useInstanceAdminService } from '@/services/api/admin/InstanceAdminServi
 import { MfDeploymentRow, MfFilterToolbar } from '@/components/mf';
 import { UiButton, UiCard, UiPageContainer, UiPageHeading, UiPagination, UiTable, UiTableHead } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
+
+usePage({
+  title: 'Deployments',
+  subtitle: 'Named endpoints your apps call. Each one pairs a model with its settings.',
+});
 
 const TABLE_COLUMNS = 'minmax(0, 1fr) 12rem 6.5rem 4.5rem 1rem';
 

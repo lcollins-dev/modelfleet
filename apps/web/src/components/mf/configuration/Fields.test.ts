@@ -108,6 +108,47 @@ describe('MfConfigurationFields', () => {
     expect(navItems(wrapper)[2].text()).toBe('Context1');
   });
 
+  it('counts the keys either layer sets, once each, while inheriting', () => {
+    const wrapper = render({
+      lead: LEAD,
+      modelValue: { contextSize: 4096 },
+      inherited: { contextSize: 8192, flashAttention: true },
+      inheriting: true,
+    });
+
+    const context = navItems(wrapper)[2];
+
+    expect(context.text()).toBe('Context2');
+    expect(context.get('[title]').attributes('title')).toBe('2 set, 1 from the preset');
+  });
+
+  it('counts the preset and the document across the lead keys while inheriting', () => {
+    const wrapper = render({
+      lead: { ...LEAD, keys: ['replicas', 'vramGib', 'image'] },
+      inherited: { replicas: 2, image: 'engine:gpu' },
+      own: { replicas: 3, vramGib: 12 },
+      inheriting: true,
+    });
+
+    const deployment = navItems(wrapper)[0];
+
+    expect(deployment.text()).toBe('Deployment3');
+    expect(deployment.get('[title]').attributes('title')).toBe('3 set, 1 from the preset');
+  });
+
+  it('keeps counting what it did where nothing is inherited', () => {
+    const wrapper = render({
+      lead: LEAD,
+      modelValue: { image: 'engine:cpu', contextSize: 4096 },
+      own: { replicas: 3 },
+    });
+
+    expect(navItems(wrapper)[0].text()).toBe('Deployment1');
+    expect(navItems(wrapper)[0].get('[title]').attributes('title')).toBe('1 set');
+    expect(navItems(wrapper)[2].text()).toBe('Context1');
+    expect(navItems(wrapper)[2].get('[title]').attributes('title')).toBe('1 set');
+  });
+
   it('counts the invalid fields in each section from the validation error', () => {
     useErrorStore().setValidationError(
       new ValidationError(null, { contextSize: { name: 'Context size', message: 'Too small.' } })

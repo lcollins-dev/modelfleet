@@ -32,6 +32,53 @@ describe('InstanceLeaseService', () => {
     );
   });
 
+  describe('claiming for an eviction', () => {
+    it('drains an instance so nothing is leased, and a stop-draining cannot lift the claim', async () => {
+      const instance = instanceOf(1);
+
+      expect(instanceLeaseService.claim([instance])).toBe(true);
+
+      instanceLeaseService.stopDraining([instance]);
+
+      expect(instanceLeaseService.isDraining(instance)).toBe(true);
+      expect(instanceLeaseService.isClaimed(instance)).toBe(true);
+      await expect(instanceLeaseService.lease(DEPLOYMENT_ID, [instance])).resolves.toBeNull();
+    });
+
+    it('claims all or none, so two plans cannot share a victim', () => {
+      const first = instanceOf(1);
+      const second = instanceOf(2);
+
+      expect(instanceLeaseService.claim([first])).toBe(true);
+      expect(instanceLeaseService.claim([second, first])).toBe(false);
+      expect(instanceLeaseService.isDraining(second)).toBe(false);
+    });
+
+    it('releases a claim, putting the instance back into service', async () => {
+      const instance = instanceOf(1);
+
+      instanceLeaseService.claim([instance]);
+      instanceLeaseService.releaseClaim([instance]);
+
+      await expect(instanceLeaseService.lease(DEPLOYMENT_ID, [instance])).resolves.not.toBeNull();
+    });
+
+    it('announces the last request leaving a claimed instance', async () => {
+      const instance = instanceOf(1);
+      const drained: number[] = [];
+
+      instanceLeaseService.drainedChanges().subscribe(deploymentId => drained.push(deploymentId));
+
+      const lease = await instanceLeaseService.lease(DEPLOYMENT_ID, [instance]);
+
+      instanceLeaseService.claim([instance]);
+      lease?.release();
+
+      expect(drained).toEqual([DEPLOYMENT_ID]);
+      expect(instanceLeaseService.inFlightOn(instance)).toBe(0);
+    });
+  });
+
   it('leases the ready instance carrying the fewest requests, and counts each once however often released', async () => {
     const instances = [instanceOf(1), instanceOf(2)];
 

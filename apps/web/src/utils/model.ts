@@ -35,6 +35,7 @@ const TYPE_LABELS: Record<ModelType, string> = {
   [ModelType.PROJECTOR]: 'Projector',
   [ModelType.LORA]: 'LoRA adapter',
   [ModelType.CONTROL_VECTOR]: 'Control vector',
+  [ModelType.DRAFT]: 'Draft model',
 };
 
 const TASK_LABELS: Record<ModelTaskFilter, string> = {

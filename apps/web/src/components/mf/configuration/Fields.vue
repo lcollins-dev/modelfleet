@@ -19,7 +19,7 @@
               {{ section.errors }}
             </span>
 
-            <span v-if="section.set > 0" :title="setLabel(section.set)">{{ section.set }}</span>
+            <span v-if="section.set > 0" :title="setLabel(section)">{{ section.set }}</span>
           </span>
         </template>
       </ui-nav-item>
@@ -98,6 +98,7 @@ interface ISection {
   icon: Component;
   fields: BackendField[];
   set: number;
+  fromPreset: number;
   errors: number;
 }
 
@@ -111,12 +112,15 @@ const props = withDefaults(
 
     inherited?: ConfigurationDocument;
 
+    /** Holds the lead keys missing from the values, which carry declared fields only. */
+    own?: ConfigurationDocument;
+
     inheriting?: boolean;
 
     /** Adds a first section rendering the default slot, for the keys the declaration does not model. */
     lead?: IConfigurationLead | null;
   }>(),
-  { inherited: () => ({}), inheriting: false, lead: null }
+  { inherited: () => ({}), own: () => ({}), inheriting: false, lead: null }
 );
 
 const emit = defineEmits<{ submit: [] }>();
@@ -129,6 +133,14 @@ const formName = inject(FORM_CONTEXT_KEY, null)?.name ?? null;
 
 const errorCount = (keys: string[]): number =>
   keys.filter(key => errorStore.getFieldError(formName, key) !== undefined).length;
+
+const setsKey = (key: string): boolean => (values.value[key] ?? props.own[key] ?? null) !== null;
+
+const countSet = (keys: string[]): Pick<ISection, 'set' | 'fromPreset'> => {
+  const fromPreset = keys.filter(key => holdsKey(props.inherited, key) && !setsKey(key)).length;
+
+  return { set: keys.filter(setsKey).length + fromPreset, fromPreset };
+};
 
 const declaredSections = computed<ISection[]>(() => {
   const declaration = props.declaration;
@@ -149,7 +161,7 @@ const declaredSections = computed<ISection[]>(() => {
         description: configurationGroupDescription(group.group),
         icon: configurationGroupIcon(group.group),
         fields,
-        set: fields.filter(field => (values.value[field.name] ?? null) !== null).length,
+        ...countSet(fields.map(field => field.name)),
         errors: errorCount(fields.map(field => field.name)),
       };
     })
@@ -170,7 +182,7 @@ const sections = computed<ISection[]>(() => {
       description: lead.description ?? '',
       icon: lead.icon,
       fields: [],
-      set: leadSet.value,
+      ...countSet(leadCounted.value),
       errors: errorCount(lead.keys ?? []),
     },
     ...declaredSections.value,
@@ -187,9 +199,19 @@ const active = computed<ISection>(
   () => sections.value.find(section => section.group === activeGroup.value) ?? sections.value[0]
 );
 
-const setLabel = (set: number): string => `${set} ${props.inheriting ? 'overridden' : 'set'}`;
+const setLabel = ({ set, fromPreset }: ISection): string => {
+  if (fromPreset > 0) {
+    return `${set} set, ${fromPreset} from the preset`;
+  }
 
-const leadSet = computed(() => (props.lead?.fields ?? []).filter(name => (values.value[name] ?? null) !== null).length);
+  return `${set} ${props.inheriting ? 'overridden' : 'set'}`;
+};
+
+const leadCounted = computed(() => {
+  const fields = props.lead?.fields ?? [];
+
+  return props.inheriting ? [...new Set([...(props.lead?.keys ?? []), ...fields])] : fields;
+});
 
 const leadFields = computed<Record<string, BackendField>>(() =>
   Object.fromEntries(

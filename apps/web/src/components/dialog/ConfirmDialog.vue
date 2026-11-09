@@ -28,7 +28,7 @@
     <div class="flex justify-end gap-2">
       <ui-button @click="cancel">{{ props.options.cancelLabel ?? 'Cancel' }}</ui-button>
       <ui-button
-        :type="props.options.type === DialogType.DANGER ? 'danger' : 'primary'"
+        :type="SEVERITY_BUTTON_TYPES[severity]"
         :disabled="!canConfirm"
         :loading="loading"
         data-testid="dialog-confirm"
@@ -48,7 +48,12 @@ import { DialogType, IDialogOptions } from '@/types/dialog';
 import { useLogService } from '@/services/LogService';
 
 import { UiButton, UiDiscIcon, UiFormField, UiInput, UiModal } from '@/components/ui';
-import { Severity, SEVERITY_DISC_CLASSES, SEVERITY_ICONS } from '@/components/ui/feedback/severity';
+import {
+  Severity,
+  SEVERITY_BUTTON_TYPES,
+  SEVERITY_DISC_CLASSES,
+  SEVERITY_ICONS,
+} from '@/components/ui/feedback/severity';
 
 const props = defineProps({
   options: {

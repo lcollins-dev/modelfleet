@@ -1,6 +1,6 @@
 <template>
   <ui-page-container wide>
-    <ui-page-heading title="Nodes" subtitle="Machines running the Modelfleet agent.">
+    <ui-page-heading>
       <ui-button type="primary" to="/nodes/register">
         <template #icon>
           <icon-add class="size-4" />
@@ -114,7 +114,13 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
+
+usePage({
+  title: 'Nodes',
+  subtitle: 'Machines running the Modelfleet agent.',
+});
 
 type StateFilter = 'all' | 'online' | 'offline' | 'inactive';
 

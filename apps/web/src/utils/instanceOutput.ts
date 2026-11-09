@@ -1,8 +1,6 @@
 import type { InstanceOutputEndReason, InstanceOutputFrameDto, InstanceOutputLineDto } from '@libs/dto';
 
 import { IAnsiSegment, IAnsiStyle, PLAIN_STYLE, parseAnsi } from './ansi';
-import { formatDate, formatTime } from './format/date';
-import { formatNumber } from './format/number';
 
 export const OUTPUT_LINE_CAP = 5000;
 
@@ -20,7 +18,6 @@ export interface IOutputLine {
 export interface IInstanceOutput {
   /** Null until the stream has opened. */
   tailLines: number | null;
-  complete: boolean;
   lines: IOutputLine[];
   /** Lines dropped from the head to hold `OUTPUT_LINE_CAP`. */
   dropped: number;
@@ -32,7 +29,6 @@ export interface IInstanceOutput {
 
 export const emptyInstanceOutput = (nextId = 0): IInstanceOutput => ({
   tailLines: null,
-  complete: false,
   lines: [],
   dropped: 0,
   ended: null,
@@ -42,7 +38,7 @@ export const emptyInstanceOutput = (nextId = 0): IInstanceOutput => ({
 
 export const applyOutputFrame = (output: IInstanceOutput, frame: InstanceOutputFrameDto): IInstanceOutput => {
   if (frame.kind === 'opened') {
-    return { ...emptyInstanceOutput(output.nextId), tailLines: frame.tailLines, complete: frame.complete };
+    return { ...emptyInstanceOutput(output.nextId), tailLines: frame.tailLines };
   }
 
   if (frame.kind === 'ended') {
@@ -70,23 +66,6 @@ export const applyOutputFrame = (output: IInstanceOutput, frame: InstanceOutputF
   };
 };
 
-export const describeOutputSpan = (output: IInstanceOutput, now = new Date()): string | null => {
-  if (output.tailLines === null) {
-    return null;
-  }
-
-  const first = output.lines.find(line => line.date !== null)?.date ?? null;
-  const since = first === null ? null : formatSince(first, now);
-
-  if (output.complete && output.dropped === 0) {
-    return since === null ? 'Since the container started' : `Since the container started at ${since}`;
-  }
-
-  const lines = `Last ${formatNumber(output.dropped > 0 ? OUTPUT_LINE_CAP : output.tailLines)} lines`;
-
-  return since === null ? lines : `${lines}, since ${since}`;
-};
-
 /** The api words these statuses for the operator; any other may carry raw server text. */
 export const describeOutputRefusal = (status: number, message: string | null): string => {
   if (!OWN_REFUSAL_STATUSES.includes(status) || message === null) {
@@ -106,6 +85,3 @@ const toOutputLine = (line: InstanceOutputLineDto, id: number, segments: IAnsiSe
     cut: line.cut,
   };
 };
-
-const formatSince = (date: Date, now: Date): string =>
-  formatDate(date) === formatDate(now) ? formatTime(date) : `${formatDate(date)} ${formatTime(date)}`;

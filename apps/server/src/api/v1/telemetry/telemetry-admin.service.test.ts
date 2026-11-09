@@ -194,8 +194,82 @@ describe('TelemetryAdminService', () => {
       loadAverage1m: 1.2,
       memoryTotalBytes: 67_386_753_024,
       memoryFreeBytes: 41_231_686_144,
+      heldByModelsBytes: 0,
+      heldByModelsUnknown: true,
+      memoryAvailableBytes: 41_231_686_144,
+      instanceMemory: [],
       modelDirectories: [],
     });
+  });
+
+  it('takes what models hold off the available figure, and carries each instance', async () => {
+    telemetryService.recordTelemetry(
+      NODE_ID,
+      telemetry({
+        host: {
+          ...telemetry().host,
+          memoryFreeBytes: 40 * GIB,
+          instanceMemory: [
+            { instanceKey: 'a', heldBytes: 30 * GIB, residentBytes: 34 * GIB },
+            { instanceKey: 'b', heldBytes: null, residentBytes: null },
+          ],
+          heldMemory: { bytes: 30 * GIB, anyUnknown: true },
+        },
+      })
+    );
+
+    const status = await telemetryAdminService.getNodeTelemetryStatus(NODE_ID);
+
+    expect(status.host).toMatchObject({
+      memoryFreeBytes: 40 * GIB,
+      heldByModelsBytes: 30 * GIB,
+      heldByModelsUnknown: true,
+      memoryAvailableBytes: 10 * GIB,
+      instanceMemory: [
+        { instanceKey: 'a', heldBytes: 30 * GIB, residentBytes: 34 * GIB },
+        { instanceKey: 'b', heldBytes: null, residentBytes: null },
+      ],
+    });
+  });
+
+  it('reads resident as held from an agent that predates reporting it', async () => {
+    telemetryService.recordTelemetry(
+      NODE_ID,
+      telemetry({
+        host: {
+          ...telemetry().host,
+          instanceMemory: [
+            { instanceKey: 'a', heldBytes: 30 * GIB },
+            { instanceKey: 'b', heldBytes: null },
+          ],
+          heldMemory: { bytes: 30 * GIB, anyUnknown: true },
+        },
+      })
+    );
+
+    const status = await telemetryAdminService.getNodeTelemetryStatus(NODE_ID);
+
+    expect(status.host?.instanceMemory).toEqual([
+      { instanceKey: 'a', heldBytes: 30 * GIB, residentBytes: 30 * GIB },
+      { instanceKey: 'b', heldBytes: null, residentBytes: null },
+    ]);
+  });
+
+  it('clamps available memory at zero where instances mapping one file count twice', async () => {
+    telemetryService.recordTelemetry(
+      NODE_ID,
+      telemetry({
+        host: {
+          ...telemetry().host,
+          memoryFreeBytes: 40 * GIB,
+          heldMemory: { bytes: 60 * GIB, anyUnknown: false },
+        },
+      })
+    );
+
+    const status = await telemetryAdminService.getNodeTelemetryStatus(NODE_ID);
+
+    expect(status.host?.memoryAvailableBytes).toBe(0);
   });
 
   it('carries the free space and write access the node reported in each model directory, in its order', async () => {

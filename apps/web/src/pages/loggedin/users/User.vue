@@ -1,6 +1,6 @@
 <template>
   <ui-page-container>
-    <ui-page-heading v-if="user" :title="user.name" back-to="/users" back-label="Users">
+    <ui-page-heading v-if="user">
       <template #leading>
         <user-avatar :user="user" size="lg" />
       </template>
@@ -17,7 +17,7 @@
       </div>
     </ui-page-heading>
 
-    <ui-back-link v-else to="/users" label="Users" />
+    <ui-back-link v-else />
 
     <div v-if="loadingUser && !user" class="flex justify-center py-8">
       <ui-spinner />
@@ -185,7 +185,7 @@
       <ui-card
         v-if="canReadEvents"
         title="Recent activity"
-        subtitle="What they did, newest first."
+        subtitle="Actions taken by this user."
         flush
         data-testid="activity-card"
       >
@@ -255,6 +255,7 @@ import RoleSelect from '@/components/user/RoleSelect.vue';
 import UserAccessTag from '@/components/user/UserAccessTag.vue';
 import UserAvatar from '@/components/user/UserAvatar.vue';
 
+import { usePage } from '@/composables/usePage';
 import { usePagedList } from '@/composables/usePagedList';
 import { useResource } from '@/composables/useResource';
 
@@ -287,6 +288,8 @@ const {
   request: userId,
   fetch: (targetId: number) => adminUserService.getUser(targetId),
 });
+
+usePage({ title: () => user.value?.name ?? '', back: '/users' });
 
 // The event log answers system admins only, and this page needs only the user admin role.
 const canReadEvents = computed(() => userStore.hasRole(UserRoleId.SYSTEM_ADMIN));

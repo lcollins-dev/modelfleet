@@ -57,4 +57,21 @@ describe('PickerRow', () => {
 
     expect(row.emitted('update:expanded')).toBeUndefined();
   });
+
+  it('leaves a click on a button to the button when the button swaps out the icon that was clicked', async () => {
+    const row = mount(PickerRow, {
+      props: { label: 'rig-01', checked: false, expanded: false },
+      slots: { actions: '<button type="button"><svg /></button>' },
+    });
+    const icon = row.get('svg');
+
+    // A real click lets Vue redraw between listeners and a synthetic one does not, so the redraw is done by hand.
+    row.get('button').element.addEventListener('click', () => {
+      icon.element.remove();
+    });
+
+    await icon.trigger('click');
+
+    expect(row.emitted('update:expanded')).toBeUndefined();
+  });
 });

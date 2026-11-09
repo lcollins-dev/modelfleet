@@ -12,7 +12,8 @@ import { loggedInRoutes } from './loggedin';
 import { loggedOutRoutes } from './loggedout';
 import { HOME_PATH, NOT_FOUND_ROUTE, authMiddleware } from './middleware/auth';
 import { clearNotificationsErrorMiddleware } from './middleware/clear-notifications-errors';
-import { logMiddleware } from './middleware/log';
+import { logMiddleware, logNavigationFailure } from './middleware/log';
+import { transientMiddleware } from './middleware/transient';
 
 declare module 'vue-router' {
   // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -66,8 +67,11 @@ const router = createRouter({
   routes,
 });
 
+// First, so a push it turns into a step back or a replace skips the other guards, and auth fetches the profile once.
+router.beforeEach(transientMiddleware);
 router.beforeEach(logMiddleware);
 router.beforeEach(clearNotificationsErrorMiddleware);
 router.beforeEach(authMiddleware);
+router.afterEach(logNavigationFailure);
 
 export { router };

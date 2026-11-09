@@ -4,7 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ref } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
-import type { GpuTelemetryDto, ListInstanceDto, NodeDto, NodeModelDto, NodeTelemetryStatusDto } from '@libs/dto';
+import type {
+  GpuTelemetryDto,
+  InstanceMemoryDto,
+  ListInstanceDto,
+  NodeDto,
+  NodeHostTelemetryDto,
+  NodeModelDto,
+  NodeTelemetryStatusDto,
+} from '@libs/dto';
 import {
   GpuProcessAttribution,
   GpuVendor,
@@ -107,6 +115,10 @@ const status = (extra: Partial<NodeTelemetryStatusDto> = {}): NodeTelemetryStatu
     loadAverage1m: 4.12,
     memoryTotalBytes: 512 * GIB,
     memoryFreeBytes: 384 * GIB,
+    heldByModelsBytes: 96 * GIB,
+    heldByModelsUnknown: false,
+    memoryAvailableBytes: 288 * GIB,
+    instanceMemory: [],
     modelDirectories: [],
   },
   devices: [device],
@@ -148,6 +160,7 @@ const mountNode = async () => {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
+      { path: '/nodes', component: { template: '<div />' } },
       { path: '/nodes/:nodeId', component: { template: '<div />' } },
       { path: '/:path(.*)*', component: { template: '<div />' } },
     ],
@@ -159,6 +172,59 @@ const mountNode = async () => {
 
   return { wrapper, router };
 };
+
+type MemoryReading = Omit<InstanceMemoryDto, 'residentBytes'> & Partial<Pick<InstanceMemoryDto, 'residentBytes'>>;
+
+const heldBy = (instanceMemory: MemoryReading[], extra: Partial<NodeHostTelemetryDto> = {}): NodeTelemetryStatusDto =>
+  status({
+    host: {
+      ...status().host!,
+      instanceMemory: instanceMemory.map(reading => ({
+        ...reading,
+        residentBytes: reading.residentBytes === undefined ? reading.heldBytes : reading.residentBytes,
+      })),
+      ...extra,
+    },
+  });
+
+type NodeWrapper = Awaited<ReturnType<typeof mountNode>>['wrapper'];
+
+const memoryTile = (wrapper: NodeWrapper) => wrapper.get('[data-testid="host-kpis"]').findAll('.flex.h-full')[1];
+
+const memoryDetail = (wrapper: NodeWrapper) => memoryTile(wrapper).get('[data-testid="kpi-detail"]').text();
+
+const cpuTile = (wrapper: NodeWrapper) => wrapper.get('[data-testid="host-kpis"]').findAll('.flex.h-full')[0];
+
+const storageTile = (wrapper: NodeWrapper) => wrapper.get('[data-testid="host-kpis"]').findAll('.flex.h-full')[2];
+
+type TileWrapper = ReturnType<typeof memoryTile>;
+
+const legendOf = (tile: TileWrapper) =>
+  tile.findAll('[data-testid="meter-legend"] > span').map(item =>
+    item
+      .findAll('span')
+      .slice(1)
+      .map(part => part.text())
+      .join(' ')
+  );
+
+const bandsOf = (tile: TileWrapper) => tile.get('.h-2').findAll('div');
+
+const memoryLegend = (wrapper: NodeWrapper) => legendOf(memoryTile(wrapper));
+
+const memoryBands = (wrapper: NodeWrapper) => bandsOf(memoryTile(wrapper));
+
+const widths = (bands: ReturnType<typeof bandsOf>) => bands.map(band => band.attributes('style'));
+
+const stored = (modelDirectories: NodeHostTelemetryDto['modelDirectories']): NodeTelemetryStatusDto =>
+  status({ host: { ...status().host!, modelDirectories } });
+
+const folder = (path: string, freeBytes: number | null, totalBytes: number | null) => ({
+  path,
+  freeBytes,
+  totalBytes,
+  writeAccess: null,
+});
 
 const buttonNamed = (wrapper: Awaited<ReturnType<typeof mountNode>>['wrapper'], label: string) => {
   const button = wrapper.findAll('button').find(candidate => candidate.text() === label);
@@ -195,21 +261,289 @@ describe('Node page', () => {
     expect(wrapper.get('[data-testid="node-state"]').text()).toBe('Online');
     expect(wrapper.text()).toContain('Rack 4, DC1');
     expect(wrapper.text()).toContain(node().nodeKey);
-    expect(wrapper.text()).toContain('1 × NVIDIA A100-SXM4-80GB');
     expect(wrapper.text()).toContain('0.9.4');
   });
 
-  it("reads the host's CPU, memory and load into tiles", async () => {
+  it("reads the host's CPU and memory into tiles", async () => {
+    getNodeTelemetryStatus.mockResolvedValue(heldBy([{ instanceKey: 'instance-a', heldBytes: 96 * GIB }]));
+
     const { wrapper } = await mountNode();
 
     const kpis = wrapper.get('[data-testid="host-kpis"]').text();
 
-    expect(kpis).toContain('64');
-    expect(kpis).toContain('AMD EPYC 7763');
-    expect(kpis).toContain('128 GiB');
-    expect(kpis).toContain('25% used');
-    expect(kpis).toContain('4.12');
-    expect(kpis).toContain('About 6% of 64 cores');
+    expect(kpis).toContain('224 GiB');
+    expect(kpis).toContain('of 512 GiB');
+    expect(memoryDetail(wrapper)).toBe('288 GiB free');
+    expect(memoryLegend(wrapper)).toEqual(['llama-70b-chat 96 GiB', 'Other 128 GiB']);
+    expect(kpis).not.toContain('available');
+    expect(kpis).not.toContain('held by models');
+  });
+
+  it('reads load into the CPU tile, keyed by its cores and model with no dot', async () => {
+    const { wrapper } = await mountNode();
+
+    const tile = cpuTile(wrapper);
+
+    expect(tile.get('[data-testid="kpi-value"]').text()).toContain('4.12');
+    expect(tile.get('[data-testid="kpi-value"]').text()).toContain('1-minute average');
+    expect(tile.get('[data-testid="kpi-bands"]').findAll('div')[0].attributes('style')).toBe('flex-grow: 6;');
+    expect(tile.get('[data-testid="kpi-bands"]').findAll('div')[0].classes()).toContain('bg-success');
+    expect(tile.findAll('.whitespace-nowrap').map(item => item.text())).toEqual(['64 cores', 'AMD EPYC 7763']);
+    expect(tile.find('.rounded-full').exists()).toBe(false);
+    expect(tile.text()).not.toContain('About');
+  });
+
+  it('warns on the CPU bar as load nears the core count', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(heldBy([], { loadAverage1m: 64 }));
+
+    const { wrapper } = await mountNode();
+
+    expect(cpuTile(wrapper).get('[data-testid="kpi-bands"]').findAll('div')[0].classes()).toContain('bg-error');
+  });
+
+  it.each([
+    { name: 'one core', extra: { cpuCount: 1, loadAverage1m: 0.5 }, value: '0.50', key: ['1 core', 'AMD EPYC 7763'] },
+    { name: 'no model', extra: { cpuModel: null }, value: '4.12', key: ['64 cores'] },
+    { name: 'no cores', extra: { cpuCount: 0 }, value: '-', key: ['Cores not reported', 'AMD EPYC 7763'] },
+    { name: 'neither', extra: { cpuCount: 0, cpuModel: null }, value: '-', key: ['Cores not reported'] },
+    { name: 'no load', extra: { loadAverage1m: null }, value: '-', key: ['64 cores', 'AMD EPYC 7763'] },
+  ])('keys the CPU tile for $name', async ({ extra, value, key }) => {
+    getNodeTelemetryStatus.mockResolvedValue(heldBy([], extra));
+
+    const { wrapper } = await mountNode();
+
+    const tile = cpuTile(wrapper);
+
+    expect(tile.get('[data-testid="kpi-value"] span').text()).toBe(value);
+    expect(tile.find('[data-testid="kpi-bands"]').exists()).toBe(value !== '-');
+    expect(tile.findAll('.whitespace-nowrap').map(item => item.text())).toEqual(key);
+  });
+
+  it('reads two model folders into the storage tile, one band each of the combined total', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      stored([folder('/srv/models', 140 * GIB, 300 * GIB), folder('/mnt/nvme', 60 * GIB, 100 * GIB)])
+    );
+
+    const { wrapper } = await mountNode();
+
+    const tile = storageTile(wrapper);
+    const bands = bandsOf(tile);
+
+    expect(tile.text()).toContain('Model storage');
+    expect(tile.get('[data-testid="kpi-value"] span').text()).toBe('200 GiB');
+    expect(tile.get('[data-testid="kpi-value"]').text()).toContain('of 400 GiB');
+    expect(tile.get('[data-testid="kpi-detail"]').text()).toBe('200 GiB free');
+    expect(legendOf(tile)).toEqual(['/srv/models 160 GiB', '/mnt/nvme 40 GiB']);
+    expect(widths(bands)).toEqual(['width: 40%;', 'width: 10%;']);
+    expect(bands[0].classes()).toContain('bg-series-1');
+    expect(bands[1].classes()).toContain('bg-series-2');
+  });
+
+  it('counts folders with the same free and total once, under the first path', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      stored([
+        folder('/srv/models', 60 * GIB, 100 * GIB),
+        folder('/srv/models-extra', 60 * GIB, 100 * GIB),
+        folder('/mnt/nvme', 60 * GIB, 300 * GIB),
+      ])
+    );
+
+    const { wrapper } = await mountNode();
+
+    const tile = storageTile(wrapper);
+
+    expect(tile.get('[data-testid="kpi-value"]').text()).toContain('of 400 GiB');
+    expect(legendOf(tile)).toEqual(['/srv/models 40 GiB', '/mnt/nvme 240 GiB']);
+  });
+
+  it('keys an unreadable folder as Unknown on an empty band, reading free as a floor', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      stored([folder('/srv/models', 60 * GIB, 100 * GIB), folder('/mnt/lost', null, null)])
+    );
+
+    const { wrapper } = await mountNode();
+
+    const tile = storageTile(wrapper);
+
+    expect(tile.get('[data-testid="kpi-detail"]').text()).toBe('At least 60 GiB free');
+    expect(legendOf(tile)).toEqual(['/srv/models 40 GiB', '/mnt/lost Unknown']);
+    expect(widths(bandsOf(tile))).toEqual(['width: 40%;', 'width: 0%;']);
+  });
+
+  it.each([
+    { name: 'no folders', modelDirectories: [] },
+    { name: 'no readable folders', modelDirectories: [folder('/mnt/lost', null, 100 * GIB)] },
+  ])('reads the storage tile as not reported with $name', async ({ modelDirectories }) => {
+    getNodeTelemetryStatus.mockResolvedValue(stored(modelDirectories));
+
+    const { wrapper } = await mountNode();
+
+    const tile = storageTile(wrapper);
+
+    expect(tile.get('[data-testid="kpi-value"] span').text()).toBe('-');
+    expect(tile.find('[data-testid="kpi-meter"]').exists()).toBe(false);
+    expect(tile.find('[data-testid="kpi-detail"]').exists()).toBe(false);
+    expect(tile.get('.whitespace-nowrap').text()).toBe('Not reported');
+  });
+
+  it('gives each deployment one band after a neutral used band, grouping its instances', async () => {
+    getNodeInstances.mockResolvedValue({
+      instances: [
+        instance,
+        { ...instance, instanceKey: 'instance-b' },
+        { ...instance, instanceKey: 'instance-c', deploymentName: 'qwen-coder' },
+      ],
+    });
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy([
+        { instanceKey: 'instance-a', heldBytes: 32 * GIB },
+        { instanceKey: 'instance-b', heldBytes: 32 * GIB },
+        { instanceKey: 'instance-c', heldBytes: 32 * GIB },
+      ])
+    );
+
+    const { wrapper } = await mountNode();
+
+    const bands = memoryBands(wrapper);
+
+    expect(memoryLegend(wrapper)).toEqual(['llama-70b-chat 64 GiB', 'qwen-coder 32 GiB', 'Other 128 GiB']);
+    expect(widths(bands)).toEqual(['width: 12.5%;', 'width: 6.25%;', 'width: 25%;']);
+    expect(bands[0].classes()).toContain('bg-series-1');
+    expect(bands[1].classes()).toContain('bg-series-2');
+    expect(bands[2].classes()).toContain('bg-muted');
+    expect(bands[2].attributes('title')).toBe('Other · 128 GiB');
+  });
+
+  it('keys an unread instance as Unknown on an empty band, reading free as a ceiling', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy([{ instanceKey: 'instance-a', heldBytes: null }], { heldByModelsBytes: 0, heldByModelsUnknown: true })
+    );
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryDetail(wrapper)).toBe('At most 288 GiB free');
+    expect(memoryLegend(wrapper)).toEqual(['llama-70b-chat Unknown', 'Other 128 GiB']);
+    expect(widths(memoryBands(wrapper))).toEqual(['width: 0%;', 'width: 25%;']);
+  });
+
+  it('counts an instance with no row in the list as other', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(heldBy([{ instanceKey: 'instance-gone', heldBytes: 96 * GIB }]));
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryLegend(wrapper)).toEqual(['Other 224 GiB']);
+    expect(memoryBands(wrapper)[0].classes()).toContain('bg-muted');
+  });
+
+  it('keys an unread instance with no row in the list as models', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy([{ instanceKey: 'instance-gone', heldBytes: null }], { heldByModelsBytes: 0, heldByModelsUnknown: true })
+    );
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryLegend(wrapper)).toEqual(['Models Unknown', 'Other 128 GiB']);
+  });
+
+  it("moves a deployment's anonymous memory out of Other, the bands summing to the headline", async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy([{ instanceKey: 'instance-a', heldBytes: 2 * GIB, residentBytes: 102 * GIB }], {
+        heldByModelsBytes: 2 * GIB,
+        memoryAvailableBytes: 382 * GIB,
+      })
+    );
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryTile(wrapper).get('[data-testid="kpi-value"]').text()).toContain('130 GiB');
+    expect(memoryLegend(wrapper)).toEqual(['llama-70b-chat 102 GiB', 'Other 28 GiB']);
+    expect(widths(memoryBands(wrapper))).toEqual(['width: 19.921875%;', 'width: 5.46875%;']);
+  });
+
+  it("leaves an unmatched instance's anonymous memory inside Other, adding only its mapped pages", async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy([{ instanceKey: 'instance-gone', heldBytes: 2 * GIB, residentBytes: 102 * GIB }], {
+        heldByModelsBytes: 2 * GIB,
+        memoryAvailableBytes: 382 * GIB,
+      })
+    );
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryLegend(wrapper)).toEqual(['Other 130 GiB']);
+    expect(widths(memoryBands(wrapper))).toEqual(['width: 25.390625%;']);
+  });
+
+  it('shrinks only the mapped part of a deployment where double-counted pages pass the free figure', async () => {
+    getNodeInstances.mockResolvedValue({
+      instances: [instance, { ...instance, instanceKey: 'instance-b', deploymentName: 'qwen-coder' }],
+    });
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy(
+        [
+          { instanceKey: 'instance-a', heldBytes: 384 * GIB, residentBytes: 448 * GIB },
+          { instanceKey: 'instance-b', heldBytes: 384 * GIB },
+        ],
+        { heldByModelsBytes: 768 * GIB, memoryAvailableBytes: 0 }
+      )
+    );
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryLegend(wrapper)).toEqual(['llama-70b-chat 448 GiB', 'qwen-coder 384 GiB', 'Other 64 GiB']);
+    expect(widths(memoryBands(wrapper))).toEqual(['width: 50%;', 'width: 37.5%;', 'width: 12.5%;']);
+  });
+
+  it('floors Other at zero and keeps the bands on the headline where anonymous memory passes used', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy([{ instanceKey: 'instance-a', heldBytes: 0, residentBytes: 256 * GIB }], { heldByModelsBytes: 0 })
+    );
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryLegend(wrapper)).toEqual(['llama-70b-chat 256 GiB', 'Other 0 B']);
+    expect(widths(memoryBands(wrapper))).toEqual(['width: 25%;', 'width: 0%;']);
+  });
+
+  it('keeps the bands within the bar with no overflow marker, the legend reading each figure in full', async () => {
+    getNodeInstances.mockResolvedValue({
+      instances: [instance, { ...instance, instanceKey: 'instance-b', deploymentName: 'qwen-coder' }],
+    });
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy(
+        [
+          { instanceKey: 'instance-a', heldBytes: 384 * GIB },
+          { instanceKey: 'instance-b', heldBytes: 384 * GIB },
+        ],
+        { heldByModelsBytes: 768 * GIB, memoryAvailableBytes: 0 }
+      )
+    );
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryLegend(wrapper)).toEqual(['llama-70b-chat 384 GiB', 'qwen-coder 384 GiB', 'Other 128 GiB']);
+    expect(widths(memoryBands(wrapper))).toEqual(['width: 37.5%;', 'width: 37.5%;', 'width: 25%;']);
+    expect(memoryTile(wrapper).find('[data-overflow]').exists()).toBe(false);
+  });
+
+  it('keys models as Unknown rather than zero where the agent reports no instances', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(
+      heldBy([], { heldByModelsBytes: 0, heldByModelsUnknown: true, memoryAvailableBytes: 384 * GIB })
+    );
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryDetail(wrapper)).toBe('At most 384 GiB free');
+    expect(memoryLegend(wrapper)).toEqual(['Models Unknown', 'Other 128 GiB']);
+  });
+
+  it('shows no meter on a host that did not report its memory', async () => {
+    getNodeTelemetryStatus.mockResolvedValue(heldBy([], { memoryTotalBytes: 0 }));
+
+    const { wrapper } = await mountNode();
+
+    expect(memoryTile(wrapper).find('[data-testid="kpi-meter"]').exists()).toBe(false);
+    expect(memoryTile(wrapper).text()).toContain('Not reported');
   });
 
   it('lists each GPU, and the instances on the node with the memory each holds', async () => {
@@ -224,6 +558,28 @@ describe('Node page', () => {
     expect(instanceRow.get('[data-testid="table-row-link"]').attributes('href')).toBe(
       '/deployments/4/instance/instance-a'
     );
+  });
+
+  it.each([
+    {
+      name: 'a figure',
+      instanceMemory: [{ instanceKey: 'instance-a', heldBytes: 2 * GIB, residentBytes: 12 * GIB }],
+      expected: '12 GiB',
+    },
+    {
+      name: 'an unread process',
+      instanceMemory: [{ instanceKey: 'instance-a', heldBytes: null, residentBytes: null }],
+      expected: 'Unknown',
+    },
+    { name: 'no entry', instanceMemory: [], expected: '-' },
+  ])('reads the RAM column from telemetry for $name', async ({ instanceMemory, expected }) => {
+    getNodeTelemetryStatus.mockResolvedValue(status({ host: { ...status().host!, instanceMemory } }));
+
+    const { wrapper } = await mountNode();
+
+    expect(wrapper.get('[data-testid="instances-card"]').text()).toContain('RAM');
+    expect(wrapper.get('[data-testid="instances-card"]').text()).not.toContain('RAM held');
+    expect(wrapper.get('[data-testid="instance-resident-memory"]').text()).toBe(expected);
   });
 
   it('tells a node that never reported from one that has no GPUs', async () => {

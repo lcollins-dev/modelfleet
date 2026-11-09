@@ -5,6 +5,7 @@ import { MAX_MODEL_DIRECTORIES, ModelDirectoryWriteAccess } from '@libs/agent-pr
 
 import { ConfigService } from '@/config/config.service';
 import { HostResourcesService, MOUNT_TIMEOUT_MS } from '@/telemetry/host-resources.service';
+import { InstanceMemoryService } from '@/telemetry/instance-memory.service';
 
 vi.mock('node:fs/promises', async importOriginal => ({
   ...(await importOriginal<typeof import('node:fs/promises')>()),
@@ -13,6 +14,7 @@ vi.mock('node:fs/promises', async importOriginal => ({
 }));
 
 const BLOCK = 4096;
+const INSTANCE_KEY = '0199a3b2-7c4d-7e8f-9a0b-1c2d3e4f5a6b';
 const WRITABLE = ModelDirectoryWriteAccess.WRITABLE;
 
 function errno(code: string): NodeJS.ErrnoException {
@@ -24,7 +26,16 @@ describe('HostResourcesService', () => {
   const accessMock = vi.mocked(access);
 
   const serviceFor = (modelDirs: string[]): HostResourcesService =>
-    new HostResourcesService({ modelDirs } as unknown as ConfigService);
+    new HostResourcesService(
+      { modelDirs } as unknown as ConfigService,
+      {
+        read: () =>
+          Promise.resolve({
+            instanceMemory: [{ instanceKey: INSTANCE_KEY, heldBytes: 4096 }],
+            heldMemory: { bytes: 4096, anyUnknown: false },
+          }),
+      } as unknown as InstanceMemoryService
+    );
 
   beforeEach(() => {
     statfsMock.mockReset();
@@ -34,6 +45,14 @@ describe('HostResourcesService', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('reports what running instances hold beside the raw kernel figure', async () => {
+    const host = await serviceFor([]).read();
+
+    expect(host.instanceMemory).toEqual([{ instanceKey: INSTANCE_KEY, heldBytes: 4096 }]);
+    expect(host.heldMemory).toEqual({ bytes: 4096, anyUnknown: false });
+    expect(host.memoryFreeBytes).toBeGreaterThan(0);
   });
 
   it('reports the space free to the agent in each model directory, in configured order', async () => {

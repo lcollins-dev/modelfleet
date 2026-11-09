@@ -26,6 +26,7 @@ const push = vi.fn();
 
 vi.mock('vue-router', () => ({
   RouterLink: { template: '<a><slot /></a>' },
+  useRoute: () => ({ path: '/downloads/create' }),
   useRouter: () => ({ push }),
 }));
 
@@ -60,6 +61,10 @@ const host = (freeBytes: number): NodeHostTelemetryDto => ({
   loadAverage1m: null,
   memoryTotalBytes: 32 * GIB,
   memoryFreeBytes: 16 * GIB,
+  heldByModelsBytes: 0,
+  heldByModelsUnknown: false,
+  memoryAvailableBytes: 16 * GIB,
+  instanceMemory: [],
   modelDirectories: [
     { path: '/models', freeBytes, totalBytes: 100 * GIB, writeAccess: ModelDirectoryWriteAccess.WRITABLE },
   ],
@@ -87,7 +92,7 @@ describe('Create download', () => {
   let onFleet: (response: FleetTelemetryResponseDto) => void;
 
   const render = async (): Promise<VueWrapper> => {
-    const wrapper = mount(Create, { global: { stubs: { UiPageHeading: true } } });
+    const wrapper = mount(Create, { global: { stubs: { PageHeading: true } } });
 
     await flushPromises();
 
@@ -266,6 +271,7 @@ describe('Create download', () => {
       },
       'create-download'
     );
+    expect(push).toHaveBeenCalledWith('/downloads');
   });
 
   it('drops the listing and its ticks when the repository changes, so nothing starts from a stale one', async () => {

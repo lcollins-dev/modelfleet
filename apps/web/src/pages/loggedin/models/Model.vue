@@ -1,11 +1,9 @@
 <template>
   <ui-page-container>
-    <ui-page-heading v-if="model" back-to="/models" back-label="Models">
+    <ui-page-heading v-if="model">
       <template #title>
         <span class="break-all font-mono">{{ modelLabel(model) }}</span>
       </template>
-
-      <template #subtitle>{{ metaLine }}</template>
 
       <div class="flex items-center gap-3">
         <mf-licence-tag :licence="model.licence" />
@@ -19,7 +17,7 @@
       </div>
     </ui-page-heading>
 
-    <ui-back-link v-else to="/models" label="Models" />
+    <ui-back-link v-else />
 
     <div v-if="loadingModel && !model" class="flex justify-center py-8">
       <ui-spinner />
@@ -30,10 +28,6 @@
     </ui-card>
 
     <template v-else>
-      <ui-notice v-if="companionName !== null" type="info" title="This file cannot be deployed on its own">
-        {{ COMPANION_DESCRIPTION }}
-      </ui-notice>
-
       <ui-notice v-if="model.state === ModelState.UNAVAILABLE" type="warning" title="No online node stores this model">
         {{ unavailableDescription }}
       </ui-notice>
@@ -134,7 +128,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watchEffect } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import IconDns from '~icons/material-symbols/dns-outline-rounded';
 import IconEdit from '~icons/material-symbols/edit-outline-rounded';
 
@@ -144,7 +138,7 @@ import { ModelState, ModelTask, ModelType } from '@libs/dto';
 import { DialogType } from '@/types/dialog';
 
 import { formatDateTime, formatRelativeDate } from '@/utils/format/date';
-import { formatBytes, formatCount, formatNumber } from '@/utils/format/number';
+import { formatBytes, formatNumber } from '@/utils/format/number';
 import {
   companionLabel,
   formatModalities,
@@ -185,13 +179,14 @@ import {
   UiTag,
 } from '@/components/ui';
 
+import { useGoBack } from '@/composables/useGoBack';
+import { usePage } from '@/composables/usePage';
+
 interface IMetadataEntry {
   label: string;
   value: string;
   href?: string;
 }
-
-const COMPANION_DESCRIPTION = 'It runs alongside a model. Deploy the model it belongs to instead.';
 
 const DELETE_HELP = 'It is removed from the catalogue. Scanning a node that stores it will add it again.';
 
@@ -206,7 +201,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/models/Model');
 
 const route = useRoute();
-const router = useRouter();
+const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
 const notificationStore = useNotificationStore();
 const modelAdminService = useModelAdminService();
@@ -246,18 +241,16 @@ const metaLine = computed(() => {
     return '';
   }
 
-  const nodeCount = model.value.availability.length;
-
   const facts = [
     ...(model.value.displayName === null ? [] : [model.value.name]),
     ...(companionName.value === null ? [] : [companionName.value]),
     formatModelKind(model.value),
-    formatBytes(model.value.sizeBytes),
-    nodeCount === 0 ? 'not stored on any node' : `stored on ${formatCount(nodeCount, 'node')}`,
   ];
 
   return facts.join(' · ');
 });
+
+usePage({ title: () => (model.value === null ? '' : modelLabel(model.value)), subtitle: metaLine, back: '/models' });
 
 const unavailableDescription = computed(() => {
   if (model.value === null || model.value.availability.length === 0) {
@@ -372,12 +365,6 @@ const describeHeads = (headCount: number | null, headCountKv: number | null): st
     : `${formatNumber(headCount)} (${formatNumber(headCountKv)} KV)`;
 };
 
-const viewModelList = () => {
-  router.push('/models').catch((error: unknown) => {
-    logger.error({ error }, 'viewModelList(): Failed to navigate to model list');
-  });
-};
-
 const doGetModel = (): Promise<void> => {
   if (modelId.value === null) {
     return Promise.resolve();
@@ -465,7 +452,7 @@ const doDeleteModel = (target: ModelDto): Promise<void> => {
     .then(() => {
       notificationStore.addToast('Model deleted', `${modelLabel(target)} no longer appears in the catalogue.`);
 
-      viewModelList();
+      goBack({ replace: true });
     })
     .finally(() => {
       loadingDelete.value = false;

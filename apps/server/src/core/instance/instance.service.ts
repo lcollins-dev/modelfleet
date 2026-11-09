@@ -6,7 +6,7 @@ import { Transactional } from 'typeorm-transactional';
 import { v7 as uuidv7 } from 'uuid';
 
 import { InstanceState } from '@libs/agent-protocol';
-import { EventPartyType, EventSeverity, EventType, InstanceChangeReason } from '@libs/dto';
+import { EventDetailMap, EventPartyType, EventSeverity, EventType, InstanceChangeReason } from '@libs/dto';
 
 import { Deployment } from '../deployment/entities/deployment.entity';
 import { Node } from '../node/entities/node.entity';
@@ -18,7 +18,7 @@ import { VramLedgerService } from '../ledger/vram-ledger.service';
 import { NodeService } from '../node/node.service';
 import { InstanceAdmissionService } from './instance-admission.service';
 import { InstanceDesiredStateService } from './instance-desired-state.service';
-import { INodePlacement, InstanceLaunchService } from './instance-launch.service';
+import { INodePlacement, InstanceLaunchService, IPlannedEviction } from './instance-launch.service';
 
 const NOTHING_RUNNING_MESSAGE = 'This deployment has no running instances to stop';
 const INVALID_DRAFT_MESSAGE = 'This configuration holds a value its backend will not accept, so it cannot be sized';
@@ -43,7 +43,26 @@ export interface IStartOutcome {
 
   /** The nodes a start passed over, each carrying the constraint it broke. */
   refused: INodePlacement[];
+
+  evicting: IPlannedEviction[];
 }
+
+export interface IRoomOutcome {
+  standing: INodePlacement[];
+  makingRoom: boolean;
+  evicting: IPlannedEviction[];
+}
+
+export type RoomMaker = (
+  deployment: Deployment,
+  refused: INodePlacement[],
+  started: Instance[]
+) => Promise<IRoomOutcome>;
+
+export type EvictionPreviewer = (
+  deployment: Deployment,
+  placement: INodePlacement
+) => Promise<IPlannedEviction[] | null>;
 
 export interface IInstanceChange {
   /** Null where the deployment supervisor acted rather than a user. */
@@ -53,6 +72,8 @@ export interface IInstanceChange {
 
   /** Closes the event message, such as `after 15m idle`. */
   note?: string;
+
+  detail?: Partial<EventDetailMap[EventType.INSTANCE_STOPPED]>;
 }
 
 @Injectable()
@@ -93,10 +114,12 @@ export class InstanceService {
    * first, since a failed row counts as its node's share, and holds to no backoff: an operator pressing start is the
    * retry. A start that starts something clears the run of failed starts, so the deployment is no longer given up on.
    */
-  async start(deploymentId: number, actorId: number): Promise<IStartOutcome> {
+  async start(deploymentId: number, actorId: number, makeRoom: RoomMaker | null = null): Promise<IStartOutcome> {
     const change: IInstanceChange = { actorId, reason: InstanceChangeReason.BY_HAND };
 
-    if (!(await this.deploymentService.findWithThrow(deploymentId)).enabled) {
+    const deployment = await this.deploymentService.findWithThrow(deploymentId);
+
+    if (!deployment.enabled) {
       throw new BadRequestException(DEPLOYMENT_DISABLED_MESSAGE);
     }
 
@@ -108,13 +131,20 @@ export class InstanceService {
 
     const outcome = await this.bringUp(deploymentId, change);
 
-    if (outcome.started.length > 0) {
+    const room: IRoomOutcome = (await makeRoom?.(deployment, outcome.refused, outcome.started)) ?? {
+      standing: outcome.refused,
+      makingRoom: false,
+      evicting: [],
+    };
+
+    // The retry that finishes a start making room is held to backoff, so the run clears here too.
+    if (outcome.started.length > 0 || room.makingRoom) {
       await this.deploymentService.clearLaunchFailures(deploymentId);
     }
 
-    await this.recordCapacityRefusals(deploymentId, outcome.refused, change);
+    await this.recordCapacityRefusals(deploymentId, room.standing, change);
 
-    return outcome;
+    return { ...outcome, refused: room.standing, evicting: room.evicting };
   }
 
   /**
@@ -201,10 +231,13 @@ export class InstanceService {
   }
 
   /** Answers what a start would do without writing anything, so the screen names its nodes before it is used. */
-  async previewPlacements(deploymentId: number): Promise<IPlacementPreview> {
+  async previewPlacements(
+    deploymentId: number,
+    previewEvictions: EvictionPreviewer | null = null
+  ): Promise<IPlacementPreview> {
     const deployment = await this.deploymentService.findWithThrow(deploymentId);
 
-    return this.previewFor(deployment, await this.countByNode(deploymentId));
+    return this.previewFor(deployment, await this.countByNode(deploymentId), previewEvictions);
   }
 
   /**
@@ -212,7 +245,11 @@ export class InstanceService {
    * deployment being edited, whose running instances hold their nodes' share. A draft the form cannot yet save
    * answers with its problem rather than refusing, since the form asks while it is being typed.
    */
-  async previewDraft(draft: IDeploymentDraft, deploymentId: number | null): Promise<IPlacementPreview> {
+  async previewDraft(
+    draft: IDeploymentDraft,
+    deploymentId: number | null,
+    previewEvictions: EvictionPreviewer | null = null
+  ): Promise<IPlacementPreview> {
     let deployment: Deployment;
 
     try {
@@ -225,9 +262,14 @@ export class InstanceService {
       return { placements: [], replicas: 0, problem: this.draftProblemOf(error) };
     }
 
+    if (deploymentId !== null) {
+      // The eviction planner tells the requester's own instances apart by this id, which an unsaved draft lacks.
+      deployment.id = deploymentId;
+    }
+
     const held = deploymentId === null ? new Map<number, number>() : await this.countByNode(deploymentId);
 
-    return this.previewFor(deployment, held);
+    return this.previewFor(deployment, held, previewEvictions);
   }
 
   /** A document refused field by field carries its issues as a list, which the form already shows beside each field. */
@@ -238,7 +280,11 @@ export class InstanceService {
     return listed ? INVALID_DRAFT_MESSAGE : error.message;
   }
 
-  private async previewFor(deployment: Deployment, held: Map<number, number>): Promise<IPlacementPreview> {
+  private async previewFor(
+    deployment: Deployment,
+    held: Map<number, number>,
+    previewEvictions: EvictionPreviewer | null
+  ): Promise<IPlacementPreview> {
     const replicas = this.instanceLaunchService.replicasOf(deployment);
 
     try {
@@ -247,7 +293,7 @@ export class InstanceService {
       for (const placement of await this.instanceLaunchService.resolvePlacements(deployment)) {
         const short = (held.get(placement.nodeId) ?? 0) < replicas;
 
-        placements.push(await this.previewPlacement(deployment, placement, short));
+        placements.push(await this.previewPlacement(deployment, placement, short, previewEvictions));
       }
 
       return { placements, replicas, problem: null };
@@ -264,19 +310,39 @@ export class InstanceService {
   private async previewPlacement(
     deployment: Deployment,
     placement: INodePlacement,
-    short: boolean
+    short: boolean,
+    previewEvictions: EvictionPreviewer | null
   ): Promise<INodePlacement> {
     if (placement.problem !== null) {
       return placement;
     }
 
     if (short) {
-      return { ...placement, ...(await this.instanceAdmissionService.preview(deployment, placement)) };
+      return this.withEvictions(
+        deployment,
+        { ...placement, ...(await this.instanceAdmissionService.preview(deployment, placement)) },
+        previewEvictions
+      );
     }
 
     const expected = await this.instanceAdmissionService.expectedFor(deployment, placement);
 
     return expected === null ? placement : { ...placement, expected };
+  }
+
+  /** The planner runs over the refused figures, so the placement keeps them beside the evictions that would clear it. */
+  private async withEvictions(
+    deployment: Deployment,
+    placement: INodePlacement,
+    previewEvictions: EvictionPreviewer | null
+  ): Promise<INodePlacement> {
+    if ((placement.capacity?.refusal ?? null) === null || previewEvictions === null) {
+      return placement;
+    }
+
+    const evictions = await previewEvictions(deployment, placement);
+
+    return evictions === null ? placement : { ...placement, problem: null, evictions };
   }
 
   /** Oldest first, since the keys of one deployment's instances sort by the order they were issued in. */
@@ -333,7 +399,7 @@ export class InstanceService {
     const replicas = this.instanceLaunchService.replicasOf(deployment);
     const held = await this.countByNode(deploymentId);
 
-    const outcome: IStartOutcome = { started: [], refused: [] };
+    const outcome: IStartOutcome = { started: [], refused: [], evicting: [] };
 
     for (const placement of placements) {
       if (placement.problem !== null) {
@@ -435,6 +501,7 @@ export class InstanceService {
         nodeName,
         reason: change.reason,
         ...(instance.message === null ? {} : { output: instance.message }),
+        ...change.detail,
       },
     });
   }

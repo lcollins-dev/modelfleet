@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { llamaCppDefinition } from '../backends/llama-cpp/definition';
 import { vllmOmniDefinition } from '../backends/vllm-omni/definition';
 import { vllmDefinition } from '../backends/vllm/definition';
+import { BackendFieldType } from '../configuration';
 import { LaunchMode } from '../launch';
 import { BackendDefinition } from './definition';
 import { BackendOperation, StreamDialect } from './operation';
@@ -191,8 +192,12 @@ describe('validateDefinition', () => {
 
   it('refuses an image default other than the one image every variant names', () => {
     const imageIndex = llamaCppDefinition.declaration.fields.findIndex(field => field.name === 'image');
+    const fields = llamaCppDefinition.declaration.fields.map(field =>
+      field.name === 'image' && field.type === BackendFieldType.TEXT ? { ...field, default: 'engine:cuda' } : field
+    );
+    const declaration = { ...llamaCppDefinition.declaration, fields };
 
-    expect(issuesOf({ images: { cuda: 'engine:cuda', cpu: 'engine:cpu' } })).toEqual([
+    expect(issuesOf({ images: { cuda: 'engine:cuda', cpu: 'engine:cpu' }, declaration })).toEqual([
       {
         path: `declaration.fields[${imageIndex}].default`,
         message: 'must be unset, since no one image serves every placement',

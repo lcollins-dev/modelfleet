@@ -110,11 +110,14 @@ describe('New deployment page', () => {
   });
 
   it('cancels back to the list', async () => {
-    const { wrapper } = await mountCreate();
+    const { wrapper, router } = await mountCreate();
 
-    const cancel = wrapper.findAll('a').find(link => link.text() === 'Cancel');
+    const cancel = wrapper.findAll('button').find(button => button.text() === 'Cancel');
 
-    expect(cancel?.attributes('href')).toBe('/deployments');
+    await cancel?.trigger('click');
+    await flushPromises();
+
+    expect(router.currentRoute.value.path).toBe('/deployments');
 
     wrapper.unmount();
   });

@@ -4,8 +4,10 @@ import { BackendId } from '@libs/backends';
 import type {
   DeploymentResidencyDto,
   EffectiveConfigurationEntryDto,
+  ExpectedUsageDto,
   ListDeploymentDto,
   ListInstanceDto,
+  PlacementCapacityDto,
   PlacementNodeDto,
 } from '@libs/dto';
 import {
@@ -14,6 +16,7 @@ import {
   ExpectedUsageSource,
   InstanceState,
   NodeState,
+  PlacementProblemReason,
   ResidencyRule,
 } from '@libs/dto';
 
@@ -21,15 +24,15 @@ import {
   countDeploymentRunStates,
   deploymentRunState,
   describeDeploymentPlacement,
-  describeExpectedUsage,
   describeLaunchFailures,
   describePlacementFit,
-  describeResidency,
-  expectedUsageSourceTone,
   formatActivationPolicy,
-  formatExpectedUsageSource,
+  formatPlacementFit,
   PlacementFit,
   placementFit,
+  placementFitTone,
+  placementMemory,
+  placementReason,
   placementRows,
   presetLayer,
 } from './deployment';
@@ -52,6 +55,7 @@ const residency = (partial: Partial<DeploymentResidencyDto> = {}): DeploymentRes
   retryDate: null,
   givenUp: false,
   lastLaunchFailure: null,
+  makingRoomNodeIds: [],
   ...partial,
 });
 
@@ -59,73 +63,6 @@ describe('formatActivationPolicy', () => {
   it('names each policy', () => {
     expect(formatActivationPolicy(ActivationPolicy.ALWAYS)).toBe('Always on');
     expect(formatActivationPolicy(ActivationPolicy.ON_DEMAND)).toBe('On demand');
-  });
-});
-
-describe('describeResidency', () => {
-  it('says an always deployment is kept running', () => {
-    expect(describeResidency(residency(), true)).toMatch(/keeps this deployment running/);
-  });
-
-  it('says an always deployment with no instances will be started', () => {
-    expect(describeResidency(residency(), false)).toMatch(/will start this deployment/);
-  });
-
-  it('says a disabled deployment runs nothing until it is enabled', () => {
-    const line = describeResidency(residency({ rule: ResidencyRule.DISABLED }), false);
-
-    expect(line).toMatch(/Disabled/);
-    expect(line).toMatch(/until it is enabled/);
-  });
-
-  it('says a disabled deployment still serving will stop after its current requests', () => {
-    const line = describeResidency(residency({ rule: ResidencyRule.DISABLED }), true);
-
-    expect(line).toMatch(/after its current requests finish/);
-  });
-
-  it('names the inactivity timeout and when the deployment was last used', () => {
-    const line = describeResidency(
-      residency({
-        rule: ResidencyRule.IDLE_TIMEOUT,
-        idleTimeoutMs: 900_000,
-        lastUsedDate: new Date(Date.now() - 60_000),
-      }),
-      true
-    );
-
-    expect(line).toMatch(/stops after 15m of inactivity/);
-    expect(line).toMatch(/Last used/);
-  });
-
-  it('says which requests are keeping an idle deployment running', () => {
-    const line = describeResidency(
-      residency({ rule: ResidencyRule.IDLE_TIMEOUT, idleTimeoutMs: 900_000, inFlight: 2 }),
-      true
-    );
-
-    expect(line).toMatch(/remain running while serving 2 requests/);
-  });
-
-  it('says an on-demand deployment with no instances is started by its first request', () => {
-    const line = describeResidency(residency({ rule: ResidencyRule.IDLE_TIMEOUT, idleTimeoutMs: 900_000 }), false);
-
-    expect(line).toMatch(/the first request starts this deployment/);
-  });
-
-  it('leaves out failed launches that hold nothing back', () => {
-    expect(describeResidency(residency({ launchFailures: 3 }), false)).toBe(
-      'Always on: the scheduler will start this deployment during its next pass.'
-    );
-  });
-
-  it('says a deployment given up on will not be started, in place of the rule promising a start', () => {
-    const line = describeResidency(residency({ launchFailures: 10, givenUp: true }), false);
-
-    expect(line).toBe(
-      'Given up: the last 10 launches failed, so the scheduler will not start this deployment again until it is ' +
-        'started by hand or its configuration changes.'
-    );
   });
 });
 
@@ -142,7 +79,17 @@ describe('describeLaunchFailures', () => {
       NOW
     );
 
-    expect(line).toBe('Its last launch failed, so it is not started again for another 45s.');
+    expect(line).toBe('Last start failed. Retry available in 45s.');
+  });
+
+  it('counts the failed launches and says nothing once the wait is not holding a start back', () => {
+    const line = describeLaunchFailures(
+      residency({ launchFailures: 3, retryDate: new Date('2026-09-23T12:02:00Z') }),
+      NOW
+    );
+
+    expect(line).toBe('Last 3 starts failed. Retry available in 2m.');
+    expect(describeLaunchFailures(residency({ launchFailures: 3 }), NOW)).toBeNull();
   });
 });
 
@@ -263,74 +210,26 @@ describe('deployment run state', () => {
   });
 });
 
-describe('describeExpectedUsage', () => {
-  const node = (overrides: Partial<PlacementNodeDto> = {}): PlacementNodeDto => ({
-    nodeId: 1,
-    nodeName: 'rig-01',
-    devices: [],
-    replicas: 1,
-    running: 0,
-    problem: null,
-    expectedUsage: {
-      bytes: 14 * 1024 ** 3,
-      source: ExpectedUsageSource.ESTIMATED,
-      hostWeightsBytes: 0,
-      hostResidentBytes: 0,
-    },
-    capacity: null,
+describe('placement figures', () => {
+  const GIB = 1024 ** 3;
+
+  const usage = (overrides: Partial<ExpectedUsageDto> = {}): ExpectedUsageDto => ({
+    bytes: 20 * GIB,
+    source: ExpectedUsageSource.ESTIMATED,
+    hostWeightsBytes: 0,
+    hostResidentBytes: 0,
+    hostCacheBytes: 0,
     ...overrides,
   });
 
-  it('names the figure and that it was estimated', () => {
-    expect(describeExpectedUsage(node())).toBe(
-      'Expected to take 14 GiB on rig-01, estimated from the model and configuration'
-    );
+  const capacity = (overrides: Partial<PlacementCapacityDto> = {}): PlacementCapacityDto => ({
+    expectedBytes: 20 * GIB,
+    availableBytes: 23 * GIB,
+    hostFreeBytes: null,
+    cards: [],
+    hostWeights: null,
+    ...overrides,
   });
-
-  it('names a measured figure as measured', () => {
-    const expectedUsage = {
-      bytes: 14 * 1024 ** 3,
-      source: ExpectedUsageSource.MEASURED,
-      hostWeightsBytes: 0,
-      hostResidentBytes: 0,
-    };
-
-    expect(describeExpectedUsage(node({ expectedUsage }))).toBe(
-      'Expected to take 14 GiB on rig-01, measured on an earlier run'
-    );
-  });
-
-  it.each([
-    [ExpectedUsageSource.CONFIGURED, 'the share of each GPU its backend is configured to take', 'Configured'],
-    [ExpectedUsageSource.DECLARED, 'as declared on the deployment', 'Declared'],
-  ])('names a %s figure by where it came from', (source, described, label) => {
-    const expectedUsage = { bytes: 14 * 1024 ** 3, source, hostWeightsBytes: 0, hostResidentBytes: 0 };
-
-    expect(describeExpectedUsage(node({ expectedUsage }))).toBe(`Expected to take 14 GiB on rig-01, ${described}`);
-    expect(formatExpectedUsageSource(source)).toBe(label);
-  });
-
-  it('names what the estimate keeps off the GPUs', () => {
-    const expectedUsage = {
-      bytes: 78 * 1024 ** 3,
-      source: ExpectedUsageSource.ESTIMATED,
-      hostWeightsBytes: 33 * 1024 ** 3,
-      hostResidentBytes: 0,
-    };
-
-    expect(describeExpectedUsage(node({ expectedUsage }))).toBe(
-      'Expected to take 78 GiB on rig-01, estimated from the model and configuration, ' +
-        'excluding 33 GiB kept off the GPUs'
-    );
-  });
-
-  it('says nothing for a node with no figure', () => {
-    expect(describeExpectedUsage(node({ expectedUsage: null }))).toBeNull();
-  });
-});
-
-describe('placementRows', () => {
-  const GIB = 1024 ** 3;
 
   const node = (overrides: Partial<PlacementNodeDto> = {}): PlacementNodeDto => ({
     nodeId: 1,
@@ -339,294 +238,262 @@ describe('placementRows', () => {
     replicas: 1,
     running: 0,
     problem: null,
-    expectedUsage: {
-      bytes: 85 * GIB,
-      source: ExpectedUsageSource.ESTIMATED,
-      hostWeightsBytes: 33 * GIB,
-      hostResidentBytes: 0,
-    },
-    capacity: { expectedBytes: 85 * GIB, availableBytes: 90 * GIB, hostFreeBytes: null, cards: [], hostWeights: null },
+    problemReason: null,
+    expectedUsage: usage(),
+    capacity: capacity(),
+    evictions: [],
     ...overrides,
   });
 
-  it('gives a node that fits its figures and what is free, with a dash for nothing in system memory', () => {
-    expect(placementRows([node()])).toEqual([
-      {
-        nodeId: 1,
-        nodeName: 'rig-01',
-        source: ExpectedUsageSource.ESTIMATED,
-        expected: '85 GiB',
-        free: '90 GiB',
-        offGpus: '33 GiB',
-        systemMemory: '-',
-        expectedShort: false,
-        systemMemoryShort: false,
-        fit: PlacementFit.FITS,
-        reason: null,
-        cards: [],
-        poolSystemMemory: null,
-      },
-    ]);
+  const refused = (
+    problemReason: PlacementProblemReason,
+    overrides: Partial<PlacementNodeDto> = {}
+  ): PlacementNodeDto => node({ problem: 'The server sentence', problemReason, ...overrides });
+
+  const EVICTION = {
+    deploymentName: 'qwen-idle',
+    instanceKey: 'key-1',
+    devices: [{ deviceKey: 'GPU-a', name: null }],
+    idleMs: 300_000,
+    releasedBytes: 8 * GIB,
+  };
+
+  const SHORT_OF_VRAM = capacity({ availableBytes: 13 * GIB });
+
+  const label = (placed: PlacementNodeDto, makingRoom: number[] = []): string =>
+    formatPlacementFit(placementFit(placed, makingRoom));
+
+  describe('status', () => {
+    it.each([
+      [PlacementProblemReason.NOT_ENOUGH_VRAM, 'Not enough VRAM', 'error'],
+      [PlacementProblemReason.NOT_ENOUGH_RAM, 'Not enough RAM', 'error'],
+      [PlacementProblemReason.MODEL_NOT_ON_NODE, 'Model not on node', 'warning'],
+      [PlacementProblemReason.NO_READINGS, 'No readings', 'warning'],
+      [PlacementProblemReason.GPU_NOT_MEASURED, 'GPU not measured', 'warning'],
+      [PlacementProblemReason.OTHER, 'Cannot run here', 'warning'],
+    ])('labels a %s refusal from its reason', (reason, expected, tone) => {
+      const placed = refused(reason);
+
+      expect(label(placed)).toBe(expected);
+      expect(placementFitTone(placementFit(placed))).toBe(tone);
+    });
+
+    it('reads a problem with no reason as one it cannot name', () => {
+      expect(label(node({ problem: 'Anything' }))).toBe('Cannot run here');
+    });
+
+    it('labels a node that fits, one that fits after evicting, one running and one on its CPU', () => {
+      expect(label(node())).toBe('Fits');
+      expect(label(node({ evictions: [EVICTION] }))).toBe('Fits after evicting');
+      expect(label(node({ running: 1, capacity: null }))).toBe('Running');
+      expect(label(node({ devices: [], expectedUsage: null, capacity: null }))).toBe('CPU only');
+    });
+
+    it('gives the server sentence as the reason, or names what would be evicted', () => {
+      expect(placementReason(refused(PlacementProblemReason.OTHER))).toBe('The server sentence');
+      expect(placementReason(node({ evictions: [EVICTION] }))).toBe(
+        'Fits after evicting qwen-idle (idle 5m, frees 8 GiB)'
+      );
+      expect(placementReason(node())).toBeNull();
+    });
   });
 
-  it('gives each card the refusal was checked on, dashing what is unmeasured or zero', () => {
-    const [row] = placementRows([
-      node({
-        problem: 'This deployment needs 40.0 GiB on GPU-a, more than it has free',
-        capacity: {
-          expectedBytes: 85 * GIB,
-          availableBytes: 90 * GIB,
-          hostFreeBytes: 12 * GIB,
-          cards: [
-            {
-              deviceKey: 'GPU-a',
-              name: 'RTX 4090',
-              totalBytes: 24 * GIB,
-              usedBytes: 4 * GIB,
-              predictedBytes: 6 * GIB,
-              headroomBytes: GIB,
-              freeBytes: 14 * GIB,
-            },
-            {
-              deviceKey: 'GPU-b',
-              name: null,
-              totalBytes: null,
-              usedBytes: null,
-              predictedBytes: 0,
-              headroomBytes: 0,
-              freeBytes: null,
-            },
-          ],
-          hostWeights: null,
-        },
-      }),
-    ]);
+  describe('while room is being made on a node', () => {
+    it('reads the refused node as making room, with nothing marked short', () => {
+      const short = refused(PlacementProblemReason.NOT_ENOUGH_VRAM, { capacity: SHORT_OF_VRAM });
+      const [row] = placementRows([short], [1]);
 
-    expect(row.cards).toEqual([
-      {
-        deviceKey: 'GPU-a',
-        name: 'RTX 4090',
-        total: '24 GiB',
-        used: '4 GiB',
-        starting: '6 GiB',
-        headroom: '1 GiB',
-        free: '14 GiB',
-      },
-      { deviceKey: 'GPU-b', name: null, total: '-', used: '-', starting: '-', headroom: '-', free: '-' },
-    ]);
-    expect(row.poolSystemMemory).toBe('12 GiB');
+      expect(row).toMatchObject({ fit: PlacementFit.MAKING_ROOM, vram: { short: false } });
+      expect(row.reason).toBe('Waiting for the node to report freed memory.');
+    });
+
+    it('reads another node, refused for itself, as refused', () => {
+      const other = refused(PlacementProblemReason.NOT_ENOUGH_VRAM, { nodeId: 2, capacity: SHORT_OF_VRAM });
+
+      expect(placementFit(other, [1])).toBe(PlacementFit.NOT_ENOUGH_VRAM);
+    });
+
+    it('reads a node offered more evictions as making room, since no further victims are chosen', () => {
+      expect(placementFit(node({ evictions: [EVICTION] }), [1])).toBe(PlacementFit.MAKING_ROOM);
+    });
+
+    it('does not read a node with no capacity report, or one holding its replicas, as making room', () => {
+      expect(placementFit(refused(PlacementProblemReason.OTHER, { capacity: null }), [1])).toBe(
+        PlacementFit.CANNOT_RUN
+      );
+      expect(placementFit(node({ running: 1 }), [1])).toBe(PlacementFit.FITS);
+    });
   });
 
-  it('marks the expected figure short where the pool cannot hold it, giving the refusal as the reason', () => {
-    const [row] = placementRows([
-      node({
-        problem: 'This deployment needs 85.0 GiB, more than the pinned GPUs have free',
-        capacity: {
-          expectedBytes: 85 * GIB,
-          availableBytes: 60 * GIB,
-          hostFreeBytes: null,
-          cards: [],
-          hostWeights: null,
-        },
-      }),
-    ]);
+  describe('memory cells', () => {
+    it('reads needed against free, and a dash where nothing is kept in RAM', () => {
+      expect(placementMemory(node())).toMatchObject({
+        vram: { label: 'VRAM', text: '20 / 23 GiB free', short: false },
+        ram: { label: 'RAM', text: '-', short: false, title: null },
+      });
+    });
 
-    expect(row.free).toBe('60 GiB');
-    expect(row.expectedShort).toBe(true);
-    expect(row.systemMemoryShort).toBe(false);
-    expect(row.fit).toBe(PlacementFit.SHORT);
-    expect(row.reason).toBe('This deployment needs 85.0 GiB, more than the pinned GPUs have free');
-  });
+    it('reads a dash for an unknown free figure and for a node nothing sized', () => {
+      expect(placementMemory(node({ capacity: capacity({ availableBytes: null }) })).vram.text).toBe('20 GiB / -');
+      expect(placementMemory(node({ expectedUsage: null, capacity: null })).vram.text).toBe('-');
+    });
 
-  it('gives the system memory checked beside what is free, marked short where it does not fit', () => {
-    const [row] = placementRows([
-      node({
-        problem: 'This deployment keeps 6.0 GiB of weights in system memory, more than the node has free',
-        expectedUsage: {
-          bytes: 20 * GIB,
-          source: ExpectedUsageSource.ESTIMATED,
-          hostWeightsBytes: 30 * GIB,
-          hostResidentBytes: 6 * GIB,
-        },
-        capacity: {
-          expectedBytes: 20 * GIB,
-          availableBytes: 23 * GIB,
-          hostFreeBytes: null,
-          cards: [],
-          hostWeights: { neededBytes: 6 * GIB, freeBytes: 4 * GIB },
-        },
-      }),
-    ]);
+    it('marks VRAM short where the cards cannot hold the figure, leaving RAM', () => {
+      const memory = placementMemory(refused(PlacementProblemReason.NOT_ENOUGH_VRAM, { capacity: SHORT_OF_VRAM }));
 
-    expect(row.offGpus).toBe('30 GiB');
-    expect(row.systemMemory).toBe('6 GiB (4 GiB free)');
-    expect(row.systemMemoryShort).toBe(true);
-    expect(row.expectedShort).toBe(false);
-  });
+      expect(memory.vram).toMatchObject({ text: '20 / 13 GiB free', short: true });
+      expect(memory.ram.short).toBe(false);
+    });
 
-  it('gives a node already running its share the system memory it holds, with nothing free to compare and no reason', () => {
-    const [row] = placementRows([
-      node({
-        expectedUsage: {
-          bytes: 20 * GIB,
-          source: ExpectedUsageSource.MEASURED,
-          hostWeightsBytes: 30 * GIB,
-          hostResidentBytes: 6 * GIB,
-        },
+    it('marks VRAM short for a refusal naming one card, though the pooled figure fits', () => {
+      expect(placementMemory(refused(PlacementProblemReason.NOT_ENOUGH_VRAM)).vram.short).toBe(true);
+    });
+
+    it('marks RAM short where it cannot hold the weights and cache, leaving VRAM', () => {
+      const memory = placementMemory(
+        refused(PlacementProblemReason.NOT_ENOUGH_RAM, {
+          capacity: capacity({ hostWeights: { neededBytes: 30 * GIB, cacheBytes: 8 * GIB, freeBytes: 12 * GIB } }),
+        })
+      );
+
+      expect(memory.ram).toMatchObject({ text: '30 / 12 GiB free', short: true });
+      expect(memory.vram.short).toBe(false);
+    });
+
+    it('reads an offloading pool short of room as RAM short, the overflow counted there', () => {
+      const memory = placementMemory(
+        refused(PlacementProblemReason.NOT_ENOUGH_RAM, {
+          capacity: capacity({
+            hostFreeBytes: 16 * GIB,
+            hostWeights: { neededBytes: 5 * GIB, cacheBytes: 0, freeBytes: 16 * GIB },
+          }),
+        })
+      );
+
+      expect(memory.vram).toMatchObject({ text: '7 / 7 GiB free', short: false });
+      expect(memory.ram).toMatchObject({ text: '18 / 16 GiB free', short: true });
+    });
+
+    it('marks a short figure beside an eviction, since it is short until the eviction runs', () => {
+      expect(placementMemory(node({ capacity: SHORT_OF_VRAM, evictions: [EVICTION] })).vram.short).toBe(true);
+    });
+
+    it('counts what RAM has to hold where the ledger has not checked the node', () => {
+      const held = node({
+        running: 1,
+        expectedUsage: usage({ hostWeightsBytes: 30 * GIB, hostResidentBytes: 4 * GIB, hostCacheBytes: 8 * GIB }),
         capacity: null,
-      }),
-    ]);
+      });
 
-    expect(row.source).toBe(ExpectedUsageSource.MEASURED);
-    expect(row.free).toBe('-');
-    expect(row.systemMemory).toBe('6 GiB');
-    expect(row.fit).toBe(PlacementFit.HELD);
-    expect(row.reason).toBeNull();
-  });
-
-  it('keeps a node no source could size, dashing its figures and giving why it cannot be placed', () => {
-    const [row] = placementRows([node({ problem: 'The node is offline', expectedUsage: null, capacity: null })]);
-
-    expect(row).toMatchObject({
-      source: null,
-      expected: '-',
-      free: '-',
-      offGpus: '-',
-      systemMemory: '-',
-      fit: PlacementFit.BLOCKED,
-      reason: 'The node is offline',
-      cards: [],
-      poolSystemMemory: null,
-    });
-  });
-});
-
-describe('expected usage source', () => {
-  it('labels each source', () => {
-    expect(formatExpectedUsageSource(ExpectedUsageSource.MEASURED)).toBe('Measured');
-    expect(formatExpectedUsageSource(ExpectedUsageSource.ESTIMATED)).toBe('Estimated');
-  });
-
-  it('marks a measured figure out from an estimate', () => {
-    expect(expectedUsageSourceTone(ExpectedUsageSource.MEASURED)).toBe('success');
-    expect(expectedUsageSourceTone(ExpectedUsageSource.ESTIMATED)).toBe('default');
-  });
-});
-
-describe('placement fit', () => {
-  const GIB = 1024 ** 3;
-
-  const node = (overrides: Partial<PlacementNodeDto> = {}): PlacementNodeDto => ({
-    nodeId: 1,
-    nodeName: 'rig-01',
-    devices: [{ deviceKey: 'GPU-a', name: null }],
-    replicas: 1,
-    running: 0,
-    problem: null,
-    expectedUsage: {
-      bytes: 20 * GIB,
-      source: ExpectedUsageSource.ESTIMATED,
-      hostWeightsBytes: 0,
-      hostResidentBytes: 0,
-    },
-    capacity: { expectedBytes: 20 * GIB, availableBytes: 23 * GIB, hostFreeBytes: null, cards: [], hostWeights: null },
-    ...overrides,
-  });
-
-  const tooLarge = node({
-    problem: 'This deployment needs 20.0 GiB, more than the pinned GPUs have free',
-    capacity: { expectedBytes: 20 * GIB, availableBytes: 13 * GIB, hostFreeBytes: null, cards: [], hostWeights: null },
-  });
-
-  it('reads a node the ledger checked and passed as fitting, naming the figure and what is left', () => {
-    expect(placementFit(node())).toBe(PlacementFit.FITS);
-    expect(describePlacementFit(node())).toEqual([
-      'Expected to take 20 GiB on rig-01, estimated from the model and configuration',
-      'Needs 20 GiB. Free after headroom: 23 GiB',
-    ]);
-  });
-
-  it('reads a node refused for room as not fitting, naming the shortfall rather than repeating the refusal', () => {
-    expect(placementFit(tooLarge)).toBe(PlacementFit.SHORT);
-    expect(describePlacementFit(tooLarge)).toEqual([
-      'Expected to take 20 GiB on rig-01, estimated from the model and configuration',
-      'Needs 20 GiB. Free after headroom: 13 GiB. Short by 7 GiB',
-    ]);
-  });
-
-  it('reads a node refused for system memory as not fitting, naming that shortfall', () => {
-    const hostShort = node({
-      problem: 'This deployment keeps 30.0 GiB of weights in system memory, more than the node has free',
-      expectedUsage: {
-        bytes: 20 * GIB,
-        source: ExpectedUsageSource.ESTIMATED,
-        hostWeightsBytes: 30 * GIB,
-        hostResidentBytes: 30 * GIB,
-      },
-      capacity: {
-        expectedBytes: 20 * GIB,
-        availableBytes: 23 * GIB,
-        hostFreeBytes: null,
-        cards: [],
-        hostWeights: { neededBytes: 30 * GIB, freeBytes: 12 * GIB },
-      },
+      expect(placementMemory(held).ram.text).toBe('12 GiB / -');
     });
 
-    expect(placementFit(hostShort)).toBe(PlacementFit.SHORT);
-    expect(describePlacementFit(hostShort)).not.toContain(hostShort.problem);
-  });
-
-  it('reads an offloading node short of room once its host weights join the pool', () => {
-    const pooled = node({
-      problem: 'This deployment needs 25.0 GiB, more than the pinned GPUs and system memory have free',
-      capacity: {
-        expectedBytes: 20 * GIB,
-        availableBytes: 23 * GIB,
-        hostFreeBytes: 16 * GIB,
-        cards: [],
-        hostWeights: { neededBytes: 5 * GIB, freeBytes: 16 * GIB },
-      },
+    it.each([
+      [ExpectedUsageSource.CONFIGURED, 'Configured'],
+      [ExpectedUsageSource.DECLARED, 'Declared'],
+      [ExpectedUsageSource.MEASURED, 'Measured'],
+      [ExpectedUsageSource.ESTIMATED, 'Estimated'],
+    ])('hovers VRAM with its %s source', (source, title) => {
+      expect(placementMemory(node({ expectedUsage: usage({ source }) })).vram.title).toBe(title);
     });
 
-    expect(placementFit(pooled)).toBe(PlacementFit.SHORT);
+    it('hovers RAM with the weights and prompt cache, leaving out a part that is zero', () => {
+      const ramTitle = (overrides: Partial<ExpectedUsageDto>): string | null =>
+        placementMemory(node({ expectedUsage: usage(overrides) })).ram.title;
+
+      expect(ramTitle({ hostResidentBytes: 30 * GIB, hostCacheBytes: 8 * GIB })).toBe(
+        'Weights 30 GiB, Prompt cache up to 8 GiB'
+      );
+      expect(ramTitle({ hostResidentBytes: 30 * GIB })).toBe('Weights 30 GiB');
+      expect(ramTitle({ hostCacheBytes: 8 * GIB })).toBe('Prompt cache up to 8 GiB');
+      expect(ramTitle({})).toBeNull();
+    });
   });
 
-  it('says why a node that could not be sized cannot be placed, with no figure in its place', () => {
-    const unsized = node({
-      problem: "This deployment's memory use cannot be estimated without the model's layerCount",
-      expectedUsage: null,
-      capacity: null,
+  describe('placementRows', () => {
+    const CARD = {
+      deviceKey: 'GPU-a',
+      name: 'RTX 4090',
+      totalBytes: 24 * GIB,
+      usedBytes: 4 * GIB,
+      predictedBytes: 6 * GIB,
+      headroomBytes: GIB,
+      freeBytes: 14 * GIB,
+      short: true,
+    };
+
+    it('gives each card the refusal was checked on, marking the short one and dashing what is unmeasured', () => {
+      const [row] = placementRows([
+        refused(PlacementProblemReason.NOT_ENOUGH_VRAM, {
+          capacity: capacity({
+            hostFreeBytes: 12 * GIB,
+            cards: [
+              CARD,
+              {
+                deviceKey: 'GPU-b',
+                name: null,
+                totalBytes: null,
+                usedBytes: null,
+                predictedBytes: 0,
+                headroomBytes: 0,
+                freeBytes: null,
+                short: false,
+              },
+            ],
+          }),
+        }),
+      ]);
+
+      expect(row.cards).toEqual([
+        {
+          deviceKey: 'GPU-a',
+          name: 'RTX 4090',
+          total: '24 GiB',
+          used: '4 GiB',
+          starting: '6 GiB',
+          headroom: '1 GiB',
+          free: '14 GiB',
+          short: true,
+        },
+        {
+          deviceKey: 'GPU-b',
+          name: null,
+          total: '-',
+          used: '-',
+          starting: '-',
+          headroom: '-',
+          free: '-',
+          short: false,
+        },
+      ]);
+      expect(row.poolRam).toBe('12 GiB');
+      expect(row.expandable).toBe(true);
     });
 
-    expect(placementFit(unsized)).toBe(PlacementFit.BLOCKED);
-    expect(describePlacementFit(unsized)).toEqual([
-      "This deployment's memory use cannot be estimated without the model's layerCount",
-    ]);
+    it('offers no expansion where there are no figures to expand to, or nothing to explain', () => {
+      const [unsized] = placementRows([refused(PlacementProblemReason.OTHER, { expectedUsage: null, capacity: null })]);
+      const [fits] = placementRows([node({ capacity: capacity({ cards: [CARD] }) })]);
+
+      expect(unsized).toMatchObject({ fit: PlacementFit.CANNOT_RUN, reason: 'The server sentence', expandable: false });
+      expect(fits).toMatchObject({ fit: PlacementFit.FITS, reason: null, expandable: false });
+    });
   });
 
-  it('reads a node with no reading as unplaceable rather than short, since nothing says how much is free', () => {
-    const unread = node({
-      problem: 'This node has not reported its GPU memory since it connected',
-      capacity: { expectedBytes: 20 * GIB, availableBytes: null, hostFreeBytes: null, cards: [], hostWeights: null },
+  describe('describePlacementFit', () => {
+    it('gives the same cells as the table, leaving out a figure with nothing to say', () => {
+      expect(describePlacementFit(node())).toEqual([placementMemory(node()).vram]);
+      expect(describePlacementFit(node({ devices: [], expectedUsage: null, capacity: null }))).toEqual([]);
     });
 
-    expect(placementFit(unread)).toBe(PlacementFit.BLOCKED);
-    expect(describePlacementFit(unread)).toContain('Needs 20 GiB. Free after headroom: -');
-  });
+    it('adds RAM where anything is kept there', () => {
+      const placed = node({
+        capacity: capacity({ hostWeights: { neededBytes: 8 * GIB, cacheBytes: 8 * GIB, freeBytes: 6 * GIB } }),
+      });
 
-  it('leaves a node already holding its instances to its expected usage, its status saying the rest', () => {
-    const held = node({ running: 1, capacity: null });
-
-    expect(placementFit(held)).toBe(PlacementFit.HELD);
-    expect(describePlacementFit(held)).toEqual([
-      'Expected to take 20 GiB on rig-01, estimated from the model and configuration',
-    ]);
-  });
-
-  it('says nothing more of a node pinned on its CPU alone than its status does', () => {
-    const onCpu = node({ devices: [], expectedUsage: null, capacity: null });
-
-    expect(placementFit(onCpu)).toBe(PlacementFit.CPU_ONLY);
-    expect(describePlacementFit(onCpu)).toEqual([]);
+      expect(describePlacementFit(placed).map(cell => `${cell.label} ${cell.text}`)).toEqual([
+        'VRAM 20 / 23 GiB free',
+        'RAM 8 / 6 GiB free',
+      ]);
+    });
   });
 });

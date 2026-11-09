@@ -84,6 +84,15 @@ const FILE_LABELS: Record<DownloadFileState, string> = {
   [DownloadFileState.FAILED]: 'Failed',
 };
 
+const FILE_BARS: Record<DownloadFileState, DownloadBarTone> = {
+  [DownloadFileState.PENDING]: 'muted',
+  [DownloadFileState.VERIFYING]: 'primary',
+  [DownloadFileState.DOWNLOADING]: 'primary',
+  [DownloadFileState.HELD]: 'success',
+  [DownloadFileState.DONE]: 'success',
+  [DownloadFileState.FAILED]: 'error',
+};
+
 const TARGET_STATES: Record<DownloadTargetState, DownloadState> = {
   [DownloadTargetState.ACTIVE]: DownloadState.ACTIVE,
   [DownloadTargetState.SUCCEEDED]: DownloadState.COMPLETED,
@@ -113,6 +122,13 @@ export const downloadTargetState = (target: DownloadTargetDto): DownloadState =>
 
 export const formatDownloadFileState = (state: DownloadFileState | null): string =>
   state === null ? 'Unknown' : FILE_LABELS[state];
+
+export const downloadFileBar = (state: DownloadFileState | null): DownloadBarTone =>
+  state === null ? 'muted' : FILE_BARS[state];
+
+/** A failed or stopped target keeps no per-file record, so its bytes read 0 however far it got. */
+export const downloadTargetHasProgress = (target: DownloadTargetDto): boolean =>
+  target.state === DownloadTargetState.ACTIVE || target.state === DownloadTargetState.SUCCEEDED;
 
 /** A whole percentage, never 100 until every byte is there. */
 export const downloadPercent = (bytesDone: number, totalBytes: number): number => {

@@ -62,6 +62,7 @@ describe('fractionOfDevices', () => {
     expect(estimate).toEqual({
       computed: false,
       missing: [{ source: EstimateInputSource.DEVICE, field: 'GPU-0' }],
+      hostCacheBytes: 0,
     });
   });
 });
@@ -97,6 +98,7 @@ describe('configuredShareEstimate', () => {
     expect(configuredShareEstimate(input([card]), buildDeclaration(), share)).toEqual({
       computed: false,
       missing: [{ source: EstimateInputSource.CONFIGURATION, field: 'ropeScale' }],
+      hostCacheBytes: 0,
     });
   });
 });
@@ -118,6 +120,7 @@ describe('configuredSizeEstimate', () => {
     expect(configuredSizeEstimate(input([]), buildDeclaration(), size)).toEqual({
       computed: false,
       missing: [{ source: EstimateInputSource.CONFIGURATION, field: 'ropeScale' }],
+      hostCacheBytes: 0,
     });
   });
 });
@@ -128,7 +131,7 @@ describe('weightsOnDiskEstimate', () => {
       {
         ...input([{ deviceKey: 'GPU-0', totalBytes: null }]),
         model: buildEstimatedModel({ sizeBytes: 2 * GIB }),
-        companions: [{ field: 'mmproj', sizeBytes: GIB }],
+        companions: [{ field: 'mmproj', sizeBytes: GIB, metadata: null }],
       },
       { source: VramSource.WEIGHTS, factor: 2, overheadBytesPerDevice: GIB }
     );

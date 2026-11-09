@@ -70,7 +70,8 @@ const toggleExpanded = (event: MouseEvent) => {
     return;
   }
 
-  if (event.target instanceof Element && event.target.closest('input, button') !== null) {
+  // A button that swaps its icon on click has detached the target by now, so only the event's path still holds it.
+  if (event.composedPath().some(node => node instanceof Element && node.matches('input, button'))) {
     return;
   }
 

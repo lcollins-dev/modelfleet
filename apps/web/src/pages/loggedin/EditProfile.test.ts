@@ -1,6 +1,7 @@
 import { VueWrapper, flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryHistory, createRouter } from 'vue-router';
 
 import { PASSWORD_MISMATCH } from '@/utils/password';
 
@@ -17,7 +18,13 @@ vi.mock('@/services/api/UserService', () => ({
 }));
 
 const render = async (): Promise<VueWrapper> => {
-  const wrapper = mount(EditProfile, { attachTo: document.body });
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/:path(.*)*', component: { template: '<div />' } }],
+  });
+  await router.push('/edit-profile');
+
+  const wrapper = mount(EditProfile, { global: { plugins: [router] }, attachTo: document.body });
   await flushPromises();
 
   return wrapper;

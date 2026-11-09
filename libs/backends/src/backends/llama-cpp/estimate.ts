@@ -32,6 +32,9 @@ const MASK_BYTES = 4;
 /** Unset is `auto`, which maps the file wherever the devices support it. */
 const MAPPED_LOAD_MODES = new Set(['auto', 'mmap']);
 
+/** Its lock grows from the start of the file, so it can catch a lazy table, and the tensor list holds no offsets to tell. */
+const LOCKED_MAPPED_LOAD_MODE = 'mmap+mlock';
+
 /** Bytes one element of the key or value cache takes, from each ggml type's block size over its 32 elements. */
 const CACHE_TYPE_BYTES = new Map<string, number>([
   ['f32', 4],
@@ -44,6 +47,15 @@ const CACHE_TYPE_BYTES = new Map<string, number>([
   ['q4_0', 18 / 32],
   ['iq4_nl', 18 / 32],
 ]);
+
+/** llama.cpp gives a draft its own f16 key and value caches, whatever the main model's are. */
+const DRAFT_KV_BYTES_PER_ELEMENT = 4;
+
+/** Matches llama.cpp's `--cache-ram` default, since an unset field passes no flag. */
+const DEFAULT_PROMPT_CACHE_MIB = 8192;
+
+/** In tensor mode, llama.cpp copies the full KV cache to each GPU for these architectures. */
+const MIRRORED_KV_ARCHITECTURES: ReadonlySet<string> = new Set(['deepseek4', 'deepseek41', 'hrm_text']);
 
 interface IResolvedInputs {
   layerCount: number;
@@ -65,11 +77,14 @@ interface IResolvedInputs {
 export function llamaCppVramEstimate(input: IVramEstimateInput, values: IConfiguredValues): IVramEstimate {
   const resolved = resolveInputs(input, values);
 
-  return Array.isArray(resolved) ? unavailableEstimate(resolved) : estimateFrom(input, values, resolved);
+  return Array.isArray(resolved)
+    ? unavailableEstimate(resolved, promptCacheBytes(values))
+    : estimateFrom(input, values, resolved);
 }
 
 function estimateFrom(input: IVramEstimateInput, values: IConfiguredValues, resolved: IResolvedInputs): IVramEstimate {
-  const placement = hostPlacement(input.model.tensors, values);
+  const draft = draftInputs(input, values, resolved);
+  const placement = hostPlacement(input.model, values);
   const hostWeightsBytes = sizeOf(placement.tensors);
   const companions = weightsEstimate({
     bytes: input.companions.reduce((total, companion) => total + companion.sizeBytes, 0),
@@ -81,26 +96,50 @@ function estimateFrom(input: IVramEstimateInput, values: IConfiguredValues, reso
   return computedEstimate({
     basis: EstimateBasis.METADATA,
     weightsBytes: input.model.sizeBytes - hostWeightsBytes + placement.cardCopyBytes + companions.weightsBytes,
-    kvCacheBytes: kvCacheBytes(resolved),
-    overheadBytes: overheadBytes(input, values, resolved),
+    kvCacheBytes: kvCacheBytes(resolved) * kvCopies(input, values) + (draft === null ? 0 : kvCacheBytes(draft)),
+    overheadBytes: overheadBytes(input, values, resolved, draft),
     hostWeightsBytes,
     hostResidentBytes: sizeOf(residentTensors(placement, values)),
+    hostCacheBytes: promptCacheBytes(values),
   });
+}
+
+export function mirroredKvBytes(input: IVramEstimateInput, values: IConfiguredValues): number {
+  const copies = kvCopies(input, values);
+  const resolved = resolveInputs(input, values);
+
+  return copies === 1 || Array.isArray(resolved) ? 0 : kvCacheBytes(resolved) * copies;
+}
+
+function kvCopies(input: IVramEstimateInput, values: IConfiguredValues): number {
+  const architecture = input.model.architecture;
+  const mirrored =
+    values.text(LlamaCppField.SPLIT_MODE) === 'tensor' &&
+    architecture !== null &&
+    MIRRORED_KV_ARCHITECTURES.has(architecture);
+
+  return mirrored ? input.deviceCount : 1;
+}
+
+function promptCacheBytes(values: IConfiguredValues): number {
+  return (values.number(LlamaCppField.PROMPT_CACHE) ?? DEFAULT_PROMPT_CACHE_MIB) * MIB;
 }
 
 /**
  * A table read only by row from a mapped file costs only the few rows each token pages in, and those pages are reclaimable. Every
  * other tensor is read whole each time its layer runs, so it holds its full size. A load mode that reads or locks the
- * file holds every tensor in full.
+ * file holds every tensor in full, except a lazy table, which stays on a mapping of its own under any of them.
  */
 function residentTensors(placement: IHostPlacement, values: IConfiguredValues): IModelTensor[] {
   const loadMode = values.text(LlamaCppField.LOAD_MODE) ?? 'auto';
 
-  if (!MAPPED_LOAD_MODES.has(loadMode)) {
+  if (loadMode === LOCKED_MAPPED_LOAD_MODE) {
     return placement.tensors;
   }
 
-  return placement.tensors.filter(tensor => !placement.readByRow.includes(tensor));
+  const unheld = MAPPED_LOAD_MODES.has(loadMode) ? placement.readByRow : placement.lazy;
+
+  return placement.tensors.filter(tensor => !unheld.includes(tensor));
 }
 
 function sizeOf(tensors: IModelTensor[]): number {
@@ -117,27 +156,78 @@ function kvCacheBytes(resolved: IResolvedInputs): number {
   return Math.round(resolved.totalContext * resolved.layerCount * kvWidth * resolved.kvBytesPerElement);
 }
 
-function overheadBytes(input: IVramEstimateInput, values: IConfiguredValues, resolved: IResolvedInputs): number {
+function overheadBytes(
+  input: IVramEstimateInput,
+  values: IConfiguredValues,
+  resolved: IResolvedInputs,
+  draft: IResolvedInputs | null
+): number {
   const splitMode = values.text(LlamaCppField.SPLIT_MODE);
   const devicesUsed = splitMode === 'none' ? Math.min(input.deviceCount, 1) : input.deviceCount;
+  const draftBytes = draft === null ? 0 : computeBytes(draft);
 
-  return devicesUsed * perDeviceBytes(resolved);
+  return devicesUsed * Math.round(RUNTIME_BYTES_PER_DEVICE + computeBytes(resolved) + draftBytes);
 }
 
-function perDeviceBytes(resolved: IResolvedInputs): number {
+function computeBytes(resolved: IResolvedInputs): number {
   const tokens = Math.min(resolved.totalContext, resolved.ubatchSize);
   const maskBytes = resolved.flashAttention ? FLASH_MASK_BYTES : MASK_BYTES;
   const mask = resolved.kvOffloaded ? resolved.totalContext * tokens * maskBytes : 0;
   const copies = resolved.pipelined ? PIPELINE_COPIES : 1;
   const activations = resolved.ubatchSize * resolved.embeddingLength * COMPUTE_BYTES_PER_BATCHED_ELEMENT;
 
-  return Math.round(RUNTIME_BYTES_PER_DEVICE + copies * mask + activations);
+  return copies * mask + activations;
 }
 
 function pipelines(input: IVramEstimateInput, values: IConfiguredValues, kvOffloaded: boolean): boolean {
+  return splitsAcrossCards(input, values, kvOffloaded) && !overridesTensors(values);
+}
+
+function splitsAcrossCards(input: IVramEstimateInput, values: IConfiguredValues, kvOffloaded: boolean): boolean {
   const splitMode = values.text(LlamaCppField.SPLIT_MODE) ?? 'layer';
 
-  return input.deviceCount > 1 && kvOffloaded && splitMode === 'layer' && !overridesTensors(values);
+  return input.deviceCount > 1 && kvOffloaded && splitMode === 'layer';
+}
+
+/**
+ * The draft takes the main context's length and the main launch's split, but not its tensor overrides, so it pipelines
+ * where the main model may not. Null where the draft's header lacks what the sizing needs, which leaves its file alone.
+ */
+function draftInputs(
+  input: IVramEstimateInput,
+  values: IConfiguredValues,
+  resolved: IResolvedInputs
+): IResolvedInputs | null {
+  const metadata = input.companions.find(companion => companion.field === LlamaCppField.DRAFT_MODEL)?.metadata;
+
+  if (metadata === undefined || metadata === null) {
+    return null;
+  }
+
+  const { layerCount, embeddingLength, headCount, headCountKv } = metadata;
+
+  if (
+    layerCount === null ||
+    embeddingLength === null ||
+    headCount === null ||
+    headCountKv === null ||
+    layerCount <= 0 ||
+    embeddingLength <= 0 ||
+    headCount <= 0 ||
+    headCountKv <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    ...resolved,
+    layerCount,
+    embeddingLength,
+    headCount,
+    headCountKv,
+    kvBytesPerElement: DRAFT_KV_BYTES_PER_ELEMENT,
+    pipelined: splitsAcrossCards(input, values, resolved.kvOffloaded),
+  };
 }
 
 function resolveInputs(

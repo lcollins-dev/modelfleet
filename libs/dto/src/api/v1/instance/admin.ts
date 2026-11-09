@@ -5,7 +5,13 @@ import { BackendId } from '@libs/backends';
 import { enumValue, id, requestBody } from '../../../fields';
 import { configurationText } from '../configuration';
 import { ActivationPolicy } from '../deployment';
-import { DeploymentResidencyDto, InstancePlacementDto, ListInstanceDto, PlacementRefusalDto } from './instance';
+import {
+  DeploymentResidencyDto,
+  InstancePlacementDto,
+  ListInstanceDto,
+  PlacementEvictionDto,
+  PlacementRefusalDto,
+} from './instance';
 
 export const DeploymentInstancesResponseDto = z.object({
   instances: z.array(ListInstanceDto),
@@ -21,11 +27,19 @@ export const NodeInstancesResponseDto = z.object({
 });
 export type NodeInstancesResponseDto = z.infer<typeof NodeInstancesResponseDto>;
 
+export const StartInstanceRequestDto = requestBody({
+  /** The operator has seen and confirmed what this start would evict. A start without it evicts nothing. */
+  confirmEviction: z.boolean().optional(),
+});
+export type StartInstanceRequestDto = z.infer<typeof StartInstanceRequestDto>;
+
 export const StartInstanceResponseDto = z.object({
   started: z.number(),
 
   /** The nodes the start passed over, so a deployment that came up in part says which part did not. */
   refused: z.array(PlacementRefusalDto),
+
+  evicting: z.array(PlacementEvictionDto),
 });
 export type StartInstanceResponseDto = z.infer<typeof StartInstanceResponseDto>;
 

@@ -1,10 +1,11 @@
-import { Controller, Delete, Get, MessageEvent, Param, Post, Res, Sse, SseSignal } from '@nestjs/common';
+import { Body, Controller, Delete, Get, MessageEvent, Param, Post, Res, Sse, SseSignal } from '@nestjs/common';
 import { ServerResponse } from 'node:http';
 import { Observable } from 'rxjs';
 
 import {
   DeploymentInstancesResponseDto,
   InstanceKeyParamDto,
+  StartInstanceRequestDto,
   StartInstanceResponseDto,
   UserRoleId,
   IdParamDto,
@@ -72,9 +73,10 @@ export class DeploymentInstanceAdminController {
   @Post()
   startDeployment(
     @GetUser() user: User,
-    @Param('deploymentId', new ZodPipe(IdParamDto)) deploymentId: number
+    @Param('deploymentId', new ZodPipe(IdParamDto)) deploymentId: number,
+    @Body(new ZodPipe(StartInstanceRequestDto.optional())) body: StartInstanceRequestDto | undefined
   ): Promise<StartInstanceResponseDto> {
-    return this.instanceAdminService.startDeployment(deploymentId, user.id);
+    return this.instanceAdminService.startDeployment(deploymentId, user.id, body?.confirmEviction === true);
   }
 
   @Delete()

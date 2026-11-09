@@ -20,6 +20,7 @@ const facts = (overrides: Partial<ISupervisorFacts> = {}): ISupervisorFacts => (
   starting: 0,
   inFlight: 0,
   waiting: 0,
+  makingRoomNodeIds: [],
   idleTimeoutMs: IDLE_TIMEOUT_MS,
   idleSince: minutesBefore(20),
   backoffUntil: null,
@@ -37,6 +38,24 @@ describe('SupervisorPolicyService', () => {
   });
 
   describe('decide', () => {
+    it('treats a deployment having room made for it as wanted, even with nothing waiting', () => {
+      expect(supervisorPolicyService.decide(facts({ live: 0, resident: 0, waiting: 0, makingRoomNodeIds: [3] }))).toBe(
+        SupervisorAction.START
+      );
+    });
+
+    it('holds a deployment having room made for it to its backoff', () => {
+      expect(supervisorPolicyService.decide(facts({ makingRoomNodeIds: [3], backoffUntil: minutesAfter(1) }))).toBe(
+        SupervisorAction.BACK_OFF
+      );
+    });
+
+    it('leaves a disabled deployment alone though room was being made for it', () => {
+      expect(
+        supervisorPolicyService.decide(facts({ enabled: false, resident: 0, live: 0, makingRoomNodeIds: [3] }))
+      ).toBe(SupervisorAction.NONE);
+    });
+
     it('keeps an always deployment resident', () => {
       const action = supervisorPolicyService.decide(facts({ activationPolicy: ActivationPolicy.ALWAYS, resident: 0 }));
 

@@ -478,7 +478,7 @@ ${keys}placement:
     const refused = await eventsOf(deploymentId, EventType.INSTANCE_START_REFUSED);
 
     expect(refused).toHaveLength(1);
-    expect(refused[0].detail.problem).toMatch(/more than the pinned GPUs have free/);
+    expect(refused[0].detail.problem).toMatch(/Not enough GPU memory for/);
     expect(refused[0].detail.expectedBytes).toBeGreaterThan(0);
     expect(refused[0].detail.cards).toContain(`${DEVICE_KEY}: total 1.0 GiB`);
   });

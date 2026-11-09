@@ -14,6 +14,9 @@ export interface IVramSizing {
 
   /** Each pinned card's share in pin order, read as proportions. Null where the backend balances the cards itself. */
   cardShares: number[] | null;
+
+  /** When set, CPU pins do not allow RAM offloading. Included in GPU memory refusal messages. */
+  cardsOnlyReason?: string;
 }
 
 export type VramSizer = (input: IVramEstimateInput) => IVramSizing;
