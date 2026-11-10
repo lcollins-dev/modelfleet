@@ -125,7 +125,7 @@ describe('HubReaderService', () => {
     gated();
 
     await expect(hubReaderService.read('meta-llama/Llama-3.1-8B', 'main', ['config.json'])).rejects.toThrow(
-      new BadRequestException('meta-llama/Llama-3.1-8B is gated, and cannot be downloaded without a token')
+      new BadRequestException('meta-llama/Llama-3.1-8B requires an access token to download')
     );
     expect(pathsInfoMock).not.toHaveBeenCalled();
   });
@@ -134,7 +134,7 @@ describe('HubReaderService', () => {
     modelInfoMock.mockRejectedValue(new HubApiError(`${ENDPOINT}/api/models/owner/private`, 401));
 
     await expect(hubReaderService.read('owner/private', 'main', ['a.gguf'])).rejects.toThrow(
-      'owner/private does not exist, or is private and cannot be reached without a token'
+      'This repository does not exist or is private. Private repositories require an access token.'
     );
   });
 
@@ -142,7 +142,7 @@ describe('HubReaderService', () => {
     modelInfoMock.mockRejectedValue(new HubApiError(`${ENDPOINT}/api/models/owner/repo/revision/nope`, 404));
 
     await expect(hubReaderService.read('owner/repo', 'nope', ['a.gguf'])).rejects.toThrow(
-      'owner/repo has no revision nope'
+      'Revision nope was not found in this repository.'
     );
   });
 
@@ -151,15 +151,13 @@ describe('HubReaderService', () => {
 
     await expect(
       hubReaderService.read('unsloth/Qwen3-0.6B-GGUF', 'main', ['config.json', 'nope.gguf'])
-    ).rejects.toThrow(`unsloth/Qwen3-0.6B-GGUF holds no file nope.gguf at ${COMMIT}`);
+    ).rejects.toThrow(`Files not found in unsloth/Qwen3-0.6B-GGUF at revision ${COMMIT}: nope.gguf`);
   });
 
   it('refuses a path that names a directory rather than a file', async () => {
     pathsInfoMock.mockResolvedValue([{ path: 'Q4_K_M', type: 'directory', size: 0 }]);
 
-    await expect(hubReaderService.read('unsloth/Qwen3-0.6B-GGUF', 'main', ['Q4_K_M'])).rejects.toThrow(
-      'holds no file Q4_K_M'
-    );
+    await expect(hubReaderService.read('unsloth/Qwen3-0.6B-GGUF', 'main', ['Q4_K_M'])).rejects.toThrow('Q4_K_M');
   });
 
   it('refuses on the repository that the Hub could not be read where it cannot be reached at all', async () => {
@@ -174,7 +172,7 @@ describe('HubReaderService', () => {
     refusing(modelInfoMock, 404, 'RevisionNotFound');
 
     await expect(tokenReaderService.read('owner/repo', 'nope', ['a.gguf'])).rejects.toThrow(
-      'owner/repo has no revision nope'
+      'Revision nope was not found in this repository.'
     );
   });
 
@@ -193,7 +191,7 @@ describe('HubReaderService', () => {
 
       await expect(tokenReaderService.read('meta-llama/Llama-3.1-8B', 'main', ['config.json'])).rejects.toThrow(
         new BadRequestException(
-          'meta-llama/Llama-3.1-8B is gated, and the account HUGGINGFACE_TOKEN belongs to has not been granted access'
+          'The account associated with HUGGINGFACE_TOKEN does not have access to this gated repository.'
         )
       );
     });
@@ -206,14 +204,14 @@ describe('HubReaderService', () => {
       refusing(modelInfoMock, statusCode, errorCode);
 
       await expect(tokenReaderService.read('owner/private', 'main', ['a.gguf'])).rejects.toThrow(
-        new BadRequestException('owner/private does not exist, or HUGGINGFACE_TOKEN cannot reach it')
+        new BadRequestException('This repository does not exist or HUGGINGFACE_TOKEN does not have access to it.')
       );
     });
   });
 
   it('refuses a repository not named owner/name before asking the Hub', async () => {
     await expect(hubReaderService.list('owner/repo/../../x', 'main')).rejects.toThrow(
-      new BadRequestException('A repository is named as owner/name')
+      new BadRequestException('Enter the repository as owner/name')
     );
     expect(modelInfoMock).not.toHaveBeenCalled();
   });
@@ -288,7 +286,7 @@ describe('HubReaderService', () => {
       gated();
 
       await expect(hubReaderService.list('meta-llama/Llama-3.1-8B', 'main')).rejects.toThrow(
-        'meta-llama/Llama-3.1-8B is gated, and cannot be downloaded without a token'
+        'meta-llama/Llama-3.1-8B requires an access token to download'
       );
       expect(listFilesMock).not.toHaveBeenCalled();
     });
@@ -297,7 +295,9 @@ describe('HubReaderService', () => {
       modelInfoMock.mockRejectedValue(new HubApiError(`${ENDPOINT}/api/models/owner/nope`, 401));
 
       await expect(hubReaderService.list('owner/nope', 'main')).rejects.toThrow(
-        new BadRequestException('owner/nope does not exist, or is private and cannot be reached without a token')
+        new BadRequestException(
+          'This repository does not exist or is private. Private repositories require an access token.'
+        )
       );
     });
 

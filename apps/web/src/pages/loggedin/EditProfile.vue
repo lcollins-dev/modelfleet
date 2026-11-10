@@ -89,7 +89,7 @@ import { PASSWORD_HELP, passwordMismatchError } from '@/utils/password';
 import { useLogService } from '@/services/LogService';
 import { useUserService } from '@/services/api/UserService';
 import { useErrorStore } from '@/stores/error';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import {
@@ -112,7 +112,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/EditProfile');
 
 const errorStore = useErrorStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const userStore = useUserStore();
 const userService = useUserService();
 
@@ -152,7 +152,7 @@ const doSaveProfile = () => {
   userService
     .updateProfile({ name: name.value, email: email.value }, PROFILE_FORM)
     .then(() => {
-      notificationStore.addToast('Profile updated', 'Your changes have been saved.');
+      toastStore.addToast('Profile updated');
     })
     .finally(() => {
       profileLoading.value = false;
@@ -186,7 +186,7 @@ const doChangePassword = () => {
     .then(() => {
       newPassword.value = '';
       confirmPassword.value = '';
-      notificationStore.addToast('Password changed', 'Use it the next time you sign in.');
+      toastStore.addToast('Password changed');
     })
     .finally(() => {
       passwordLoading.value = false;

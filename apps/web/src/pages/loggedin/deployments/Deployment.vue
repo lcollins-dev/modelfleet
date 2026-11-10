@@ -6,7 +6,7 @@
       </template>
 
       <template #subtitle>
-        <ui-link :to="`/models/${deployment.modelId}`" data-testid="deployment-model-link">
+        <ui-link :to="`/models/${deployment.modelId}`" muted data-testid="deployment-model-link">
           {{ deployment.modelName }}
         </ui-link>
         on {{ deployment.backend }}
@@ -36,33 +36,63 @@
 
     <template v-else>
       <ui-notice v-if="!deployment.enabled" type="warning" title="Disabled">
-        The scheduler starts nothing for this deployment, and requests to it fail, until you enable it again.
+        Enable this deployment to start instances and accept requests.
 
         <template #action>
           <ui-button type="primary" :loading="updatingState" @click="changeState">Enable Deployment</ui-button>
         </template>
       </ui-notice>
 
-      <ui-notice v-if="deployment.outOfDate" type="warning" title="Changes waiting to be applied">
-        Settings other than <ui-code>replicas</ui-code>, <ui-code>idleTimeout</ui-code> and
-        <ui-code>vramGib</ui-code> need a relaunch. Applying restarts the instances one at a time.
+      <ui-notice
+        v-if="instancesNeedingRestart.length > 0"
+        type="warning"
+        title="The configuration has changed"
+        data-testid="older-settings"
+      >
+        {{ formatCount(instancesNeedingRestart.length, 'instance') }} on older settings. Restart to use the latest
+        settings.
 
         <template #action>
-          <ui-button type="primary" :loading="applying" @click="confirmApply">
+          <ui-button type="primary" :loading="restarting" @click="confirmRestart">
             <template #icon>
               <icon-restart-alt class="size-4" />
             </template>
-            Apply Changes
+            Restart
           </ui-button>
         </template>
       </ui-notice>
 
-      <ui-notice v-if="makingRoom" type="info" title="Making room for this deployment" data-testid="making-room">
-        Idle instances are being stopped. It starts once their memory is reported free.
+      <ui-notice v-if="restartInProgress" type="info" title="Restart in progress" data-testid="restart-progress">
+        Instances are restarting with the latest settings.
       </ui-notice>
 
-      <ui-notice v-else-if="placement?.problem" type="warning" title="This deployment cannot be started">
+      <ui-notice v-if="makingRoom" type="info" title="Making room for this deployment" data-testid="making-room">
+        Idle instances are stopping. This deployment will start when memory is available.
+      </ui-notice>
+
+      <ui-notice v-else-if="placement?.problem" type="warning" title="Unable to start">
         {{ placement.problem }}.
+      </ui-notice>
+
+      <ui-notice v-if="givenUp" type="error" title="Automatic retries paused" data-testid="launch-given-up">
+        Repeated start attempts have failed. Select Start Now to retry, or change the settings.
+
+        <ui-code v-if="residency?.lastLaunchFailure" block tone="error" class="mt-2">
+          {{ residency.lastLaunchFailure }}
+        </ui-code>
+
+        <template #action>
+          <ui-button type="primary" :loading="starting" @click="requestStart">
+            <template #icon>
+              <icon-play-arrow class="size-4" />
+            </template>
+            Start Now
+          </ui-button>
+        </template>
+      </ui-notice>
+
+      <ui-notice v-else-if="launchRetry" type="warning" title="Waiting to retry" data-testid="launch-retry">
+        {{ launchRetry }}
       </ui-notice>
 
       <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12.5rem),1fr))] gap-4" data-testid="deployment-kpis">
@@ -89,7 +119,7 @@
             </ui-button>
 
             <ui-button
-              v-if="startable || !running"
+              v-if="!givenUp && (startable || !running)"
               type="primary"
               :loading="starting"
               :disabled="!startable"
@@ -103,25 +133,6 @@
           </div>
         </template>
 
-        <div v-if="givenUp" class="border-b border-divider px-6 py-4">
-          <ui-notice type="error" title="The scheduler has given up on this deployment">
-            Its last {{ residency?.launchFailures }} starts failed in a row, so nothing starts it again until you start
-            it or change its settings.
-
-            <ui-code v-if="residency?.lastLaunchFailure" block tone="error" class="mt-2">
-              {{ residency.lastLaunchFailure }}
-            </ui-code>
-
-            <template #action>
-              <ui-button type="danger" :loading="starting" @click="requestStart">Start Now</ui-button>
-            </template>
-          </ui-notice>
-        </div>
-
-        <div v-else-if="launchRetry" class="border-b border-divider px-6 py-4" data-testid="launch-retry">
-          <ui-notice type="warning">{{ launchRetry }}</ui-notice>
-        </div>
-
         <mf-instance-table
           :instances="instances"
           party="node"
@@ -133,7 +144,7 @@
       <ui-card
         v-if="placementTable.length > 0"
         title="Placement"
-        subtitle="What each node is expected to take, and whether it fits."
+        subtitle="What each node holds or is expected to take, and whether it fits."
         flush
         data-testid="placement-card"
       >
@@ -161,23 +172,17 @@
             <span
               class="font-mono text-xs"
               :class="row.vram.short ? 'text-error' : 'text-highlight'"
-              :title="row.vram.title ?? undefined"
               data-testid="placement-vram"
             >
-              {{ row.vram.text }}
+              <ui-hint :text="row.vram.title ?? undefined">{{ row.vram.text }}</ui-hint>
             </span>
 
-            <span
-              class="font-mono text-xs"
-              :class="{ 'text-error': row.ram.short }"
-              :title="row.ram.title ?? undefined"
-              data-testid="placement-ram"
-            >
-              {{ row.ram.text }}
+            <span class="font-mono text-xs" :class="{ 'text-error': row.ram.short }" data-testid="placement-ram">
+              <ui-hint :text="row.ram.title ?? undefined">{{ row.ram.text }}</ui-hint>
             </span>
 
             <div>
-              <ui-tag :type="placementFitTone(row.fit)" :title="row.reason ?? undefined" data-testid="placement-status">
+              <ui-tag :type="placementFitTone(row.fit)" :hint="row.reason ?? undefined" data-testid="placement-status">
                 {{ formatPlacementFit(row.fit) }}
               </ui-tag>
             </div>
@@ -250,7 +255,7 @@
         <template v-if="deployment.presetId !== null" #header-extra>
           <div class="shrink-0 text-sm text-muted">
             Preset:
-            <ui-link :to="`/presets/${deployment.presetId}`" data-testid="deployment-preset-link">
+            <ui-link :to="`/presets/${deployment.presetId}`" muted data-testid="deployment-preset-link">
               {{ deployment.presetName }}
             </ui-link>
           </div>
@@ -260,10 +265,13 @@
       </ui-card>
 
       <ui-card title="Event log" subtitle="Events for this deployment." flush data-testid="event-log-card">
+        <!-- Keyed by page so changing page returns the rows to the top rather than keeping the last page's offset. -->
         <mf-event-table
+          :key="historyPage"
           :events="history"
           :columns="HISTORY_COLUMNS"
           :loading="loadingHistory"
+          scroll-label="Event log"
           empty-description="No events have been recorded for this deployment yet."
         />
 
@@ -302,6 +310,7 @@
 </template>
 
 <script setup lang="ts">
+import { useNow } from '@vueuse/core';
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watchEffect } from 'vue';
 import { useRoute } from 'vue-router';
 import IconEdit from '~icons/material-symbols/edit-outline-rounded';
@@ -347,6 +356,7 @@ import { useEventAdminService } from '@/services/api/admin/EventAdminService';
 import { useInstanceAdminService } from '@/services/api/admin/InstanceAdminService';
 import { useDialogStore } from '@/stores/dialog';
 import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import {
   EventTableColumn,
@@ -376,6 +386,7 @@ import {
   UiTable,
   UiTableHead,
   UiTableRow,
+  UiHint,
   UiTag,
 } from '@/components/ui';
 
@@ -413,6 +424,7 @@ const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
 
 const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const deploymentAdminService = useDeploymentAdminService();
 const eventAdminService = useEventAdminService();
 const instanceAdminService = useInstanceAdminService();
@@ -432,7 +444,7 @@ const residency = ref<DeploymentResidencyDto | null>(null);
 
 const loadingDeployment = ref(false);
 const loadingInstances = ref(false);
-const applying = ref(false);
+const restarting = ref(false);
 const deleting = ref(false);
 const updatingState = ref(false);
 const starting = ref(false);
@@ -443,23 +455,39 @@ const eventSubscription = shallowRef<ISseSubscription | null>(null);
 
 const running = computed(() => instances.value.length > 0);
 
+const olderInstances = computed(() => instances.value.filter(instance => instance.onOlderSettings));
+
+const instancesNeedingRestart = computed(() => olderInstances.value.filter(instance => !instance.restartRequested));
+
+const restartInProgress = computed(
+  () => residency.value?.restarting === true || olderInstances.value.some(instance => instance.restartRequested)
+);
+
 const makingRoomNodeIds = computed(() => residency.value?.makingRoomNodeIds ?? []);
 
 const makingRoom = computed(() => makingRoomNodeIds.value.length > 0);
 
 const placementTable = computed(() => placementRows(placement.value?.nodes ?? [], makingRoomNodeIds.value));
 
-// The notice carries its own start, since `startable` counts a failed instance as its node's share.
-const givenUp = computed(() => residency.value?.givenUp === true);
+const enabled = computed(() => deployment.value?.enabled === true);
+
+/*
+ * Reads the page's own enabled flag too, since the residency can arrive after the toggle's refetch. The notice
+ * carries the page's one start, since `startable` counts a failed instance as its node's share.
+ */
+const givenUp = computed(() => enabled.value && residency.value?.givenUp === true);
 
 /** A node short of its replicas is one a start would act on, so a fully placed deployment offers nothing to do. */
 const startable = computed(
   () =>
-    deployment.value?.enabled === true &&
-    (placement.value?.nodes ?? []).some(node => node.problem === null && node.running < node.replicas)
+    enabled.value && (placement.value?.nodes ?? []).some(node => node.problem === null && node.running < node.replicas)
 );
 
-const launchRetry = computed(() => (residency.value === null ? null : describeLaunchFailures(residency.value)));
+const now = useNow({ interval: 1000 });
+
+const launchRetry = computed(() =>
+  residency.value === null || !enabled.value ? null : describeLaunchFailures(residency.value, now.value)
+);
 
 const expectedInstances = computed(() =>
   (placement.value?.nodes ?? []).reduce((total, node) => total + node.replicas, 0)
@@ -561,11 +589,11 @@ const requestStart = () => {
 
   void dialogStore.confirm({
     type: DialogType.WARNING,
-    title: 'Evict Instances',
+    title: 'Stop instances to free memory?',
     message:
-      'There is not enough room to run this instance without performing evictions. ' +
-      `The following instances will be evicted: ${evictedDeploymentNames.value}`,
-    confirmLabel: 'Evict and Start',
+      'This deployment needs more memory to start. ' +
+      `Instances of these deployments will stop to free memory: ${evictedDeploymentNames.value}`,
+    confirmLabel: 'Stop Instances and Start',
     action: () => doStart(true),
   });
 };
@@ -597,9 +625,9 @@ const doStart = (confirmEviction: boolean): Promise<void> => {
 
 const announceStart = (started: StartInstanceResponseDto) => {
   if (started.evicting.length > 0) {
-    notificationStore.addToast(
+    toastStore.addToast(
       'Making room',
-      `Evicting ${formatCount(started.evicting.length, 'instance')}. The deployment starts once their memory is free.`
+      `Stopping ${formatCount(started.evicting.length, 'instance')} to free memory for this deployment.`
     );
   }
 
@@ -608,12 +636,9 @@ const announceStart = (started: StartInstanceResponseDto) => {
 
     notificationStore.addNotification(new Notification(startedMessage(started), tone));
   } else if (started.started > 0) {
-    notificationStore.addToast('Deployment started', `Started ${formatCount(started.started, 'instance')}.`);
+    toastStore.addToast('Deployment started', `Started ${formatCount(started.started, 'instance')}.`);
   } else if (started.evicting.length === 0) {
-    notificationStore.addToast(
-      'Nothing to start',
-      'Every node already holds its instances or is waiting for memory to free.'
-    );
+    toastStore.addToast('Nothing to start', 'Instances are already running or waiting for available memory.');
   }
 };
 
@@ -627,10 +652,10 @@ const startedMessage = (started: StartInstanceResponseDto): string => {
     .join(', ');
 
   if (started.started === 0) {
-    return `No instances started. These nodes could not run an instance: ${refusedNodes}`;
+    return `No instances started. Could not start on: ${refusedNodes}`;
   }
 
-  return `Started ${formatCount(started.started, 'instance')}. These nodes could not run an instance: ${refusedNodes}`;
+  return `Started ${formatCount(started.started, 'instance')}. Could not start on: ${refusedNodes}`;
 };
 
 const confirmStop = () => {
@@ -643,7 +668,7 @@ const confirmStop = () => {
   void dialogStore.confirm({
     type: DialogType.WARNING,
     title: `Stop ${deployment.value?.name ?? 'this deployment'}?`,
-    message: 'Its backend containers are removed and their VRAM freed. Requests to this deployment will fail.',
+    message: 'All instances will stop and release their memory. Requests to this deployment will fail.',
     confirmLabel: 'Stop Deployment',
     action: () => doStop(id),
   });
@@ -655,7 +680,7 @@ const doStop = (id: number): Promise<void> => {
   return instanceAdminService
     .stopDeployment(id)
     .then(() => {
-      notificationStore.addToast('Deployment stopped', 'Its containers are removed and their VRAM freed.');
+      toastStore.addToast('Stop requested');
 
       doGetInstances();
     })
@@ -740,7 +765,7 @@ const doGetDeployment = () => {
     });
 };
 
-const confirmApply = () => {
+const confirmRestart = () => {
   const target = deployment.value;
 
   if (target === null) {
@@ -749,25 +774,26 @@ const confirmApply = () => {
 
   void dialogStore.confirm({
     type: DialogType.WARNING,
-    title: `Apply changes to ${target.name}?`,
-    message: 'Its instances restart one at a time with the current settings.',
-    confirmLabel: 'Apply Changes',
-    action: () => doApply(target.id),
+    title: `Restart instances of ${target.name}?`,
+    message:
+      'Instances on older settings restart one at a time with the latest settings. Idle instances restart immediately; busy instances wait for active and queued requests to finish.',
+    confirmLabel: 'Restart Instances',
+    action: () => doRestart(target.id),
   });
 };
 
-const doApply = (id: number): Promise<void> => {
-  applying.value = true;
+const doRestart = (id: number): Promise<void> => {
+  restarting.value = true;
 
   return deploymentAdminService
-    .applyDeployment(id)
+    .restartDeployment(id)
     .then(() => {
-      notificationStore.addToast('Changes applied', 'Instances restart one at a time.');
+      toastStore.addToast('Restart requested', 'Instances restart after pending requests finish.');
 
-      doGetDeployment();
+      doGetInstances();
     })
     .finally(() => {
-      applying.value = false;
+      restarting.value = false;
     });
 };
 
@@ -802,9 +828,11 @@ const doSetEnabled = (id: number, enabled: boolean): Promise<void> => {
   return deploymentAdminService
     .updateDeploymentState(id, { enabled })
     .then(() => {
-      notificationStore.addToast(
+      toastStore.addToast(
         enabled ? 'Deployment enabled' : 'Deployment disabled',
-        enabled ? 'The scheduler can start it again.' : 'Its instances stop once their requests finish.'
+        enabled
+          ? 'It can now start and accept requests.'
+          : 'Its instances will stop after their current requests finish.'
       );
 
       doGetDeployment();
@@ -837,7 +865,7 @@ const doDeleteDeployment = (target: DeploymentDto): Promise<void> => {
   return deploymentAdminService
     .deleteDeployment(target.id)
     .then(() => {
-      notificationStore.addToast('Deployment deleted', `${target.name} no longer takes requests.`);
+      toastStore.addToast('Deployment deleted');
 
       goBack({ replace: true });
     })

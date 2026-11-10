@@ -1,6 +1,7 @@
 import type { InstanceDeviceDto, ListInstanceDto } from '@libs/dto';
 import { InstanceState } from '@libs/dto';
 
+import { parseAnsi, plainText } from './ansi';
 import { formatDuration } from './format/date';
 import { ICount, formatBytes, orderCounts } from './format/number';
 
@@ -31,7 +32,17 @@ export const formatInstanceFailure = (instance: ListInstanceDto): string | null 
     return null;
   }
 
-  return instance.exitCode === null ? 'The launch failed' : `The backend exited ${instance.exitCode}`;
+  if (instance.exitCode !== null) {
+    return `The backend exited ${instance.exitCode}`;
+  }
+
+  // A launch that overran reports the backend's output here rather than the node's reason, colours and all.
+  const lines = plainText(parseAnsi(instance.message ?? '').segments)
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line !== '');
+
+  return lines.at(-1) ?? 'The launch failed';
 };
 
 export const instanceStateTone = (state: InstanceState): InstanceStateTone => TONES[state];

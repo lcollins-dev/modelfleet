@@ -10,21 +10,16 @@
     "
     :aria-current="props.active ? (props.to === undefined ? 'true' : 'page') : undefined"
   >
-    <component
-      :is="props.icon"
-      v-if="props.icon"
-      class="size-5 shrink-0"
-      :class="props.active ? 'text-accent' : 'text-muted'"
-    />
+    <component :is="props.icon" v-if="props.icon" class="size-5 shrink-0" :class="iconClass" />
 
-    <span class="min-w-0 flex-1 truncate">{{ props.label }}</span>
+    <span class="min-w-0 flex-1 truncate" :class="{ 'text-error': props.error }">{{ props.label }}</span>
 
-    <span v-if="$slots.count" class="shrink-0 font-mono text-xs text-accent"><slot name="count" /></span>
+    <span v-if="$slots.count" class="flex shrink-0 items-center"><slot name="count" /></span>
   </component>
 </template>
 
 <script setup lang="ts">
-import { type Component, PropType } from 'vue';
+import { type Component, computed, PropType } from 'vue';
 import { RouterLink } from 'vue-router';
 
 const props = defineProps({
@@ -44,5 +39,19 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+
+  /** Turns the icon and label red, on the active highlight too. */
+  error: {
+    type: Boolean,
+    default: false,
+  },
+});
+
+const iconClass = computed(() => {
+  if (props.error) {
+    return 'text-error';
+  }
+
+  return props.active ? 'text-accent' : 'text-muted';
 });
 </script>

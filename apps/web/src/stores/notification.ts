@@ -1,9 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
-import { Notification, NotificationType } from '@/types/notification';
-
-const TOAST_TIMEOUT_MS = 3800;
+import { Notification } from '@/types/notification';
 
 const MAX_SHOWN = 4;
 
@@ -50,11 +48,6 @@ export const useNotificationStore = defineStore('notification', () => {
     }
   }
 
-  /** A success toast: a short title and a sentence saying what happened. */
-  function addToast(title: string, content: string) {
-    return addNotification(new Notification(content, NotificationType.SUCCESS, TOAST_TIMEOUT_MS, title));
-  }
-
   function clearNotification(id: number) {
     const notificationIndex = notifications.value.findIndex(notification => notification.id === id);
 
@@ -83,7 +76,6 @@ export const useNotificationStore = defineStore('notification', () => {
   return {
     notifications,
     addNotification,
-    addToast,
     clearNotification,
     clearTimedOutNotifications,
   };

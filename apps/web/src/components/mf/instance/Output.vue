@@ -12,7 +12,7 @@
         @scroll="onScroll"
       >
         <div v-if="props.output.dropped > 0" class="mb-1 text-muted" data-testid="output-dropped">
-          Older lines dropped, to keep the last {{ formatNumber(OUTPUT_LINE_CAP) }}.
+          Showing the latest {{ formatNumber(OUTPUT_LINE_CAP) }} lines.
         </div>
 
         <div
@@ -33,8 +33,7 @@
         </div>
 
         <div v-if="props.waiting" class="text-muted" data-testid="output-waiting">
-          The node holds no container for this instance yet, as it may still be pulling the image. Trying again every
-          few seconds.
+          The instance is starting. Its container image may still be downloading. Checking again every few seconds.
         </div>
 
         <div
@@ -49,17 +48,17 @@
           class="mt-1 text-muted"
           data-testid="output-ended"
         >
-          The output ended, since the container exited or was removed.
+          Output has ended. The container stopped or was removed.
         </div>
 
         <ui-notice
           v-if="props.output.ended === InstanceOutputEndReason.LOST"
           type="warning"
-          title="The connection to the node was lost"
+          title="Connection to the node lost"
           class="mt-3 font-sans"
           data-testid="output-lost"
         >
-          The output stops at the last line above. Reconnect to read the latest lines again.
+          Reconnect to resume live output.
 
           <template #action>
             <ui-button @click="emit('reconnect')">Reconnect</ui-button>

@@ -41,11 +41,11 @@ export const previewPresetSwap = (
 export const getOutOfDateDeployments = (app: NestExpressApplication, token: string) =>
   request(app.getHttpServer()).get('/api/v1/admin/deployment/out-of-date').set(authHeaders(token));
 
-export const applyDeployment = (app: NestExpressApplication, token: string, deploymentId: number) =>
-  request(app.getHttpServer()).post(`/api/v1/admin/deployment/${deploymentId}/apply`).set(authHeaders(token));
+export const restartDeployment = (app: NestExpressApplication, token: string, deploymentId: number) =>
+  request(app.getHttpServer()).post(`/api/v1/admin/deployment/${deploymentId}/restart`).set(authHeaders(token));
 
-export const applyDeployments = (app: NestExpressApplication, token: string) =>
-  request(app.getHttpServer()).post('/api/v1/admin/deployment/apply').set(authHeaders(token));
+export const restartDeployments = (app: NestExpressApplication, token: string) =>
+  request(app.getHttpServer()).post('/api/v1/admin/deployment/restart').set(authHeaders(token));
 
 export const deleteDeployment = (app: NestExpressApplication, token: string, deploymentId: number) =>
   request(app.getHttpServer()).delete(`/api/v1/admin/deployment/${deploymentId}`).set(authHeaders(token));

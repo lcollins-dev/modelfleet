@@ -75,7 +75,7 @@ import { formatCount } from '@/utils/format/number';
 import { useLogService } from '@/services/LogService';
 import { useBatchJobAdminService } from '@/services/api/admin/BatchJobAdminService';
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import BatchJobRunRow from '@/components/batch-job/BatchJobRunRow.vue';
 import {
@@ -108,7 +108,7 @@ const route = useRoute();
 
 const batchJobAdminService = useBatchJobAdminService();
 const dialogStore = useDialogStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 
 const batchJobId = computed(() =>
   typeof route.params.batchJobId === 'string' ? parseInt(route.params.batchJobId, 10) : null
@@ -197,16 +197,14 @@ const doSetEnabled = (enabled: boolean) => {
     return;
   }
 
-  const name = batchJob.value.name;
-
   pending.value = 'state';
 
   batchJobAdminService
     .updateBatchJobState({ enabled }, batchJob.value.id)
     .then(async () => {
-      notificationStore.addToast(
+      toastStore.addToast(
         enabled ? 'Job enabled' : 'Job disabled',
-        enabled ? `${name} runs on its schedule.` : `${name} won't run until you enable it.`
+        enabled ? 'Runs as scheduled.' : 'Scheduled runs are paused.'
       );
 
       await reloadBatchJob();
@@ -229,7 +227,7 @@ const doRunNow = () => {
   void dialogStore.confirm({
     type: DialogType.INFO,
     title: `Run ${target.name} now?`,
-    message: 'It runs once in the background, outside its schedule. You can follow it under Recent runs.',
+    message: 'The job will run once now. Follow its progress under Recent runs.',
     confirmLabel: 'Run Now',
     action: async () => {
       pending.value = 'run';

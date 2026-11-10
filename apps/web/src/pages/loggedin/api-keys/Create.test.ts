@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Create from './Create.vue';
 
@@ -88,7 +88,7 @@ describe('New API key page', () => {
     await flushPromises();
 
     expect(router.currentRoute.value.path).toBe('/api-keys');
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Key created');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Key created');
 
     wrapper.unmount();
   });

@@ -1,16 +1,25 @@
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { randomUUID } from 'node:crypto';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { AgentRelay } from '@libs/agent-protocol';
 import { BackendId, GIB } from '@libs/backends';
 import { ActivationPolicy, BatchJobId, EventType, InstanceChangeReason, UserRoleId } from '@libs/dto';
 
+import { AgentConnectionService } from '@/core/agent/agent-connection.service';
 import { BatchJobService } from '@/core/batch-job/batch-job.service';
 import { DeploymentService } from '@/core/deployment/deployment.service';
 import { InstanceService } from '@/core/instance/instance.service';
 import { DeploymentSupervisorService } from '@/core/supervisor/deployment-supervisor.service';
 
-import { createDeployment } from '../../clients/deployment.client';
+import {
+  createDeployment,
+  getOutOfDateDeployments,
+  restartDeployment,
+  restartDeployments,
+  updateDeployment,
+} from '../../clients/deployment.client';
+import { getDeploymentInstances } from '../../clients/instance.client';
 import { registerNode } from '../../clients/node.client';
 import { login } from '../../clients/user.client';
 import { ITestUser, createTestUser } from '../../factories/user.factory';
@@ -33,7 +42,9 @@ interface IInstanceRow {
 
 interface IEventRow {
   type: string;
+  message: string;
   detail: {
+    name?: string;
     reason?: string;
     problem?: string;
     expectedBytes?: number;
@@ -124,7 +135,7 @@ ${keys}placement:
   const eventsOf = (deploymentId: number, type: EventType): Promise<IEventRow[]> =>
     dbQuery<IEventRow>(
       app,
-      `SELECT "type", "detail" FROM "event"
+      `SELECT "type", "message", "detail" FROM "event"
        WHERE "subjectType" = 'deployment' AND "subjectId" = $1 AND "type" = $2 ORDER BY id`,
       [`${deploymentId}`, type]
     );
@@ -466,7 +477,7 @@ ${keys}placement:
     const refused = await eventsOf(deploymentId, EventType.INSTANCE_START_REFUSED);
 
     expect(refused).toHaveLength(1);
-    expect(refused[0].detail.problem).toMatch(/does not hold/);
+    expect(refused[0].detail.problem).toMatch(/is not stored on this node/);
   });
 
   it('records the figures the ledger refused a deployment on, once', async () => {
@@ -481,5 +492,194 @@ ${keys}placement:
     expect(refused[0].detail.problem).toMatch(/Not enough GPU memory for/);
     expect(refused[0].detail.expectedBytes).toBeGreaterThan(0);
     expect(refused[0].detail.cards).toContain(`${DEVICE_KEY}: total 1.0 GiB`);
+  });
+
+  describe('restarting onto the latest settings', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /** A relay is required to simulate a connected node in this suite. */
+    const withRelay = () => {
+      vi.spyOn(app.get(AgentConnectionService), 'relayFor').mockReturnValue({} as AgentRelay);
+    };
+
+    const edit = async (deploymentId: number, keys: string): Promise<void> => {
+      const [deployment] = await dbQuery<{ name: string; modelId: number; nodeId: number; document: string }>(
+        app,
+        `SELECT d."name", d."modelId", i."nodeId", d."document"
+         FROM "deployment" d JOIN "instance" i ON i."deploymentId" = d.id WHERE d.id = $1 LIMIT 1`,
+        [deploymentId]
+      );
+
+      await updateDeployment(app, adminToken, deploymentId, {
+        name: deployment.name,
+        modelId: deployment.modelId,
+        presetId: null,
+        backend: BackendId.LLAMA_CPP,
+        activationPolicy: ActivationPolicy.ALWAYS,
+        description: '',
+        document: documentFor(deployment.nodeId, keys),
+      }).expect(200);
+    };
+
+    const running = async (): Promise<number> => {
+      const deploymentId = await place(ActivationPolicy.ALWAYS);
+
+      await deploymentSupervisorService.reconcile(deploymentId);
+      await dbQuery(
+        app,
+        `UPDATE "instance" SET "instanceState" = 'ready', "readyDate" = now() WHERE "deploymentId" = $1`,
+        [deploymentId]
+      );
+
+      return deploymentId;
+    };
+
+    const instancesRead = async (deploymentId: number) =>
+      (await getDeploymentInstances(app, adminToken, deploymentId).expect(200)).body.instances as {
+        onOlderSettings: boolean;
+        restartRequested: boolean;
+      }[];
+
+    const outOfDate = async (): Promise<number> =>
+      (await getOutOfDateDeployments(app, adminToken).expect(200)).body.outOfDate as number;
+
+    it('flags instances on older settings and counts their deployments', async () => {
+      const deploymentId = await running();
+      const before = await outOfDate();
+
+      await edit(deploymentId, 'threads: 4\n');
+
+      const [instance] = await instancesRead(deploymentId);
+
+      expect(instance.onOlderSettings).toBe(true);
+      await expect(outOfDate()).resolves.toBe(before + 1);
+    });
+
+    it('keeps the instance revision current after hot-field changes', async () => {
+      const deploymentId = await running();
+      const [before] = await instancesOf(deploymentId);
+
+      await edit(deploymentId, 'replicas: 1\nidleTimeout: 30m\nvramGib: 2\n');
+
+      const [instance] = await instancesRead(deploymentId);
+
+      expect(instance.onOlderSettings).toBe(false);
+      expect((await instancesOf(deploymentId))[0].instanceKey).toBe(before.instanceKey);
+    });
+
+    it('restarts an idle instance with the latest settings and records the reason', async () => {
+      withRelay();
+
+      const deploymentId = await running();
+      const [before] = await instancesOf(deploymentId);
+
+      await edit(deploymentId, 'threads: 4\n');
+      await restartDeployment(app, adminToken, deploymentId).expect(201);
+      await deploymentSupervisorService.reconcile(deploymentId);
+
+      const after = await dbQuery<{ instanceKey: string; configurationRevision: string; latest: string }>(
+        app,
+        `SELECT i."instanceKey", i."configurationRevision", d."configurationRevision" AS latest
+         FROM "instance" i JOIN "deployment" d ON d.id = i."deploymentId" WHERE d.id = $1`,
+        [deploymentId]
+      );
+
+      expect(after).toHaveLength(1);
+      expect(after[0].instanceKey).not.toBe(before.instanceKey);
+      expect(after[0].configurationRevision).toBe(after[0].latest);
+
+      const [stopped] = await eventsOf(deploymentId, EventType.INSTANCE_STOPPED);
+
+      expect(stopped.detail.reason).toBe(InstanceChangeReason.SETTINGS_CHANGED);
+      expect(stopped.message).toContain('to restart it on the latest settings');
+      expect(stopped.message).toContain(stopped.detail.name ?? 'a deployment name');
+      expect(await eventsOf(deploymentId, EventType.DEPLOYMENT_RESTART_REQUESTED)).toHaveLength(1);
+    });
+
+    it('refuses before stopping anything when the latest settings would not fit', async () => {
+      const deploymentId = await running();
+      const [before] = await instancesOf(deploymentId);
+
+      await edit(deploymentId, 'threads: 4\nvramGib: 4096\n');
+
+      const response = await restartDeployment(app, adminToken, deploymentId).expect(400);
+
+      expect(response.body.message).toContain('GPU memory');
+      expect((await instancesOf(deploymentId))[0].instanceKey).toBe(before.instanceKey);
+      expect((await instancesRead(deploymentId))[0].restartRequested).toBe(false);
+    });
+
+    it('leaves a failed instance out of the fleet count', async () => {
+      const deploymentId = await running();
+
+      await edit(deploymentId, 'threads: 4\n');
+
+      const before = await outOfDate();
+
+      await dbQuery(app, `UPDATE "instance" SET "instanceState" = 'failed' WHERE "deploymentId" = $1`, [deploymentId]);
+
+      await expect(outOfDate()).resolves.toBe(before - 1);
+    });
+
+    it('requests fleet-wide restarts and reports capacity refusals', async () => {
+      const fits = await running();
+      const tooBig = await running();
+
+      await edit(fits, 'threads: 4\n');
+      await edit(tooBig, 'threads: 4\nvramGib: 4096\n');
+
+      const response = await restartDeployments(app, adminToken).expect(201);
+
+      expect(response.body.restarting).toBeGreaterThanOrEqual(1);
+      expect(response.body.refused).toContainEqual(expect.objectContaining({ deploymentId: tooBig }));
+      expect((await instancesRead(fits))[0].restartRequested).toBe(true);
+      expect((await instancesRead(tooBig))[0].restartRequested).toBe(false);
+    });
+
+    describe('with the card nearly full', () => {
+      const USED_BYTES = 20 * GIB;
+
+      const nodeOf = async (deploymentId: number): Promise<number> =>
+        (
+          await dbQuery<{ nodeId: number }>(app, 'SELECT "nodeId" FROM "instance" WHERE "deploymentId" = $1', [
+            deploymentId,
+          ])
+        )[0].nodeId;
+
+      it('counts the instance memory as available for its replacement', async () => {
+        const deploymentId = await running();
+        const [instance] = await instancesOf(deploymentId);
+
+        await reportCard(app, await nodeOf(deploymentId), DEVICE_KEY, {
+          usedBytes: USED_BYTES,
+          processes: [
+            {
+              pid: 4242,
+              usedBytes: USED_BYTES,
+              name: 'llama-server',
+              containerId: null,
+              containerName: null,
+              instanceKey: instance.instanceKey,
+            },
+          ],
+        });
+
+        await edit(deploymentId, 'threads: 4\nvramGib: 16\n');
+
+        await restartDeployment(app, adminToken, deploymentId).expect(201);
+      });
+
+      it('refuses when another instance holds the required memory', async () => {
+        const deploymentId = await running();
+
+        await reportCard(app, await nodeOf(deploymentId), DEVICE_KEY, { usedBytes: USED_BYTES });
+
+        await edit(deploymentId, 'threads: 4\nvramGib: 16\n');
+
+        await restartDeployment(app, adminToken, deploymentId).expect(400);
+      });
+    });
   });
 });

@@ -5,6 +5,7 @@ import { ref } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
 import type {
+  EventDto,
   GpuTelemetryDto,
   InstanceMemoryDto,
   ListInstanceDto,
@@ -14,6 +15,8 @@ import type {
   NodeTelemetryStatusDto,
 } from '@libs/dto';
 import {
+  EventPartyType,
+  EventType,
   GpuProcessAttribution,
   GpuVendor,
   InstanceState,
@@ -24,7 +27,7 @@ import {
 } from '@libs/dto';
 
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Node from './Node.vue';
 
@@ -137,6 +140,8 @@ const instance: ListInstanceDto = {
   devices: [{ deviceKey: 'GPU-4f2c', name: 'NVIDIA A100-SXM4-80GB' }],
   state: InstanceState.READY,
   message: null,
+  onOlderSettings: false,
+  restartRequested: false,
   exitCode: null,
   startedDate: null,
   reportedDate: null,
@@ -155,6 +160,9 @@ const nodeModel: NodeModelDto = {
   path: '/srv/weights/llama.gguf',
   lastConfirmedDate: new Date(),
 };
+
+const modelsNumbered = (count: number): NodeModelDto[] =>
+  Array.from({ length: count }, (_, index) => ({ ...nodeModel, id: index + 1 }));
 
 const mountNode = async () => {
   const router = createRouter({
@@ -588,7 +596,7 @@ describe('Node page', () => {
 
     const { wrapper } = await mountNode();
 
-    expect(wrapper.text()).toContain('Awaiting first contact');
+    expect(wrapper.text()).toContain('Waiting for agent');
     expect(wrapper.find('[data-testid="host-kpis"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="gpus-card"]').text()).toContain('This node has not reported its devices yet.');
 
@@ -615,7 +623,7 @@ describe('Node page', () => {
     await flushPromises();
 
     expect(scanNodeModels).toHaveBeenCalledWith(3);
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Rescan started');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Model scan started');
   });
 
   it('disables the node once confirmed', async () => {
@@ -656,5 +664,98 @@ describe('Node page', () => {
 
     expect(deleteNode).toHaveBeenCalledWith(3);
     expect(router.currentRoute.value.path).toBe('/nodes');
+  });
+
+  it('scrolls the models in a region under a head that sticks, with no pages while they fit on one', async () => {
+    const { wrapper } = await mountNode();
+
+    const card = wrapper.get('[data-testid="models-card"]');
+    const region = card.get('[role="region"]');
+
+    expect(region.attributes('aria-label')).toBe('Models');
+    expect(region.find('[data-testid="model-row"]').exists()).toBe(true);
+    expect(region.get('[data-testid="table-head"]').classes()).toContain('sticky');
+    expect(card.find('nav[aria-label="Pagination"]').exists()).toBe(false);
+  });
+
+  it('scrolls the event log above its pages and opens each new page at its first row', async () => {
+    getEventList.mockResolvedValue({ eventList: [], pages: 2 });
+
+    const { wrapper } = await mountNode();
+
+    const card = wrapper.get('[data-testid="event-log-card"]');
+    const region = card.get('[role="region"]');
+
+    expect(region.attributes('aria-label')).toBe('Event log');
+    expect(region.find('nav[aria-label="Pagination"]').exists()).toBe(false);
+    expect(card.find('nav[aria-label="Pagination"]').exists()).toBe(true);
+
+    region.element.scrollTop = 200;
+
+    await card.get('button[aria-label="Page 2"]').trigger('click');
+    await flushPromises();
+
+    expect(getEventList).toHaveBeenLastCalledWith(expect.anything(), 2);
+    expect(card.get('[role="region"]').element.scrollTop).toBe(0);
+  });
+
+  it('pages the models below their rows and opens each new page at its first row', async () => {
+    getNodeModelInventory.mockResolvedValue({ models: modelsNumbered(25) });
+
+    const { wrapper } = await mountNode();
+
+    const card = wrapper.get('[data-testid="models-card"]');
+    const region = card.get('[role="region"]');
+
+    expect(region.findAll('[data-testid="model-row"]')).toHaveLength(20);
+    expect(region.find('nav[aria-label="Pagination"]').exists()).toBe(false);
+    expect(card.find('nav[aria-label="Pagination"]').exists()).toBe(true);
+
+    region.element.scrollTop = 200;
+
+    await card.get('button[aria-label="Page 2"]').trigger('click');
+    await flushPromises();
+
+    const nextRegion = card.get('[role="region"]');
+
+    expect(nextRegion.findAll('[data-testid="model-row"]')).toHaveLength(5);
+    expect(nextRegion.element.scrollTop).toBe(0);
+  });
+
+  it('falls back to the last page when a rescan leaves fewer models than the page being read', async () => {
+    getNodeModelInventory.mockResolvedValue({ models: modelsNumbered(25) });
+
+    const { wrapper } = await mountNode();
+
+    const card = wrapper.get('[data-testid="models-card"]');
+
+    await card.get('button[aria-label="Page 2"]').trigger('click');
+
+    getNodeModelInventory.mockResolvedValue({ models: modelsNumbered(3) });
+
+    const onReconnect = streamEvents.mock.calls[0][1] as () => void;
+
+    onReconnect();
+    await flushPromises();
+
+    expect(card.findAll('[data-testid="model-row"]')).toHaveLength(3);
+    expect(card.find('nav[aria-label="Pagination"]').exists()).toBe(false);
+  });
+
+  it('keeps the event log where it was scrolled when a live event refreshes the first page', async () => {
+    const { wrapper } = await mountNode();
+
+    const region = wrapper.get('[data-testid="event-log-card"] [role="region"]');
+
+    region.element.scrollTop = 200;
+
+    const onLiveEvent = streamEvents.mock.calls[0][0] as (event: Partial<EventDto>) => void;
+
+    getEventList.mockClear();
+    onLiveEvent({ subjectType: EventPartyType.NODE, subjectId: '3', type: EventType.NODE_CONNECTED });
+    await flushPromises();
+
+    expect(getEventList).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[data-testid="event-log-card"] [role="region"]').element.scrollTop).toBe(200);
   });
 });

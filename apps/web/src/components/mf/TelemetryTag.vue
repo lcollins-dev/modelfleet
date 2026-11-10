@@ -1,7 +1,7 @@
 <template>
-  <span class="mr-1 inline-flex" :title="TELEMETRY_TITLES[telemetryStore.state]" data-testid="telemetry-tag">
-    <ui-tag :type="TELEMETRY_TAG_TYPES[telemetryStore.state]">{{ label }}</ui-tag>
-  </span>
+  <ui-tag :type="TELEMETRY_TAG_TYPES[telemetryStore.state]" class="mr-1" data-testid="telemetry-tag">
+    {{ label }}
+  </ui-tag>
 </template>
 
 <script setup lang="ts">
@@ -17,12 +17,6 @@ const TELEMETRY_TAG_TYPES: Record<TelemetryState, TagType> = {
   idle: 'default',
   live: 'success',
   stale: 'warning',
-};
-
-const TELEMETRY_TITLES: Record<TelemetryState, string> = {
-  idle: 'This page holds no live stream open.',
-  live: 'Every live stream on this page is current.',
-  stale: 'A live stream on this page has disconnected or gone quiet.',
 };
 
 const telemetryStore = useTelemetryStore();

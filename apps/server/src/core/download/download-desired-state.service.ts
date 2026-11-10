@@ -58,6 +58,7 @@ export class DownloadDesiredStateService {
       source: download.source,
       endpoint: this.configService.huggingfaceEndpoint,
       repository: download.repository,
+      modelDirectory: download.targets?.[0]?.modelDirectory ?? undefined,
       directory: download.directory,
       revision: download.revision,
       files: (download.files ?? []).map(file => ({

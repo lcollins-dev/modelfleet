@@ -11,11 +11,6 @@
     </ui-card>
 
     <template v-else>
-      <ui-notice v-if="deployment.outOfDate" type="warning" title="Changes waiting to be applied">
-        The instances stay out of date until you apply the changes from the deployment. Settings other than
-        <ui-code>replicas</ui-code>, <ui-code>idleTimeout</ui-code> and <ui-code>vramGib</ui-code> need a relaunch.
-      </ui-notice>
-
       <mf-deployment-identity
         v-model:name="form.name"
         v-model:description="form.description"
@@ -76,19 +71,10 @@ import { useDeploymentAdminService } from '@/services/api/admin/DeploymentAdminS
 import { useInstanceAdminService } from '@/services/api/admin/InstanceAdminService';
 import { usePresetAdminService } from '@/services/api/admin/PresetAdminService';
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import { MfConfigurationEditor, MfDeploymentIdentity } from '@/components/mf';
-import {
-  UiButton,
-  UiCard,
-  UiCode,
-  UiEmpty,
-  UiNotice,
-  UiPageContainer,
-  UiPageHeading,
-  UiSpinner,
-} from '@/components/ui';
+import { UiButton, UiCard, UiEmpty, UiPageContainer, UiPageHeading, UiSpinner } from '@/components/ui';
 
 import { useGoBack } from '@/composables/useGoBack';
 import { usePage } from '@/composables/usePage';
@@ -110,7 +96,7 @@ const route = useRoute();
 const router = useRouter();
 const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const deploymentAdminService = useDeploymentAdminService();
 const presetAdminService = usePresetAdminService();
 const instanceAdminService = useInstanceAdminService();
@@ -251,7 +237,7 @@ const doUpdate = (): Promise<void> => {
   return deploymentAdminService
     .updateDeployment(deployment.value.id, updateRequest())
     .then(() => {
-      notificationStore.addToast('Settings saved', `${form.name} is saved.`);
+      toastStore.addToast('Settings saved');
 
       viewDeployment();
     })

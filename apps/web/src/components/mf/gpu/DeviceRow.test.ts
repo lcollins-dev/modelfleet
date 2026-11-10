@@ -45,7 +45,7 @@ describe('MfGpuDeviceRow', () => {
     const row = mount(DeviceRow, { props: { device } });
 
     expect(row.text()).toContain('20 GiB of 32 GiB');
-    expect(row.text()).toContain('python3.112 GiB');
+    expect(row.text()).toContain('Other20 GiB');
     expect(row.text()).toContain('12 GiB free');
   });
 

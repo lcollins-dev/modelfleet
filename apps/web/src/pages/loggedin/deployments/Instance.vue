@@ -49,13 +49,17 @@
     <ui-card
       v-if="failure"
       title="Saved output"
-      subtitle="Final lines captured from the failed backend."
+      :subtitle="
+        instance?.exitCode === null
+          ? 'What the node reported for the failed launch.'
+          : 'Final lines captured from the failed backend.'
+      "
       data-testid="output-failure"
     >
       <ui-code block tone="error"><mf-instance-output-text :segments="failure" /></ui-code>
     </ui-card>
 
-    <ui-notice v-else-if="refusal" type="error" title="The output could not be read" data-testid="output-refusal">
+    <ui-notice v-else-if="refusal" type="error" title="Could not load output" data-testid="output-refusal">
       {{ refusal }}
 
       <template #action>

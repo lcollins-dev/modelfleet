@@ -71,6 +71,22 @@ const navItems = (wrapper: FieldsWrapper) => wrapper.get('nav').findAll('button'
 
 const heading = (wrapper: FieldsWrapper) => wrapper.get('.text-base').text();
 
+type NavItemWrapper = ReturnType<typeof navItems>[number];
+
+const pillType = (classes: string[]) => {
+  if (classes.includes('bg-primary-soft')) {
+    return 'primary';
+  }
+
+  return classes.includes('bg-emphasis') ? 'default' : 'other';
+};
+
+const pills = (item: NavItemWrapper) =>
+  item.findAll('.rounded-full > span').map(pill => ({
+    count: pill.text(),
+    type: pillType(pill.classes()),
+  }));
+
 describe('MfConfigurationFields', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -101,14 +117,14 @@ describe('MfConfigurationFields', () => {
     expect(wrapper.findAll('[data-testid="configuration-field"]').filter(field => field.isVisible())).toHaveLength(2);
   });
 
-  it('counts the fields set in each section, as overrides while inheriting', () => {
+  it('counts the fields set here in blue', () => {
     const wrapper = render({ lead: LEAD, modelValue: { image: 'engine:cpu', contextSize: 4096 }, inheriting: true });
 
-    expect(navItems(wrapper)[0].get('[title]').attributes('title')).toBe('1 overridden');
-    expect(navItems(wrapper)[2].text()).toBe('Context1');
+    expect(pills(navItems(wrapper)[0])).toEqual([{ count: '1', type: 'primary' }]);
+    expect(pills(navItems(wrapper)[2])).toEqual([{ count: '1', type: 'primary' }]);
   });
 
-  it('counts the keys either layer sets, once each, while inheriting', () => {
+  it('counts what the preset sets in grey left of blue in one pill, an override once in blue', () => {
     const wrapper = render({
       lead: LEAD,
       modelValue: { contextSize: 4096 },
@@ -118,8 +134,18 @@ describe('MfConfigurationFields', () => {
 
     const context = navItems(wrapper)[2];
 
-    expect(context.text()).toBe('Context2');
-    expect(context.get('[title]').attributes('title')).toBe('2 set, 1 from the preset');
+    expect(pills(context)).toEqual([
+      { count: '1', type: 'default' },
+      { count: '1', type: 'primary' },
+    ]);
+  });
+
+  it('shows a grey pill alone where only the preset sets the section', () => {
+    const wrapper = render({ lead: LEAD, inherited: { flashAttention: true }, inheriting: true });
+
+    const context = navItems(wrapper)[2];
+
+    expect(pills(context)).toEqual([{ count: '1', type: 'default' }]);
   });
 
   it('counts the preset and the document across the lead keys while inheriting', () => {
@@ -132,31 +158,42 @@ describe('MfConfigurationFields', () => {
 
     const deployment = navItems(wrapper)[0];
 
-    expect(deployment.text()).toBe('Deployment3');
-    expect(deployment.get('[title]').attributes('title')).toBe('3 set, 1 from the preset');
+    expect(pills(deployment)).toEqual([
+      { count: '1', type: 'default' },
+      { count: '2', type: 'primary' },
+    ]);
   });
 
-  it('keeps counting what it did where nothing is inherited', () => {
+  it('counts what the document sets where nothing is inherited', () => {
     const wrapper = render({
       lead: LEAD,
       modelValue: { image: 'engine:cpu', contextSize: 4096 },
       own: { replicas: 3 },
     });
 
-    expect(navItems(wrapper)[0].text()).toBe('Deployment1');
-    expect(navItems(wrapper)[0].get('[title]').attributes('title')).toBe('1 set');
-    expect(navItems(wrapper)[2].text()).toBe('Context1');
-    expect(navItems(wrapper)[2].get('[title]').attributes('title')).toBe('1 set');
+    expect(pills(navItems(wrapper)[0])).toEqual([{ count: '1', type: 'primary' }]);
+    expect(pills(navItems(wrapper)[2])).toEqual([{ count: '1', type: 'primary' }]);
   });
 
-  it('counts the invalid fields in each section from the validation error', () => {
+  it('shows no pill in a section nothing sets', () => {
+    const wrapper = render({ lead: LEAD });
+
+    expect(pills(navItems(wrapper)[2])).toEqual([]);
+  });
+
+  it('turns a section with invalid fields red in place of a count, keeping its pills', () => {
     useErrorStore().setValidationError(
       new ValidationError(null, { contextSize: { name: 'Context size', message: 'Too small.' } })
     );
 
-    const wrapper = render({ lead: LEAD });
+    const wrapper = render({ lead: LEAD, modelValue: { contextSize: 0 } });
 
-    expect(navItems(wrapper)[2].get('.text-error').attributes('title')).toBe('1 invalid field');
+    const context = navItems(wrapper)[2];
+
+    expect(context.text()).toBe('Context1');
+    expect(context.get('.truncate').classes()).toContain('text-error');
+    expect(pills(context)).toEqual([{ count: '1', type: 'primary' }]);
+    expect(navItems(wrapper)[1].get('.truncate').classes()).not.toContain('text-error');
   });
 
   it('writes an edited field back into the values', async () => {

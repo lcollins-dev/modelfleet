@@ -154,7 +154,7 @@ import { formatNodeState, nodeStateTone } from '@/utils/node';
 import { useLogService } from '@/services/LogService';
 import { useModelAdminService } from '@/services/api/admin/ModelAdminService';
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import { MfDangerCard, MfLicenceTag } from '@/components/mf';
 import {
@@ -188,7 +188,8 @@ interface IMetadataEntry {
   href?: string;
 }
 
-const DELETE_HELP = 'It is removed from the catalogue. Scanning a node that stores it will add it again.';
+const DELETE_HELP =
+  'The model will be removed from the catalogue. Its files will stay on the nodes. Scanning a node that stores it will add it again.';
 
 const EDIT_FORM = 'update-model';
 
@@ -203,7 +204,7 @@ const logger = logService.createLogger('pages/loggedin/models/Model');
 const route = useRoute();
 const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const modelAdminService = useModelAdminService();
 
 const modelId = computed(() => (typeof route.params.modelId === 'string' ? parseInt(route.params.modelId, 10) : null));
@@ -259,7 +260,7 @@ const unavailableDescription = computed(() => {
 
   const nodeNames = model.value.availability.map(entry => entry.nodeName).join(', ');
 
-  return `The model is stored on ${nodeNames}, but none responds. It cannot be deployed until one comes online.`;
+  return `The model is stored on these unavailable nodes: ${nodeNames}. Bring one online to deploy it.`;
 });
 
 const metadata = computed<IMetadataEntry[]>(() => {
@@ -415,10 +416,7 @@ const doUpdateModel = () => {
     .then(() => {
       showEditModal.value = false;
 
-      notificationStore.addToast(
-        'Model updated',
-        `${model.value === null ? 'The model' : modelLabel(model.value)} is saved.`
-      );
+      toastStore.addToast('Model updated');
     })
     .finally(() => {
       loadingUpdate.value = false;
@@ -450,7 +448,7 @@ const doDeleteModel = (target: ModelDto): Promise<void> => {
   return modelAdminService
     .deleteModel(target.id)
     .then(() => {
-      notificationStore.addToast('Model deleted', `${modelLabel(target)} no longer appears in the catalogue.`);
+      toastStore.addToast('Model deleted');
 
       goBack({ replace: true });
     })

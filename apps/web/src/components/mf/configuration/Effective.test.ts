@@ -51,6 +51,7 @@ describe('MfEffectiveConfiguration', () => {
             problem: null,
             problemReason: null,
             expectedUsage: null,
+            measured: null,
             capacity: null,
             evictions: [],
           },

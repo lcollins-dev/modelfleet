@@ -1,13 +1,12 @@
 <template>
-  <ui-table :columns="gridColumns" :min-width="minWidth">
-    <ui-table-head>
+  <ui-table :columns="gridColumns" :min-width="minWidth" scroll-label="Instances">
+    <ui-table-head sticky>
       <span>Instance</span>
-      <span>{{ props.party === 'deployment' ? 'Deployment' : 'Node' }}</span>
       <span>State</span>
       <span>Device</span>
-      <span>Uptime</span>
       <span v-if="props.vramByInstance !== undefined">VRAM</span>
       <span v-if="props.residentBytesByInstance !== undefined">RAM</span>
+      <span>Uptime</span>
       <span></span>
     </ui-table-head>
 
@@ -35,7 +34,7 @@ import { UiTable, UiTableHead } from '@/components/ui';
 
 import MfInstanceRow from './Row.vue';
 
-const BASE_MIN_WIDTH = 680;
+const BASE_MIN_WIDTH = 560;
 
 const MEMORY_COLUMN = '5.5rem';
 
@@ -81,7 +80,7 @@ const memoryColumns = computed(() =>
 );
 
 const gridColumns = computed(() =>
-  ['minmax(0, 1fr)', 'minmax(0, 1fr)', '6rem', 'minmax(0, 10rem)', '6rem', ...memoryColumns.value, '1rem'].join(' ')
+  ['minmax(0, 1fr)', '6rem', 'minmax(0, 10rem)', ...memoryColumns.value, '6rem', '1rem'].join(' ')
 );
 
 const minWidth = computed(() => BASE_MIN_WIDTH + memoryColumns.value.length * MEMORY_COLUMN_MIN_WIDTH);

@@ -31,6 +31,8 @@ describe('llamaCppDeclaration', () => {
       'splitMode',
       'tensorSplit',
       'flashAttn',
+      'fitTarget',
+      'noMmprojOffload',
       'cacheTypeK',
       'cacheTypeV',
       'noKvOffload',
@@ -227,6 +229,55 @@ describe('llamaCppDeclaration', () => {
     const result = validateConfiguration(llamaCppDeclaration, { promptCache: -1 });
 
     expect(result.issues.map(issue => issue.field)).toEqual(['promptCache']);
+  });
+
+  it('declares the fit target in MiB under GPU offload with no default, so an unset field passes no flag', () => {
+    expect(backendField(llamaCppDeclaration, 'fitTarget')).toMatchObject({
+      flag: '--fit-target',
+      group: 'gpu',
+      type: BackendFieldType.INTEGER,
+      min: 0,
+    });
+    expect(backendField(llamaCppDeclaration, 'fitTarget')?.default).toBeUndefined();
+    expect(declaredArguments(llamaCppDeclaration, {})).not.toContain('--fit-target');
+  });
+
+  it.each([
+    [512, '512'],
+    [0, '0'],
+  ])('passes a fit target of %d MiB', (fitTarget, argument) => {
+    expect(declaredArguments(llamaCppDeclaration, { fitTarget })).toEqual(
+      expect.arrayContaining(['--fit-target', argument])
+    );
+  });
+
+  it('refuses a negative fit target, which llama.cpp cannot read as a size', () => {
+    const result = validateConfiguration(llamaCppDeclaration, { fitTarget: -1 });
+
+    expect(result.issues.map(issue => issue.field)).toEqual(['fitTarget']);
+  });
+
+  it('says where the fit target has no effect', () => {
+    const description = backendField(llamaCppDeclaration, 'fitTarget')?.description;
+
+    expect(description).toContain('no effect in tensor mode');
+    expect(description).toContain('a tensor split across several GPUs, tensor overrides or expert layers on the CPU');
+  });
+
+  it('offers keeping the projector off the GPU under GPU offload', () => {
+    expect(backendField(llamaCppDeclaration, 'noMmprojOffload')).toMatchObject({
+      flag: '--no-mmproj-offload',
+      group: 'gpu',
+      type: BackendFieldType.BOOLEAN,
+    });
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+  ])('with the projector option at %s, passing the flag is %s', (noMmprojOffload, passed) => {
+    expect(declaredArguments(llamaCppDeclaration, { noMmprojOffload }).includes('--no-mmproj-offload')).toBe(passed);
   });
 
   it('refuses a lazy mode the backend does not take', () => {

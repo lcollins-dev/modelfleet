@@ -58,15 +58,6 @@
 
             <template v-if="fleetNodes?.length === 0" #empty>
               No nodes yet. Register a machine to start serving models.
-
-              <div class="mt-3">
-                <ui-button type="primary" to="/nodes/register">
-                  <template #icon>
-                    <icon-add class="size-4" />
-                  </template>
-                  Register Node
-                </ui-button>
-              </div>
             </template>
           </ui-table>
 
@@ -115,31 +106,7 @@
             </ui-table-row>
 
             <template v-if="deploymentPage?.deploymentList.length === 0" #empty>
-              <template v-if="hasModels">
-                No deployments yet. Deploy a model to start serving it.
-
-                <div class="mt-3">
-                  <ui-button type="primary" to="/deployments/create">
-                    <template #icon>
-                      <icon-add class="size-4" />
-                    </template>
-                    Create Deployment
-                  </ui-button>
-                </div>
-              </template>
-
-              <template v-else>
-                No models yet. Scan a node for model weights, then deploy one.
-
-                <div class="mt-3">
-                  <ui-button type="primary" to="/models">
-                    <template #icon>
-                      <icon-arrow-forward class="size-4" />
-                    </template>
-                    View Models
-                  </ui-button>
-                </div>
-              </template>
+              No deployments yet. Create one to start serving a model.
             </template>
           </ui-table>
 
@@ -178,7 +145,6 @@
 <script setup lang="ts">
 import { useDebounceFn } from '@vueuse/core';
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
-import IconAdd from '~icons/material-symbols/add-rounded';
 import IconArrowForward from '~icons/material-symbols/arrow-forward-outline-rounded';
 import IconChevronRight from '~icons/material-symbols/chevron-right-rounded';
 import IconDns from '~icons/material-symbols/dns-outline-rounded';
@@ -208,7 +174,6 @@ import { ISseSubscription } from '@/services/api/SseService';
 import { useDeploymentAdminService } from '@/services/api/admin/DeploymentAdminService';
 import { useEventAdminService } from '@/services/api/admin/EventAdminService';
 import { useInstanceAdminService } from '@/services/api/admin/InstanceAdminService';
-import { useModelAdminService } from '@/services/api/admin/ModelAdminService';
 import { useTelemetryAdminService } from '@/services/api/admin/TelemetryAdminService';
 import { TelemetryState, useTelemetryStore } from '@/stores/telemetry';
 import { useUserStore } from '@/stores/user';
@@ -269,7 +234,6 @@ const logger = logService.createLogger('pages/loggedin/Dashboard');
 const deploymentAdminService = useDeploymentAdminService();
 const eventAdminService = useEventAdminService();
 const instanceAdminService = useInstanceAdminService();
-const modelAdminService = useModelAdminService();
 const telemetryAdminService = useTelemetryAdminService();
 
 const telemetryStore = useTelemetryStore();
@@ -292,11 +256,6 @@ const eventSubscription = shallowRef<ISseSubscription | null>(null);
 const { data: deploymentPage, reload: reloadDeployments } = useResource({
   request: adminRequest,
   fetch: () => deploymentAdminService.getDeploymentList({}, 1),
-});
-
-const { data: modelPage, reload: reloadModels } = useResource({
-  request: adminRequest,
-  fetch: () => modelAdminService.getModelList({}, 1),
 });
 
 const {
@@ -325,8 +284,6 @@ const vramState = computed<TelemetryState>(() => {
 const fleetDevices = computed(() => (fleetNodes.value ?? []).flatMap(node => node.status.devices));
 
 const deploymentTotal = computed(() => deploymentPage.value?.total ?? 0);
-
-const hasModels = computed(() => (modelPage.value?.modelList.length ?? 0) > 0);
 
 const deploymentCounts = computed(() => countDeploymentRunStates(deploymentTotal.value, instances.value));
 
@@ -427,7 +384,6 @@ const doGetTelemetry = () => {
 
 const debouncedGetTelemetry = useDebounceFn(doGetTelemetry, Config.LIST_DEBOUNCE_MS);
 const debouncedReloadDeployments = useDebounceFn(reloadDeployments, Config.LIST_DEBOUNCE_MS);
-const debouncedReloadModels = useDebounceFn(reloadModels, Config.LIST_DEBOUNCE_MS);
 
 /** Node registrations and renames reach no telemetry stream, and the lists behind the other panels have none. */
 const onLiveEvent = (event: EventDto) => {
@@ -448,16 +404,11 @@ const onLiveEvent = (event: EventDto) => {
   if (event.subjectType === EventPartyType.DEPLOYMENT) {
     refresh(debouncedReloadDeployments, 'deployments');
   }
-
-  if (event.subjectType === EventPartyType.MODEL) {
-    refresh(debouncedReloadModels, 'models');
-  }
 };
 
 const onReconnectEvents = () => {
   void reloadEvents();
   void reloadDeployments();
-  void reloadModels();
 };
 
 onMounted(() => {

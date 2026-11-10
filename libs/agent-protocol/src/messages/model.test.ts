@@ -4,6 +4,7 @@ import { decodeAgentMessage, decodeServerMessage, encodeAgentMessage, encodeServ
 import { AgentMessageType, ServerMessageType } from '../message-type';
 import {
   AgentModelInventory,
+  MAX_GGUF_LAYERS,
   MAX_GGUF_TENSORS,
   MAX_GGUF_TENSOR_NAME_LENGTH,
   MAX_LICENCE_ID_LENGTH,
@@ -12,6 +13,7 @@ import {
   ModelType,
   ProjectorModality,
   agentModelInventorySchema,
+  ggufMetadataSchema,
   modelFingerprintSchema,
 } from './model';
 
@@ -221,6 +223,40 @@ describe('agentModelInventorySchema', () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe('ggufMetadataSchema', () => {
+  const METADATA = {
+    architecture: 'gemma3',
+    quantisation: 'Q4_K',
+    quantisationMixed: false,
+    layerCount: 2,
+    embeddingLength: 4096,
+    headCount: 8,
+    headCountKv: 8,
+    contextLength: 8192,
+  };
+
+  it('accepts a scan predating the attention fields', () => {
+    expect(ggufMetadataSchema.safeParse(METADATA).success).toBe(true);
+  });
+
+  it('accepts a pattern as an interval or a per-layer list', () => {
+    expect(ggufMetadataSchema.safeParse({ ...METADATA, slidingWindowPattern: 4 }).success).toBe(true);
+    expect(ggufMetadataSchema.safeParse({ ...METADATA, slidingWindowPattern: [1, 0] }).success).toBe(true);
+  });
+
+  it('refuses a layer list longer than any model has layers', () => {
+    const headCountKvByLayer = Array.from({ length: MAX_GGUF_LAYERS + 1 }, () => 1);
+
+    expect(ggufMetadataSchema.safeParse({ ...METADATA, headCountKvByLayer }).success).toBe(false);
+  });
+
+  it('accepts a tensor with its offset and shard', () => {
+    const tensors = [{ name: 'token_embd.weight', sizeBytes: 1024, offsetBytes: 4096, shard: 1 }];
+
+    expect(ggufMetadataSchema.safeParse({ ...METADATA, tensors }).success).toBe(true);
   });
 });
 

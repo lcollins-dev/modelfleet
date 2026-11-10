@@ -241,13 +241,14 @@ export class InstanceRuntimeService implements OnModuleInit {
       return true;
     }
 
-    this.launches.set(desired.instanceKey, {
+    const attempt: ILaunchAttempt = {
       revision: desired.revision,
       instanceState: InstanceState.STARTING,
       message: `${PULLING_MESSAGE} ${reference}`,
-    });
+    };
 
-    this.pull(desired, reference);
+    this.launches.set(desired.instanceKey, attempt);
+    this.pull(desired, reference, attempt);
 
     return false;
   }
@@ -255,19 +256,26 @@ export class InstanceRuntimeService implements OnModuleInit {
   /**
    * Runs beside reconciliation, since an image can take minutes and nothing else on the node should wait for it.
    * Every instance pulls for itself: the daemon coalesces concurrent pulls, and sharing one would leave every
-   * instance but the first waiting on a completion it never hears about.
+   * instance but the first waiting on a completion it never hears about. A stop leaves the pull running, so it only
+   * writes back while its own attempt stands, which keeps it off a stopped instance and off a replacement's attempt.
    */
-  private pull(desired: DesiredInstance, reference: string): void {
+  private pull(desired: DesiredInstance, reference: string, attempt: ILaunchAttempt): void {
     this.containerService
       .pullImage(reference)
       .then(() => {
         this.logger.log({ reference }, 'pull(): A backend image was pulled');
 
         // Dropping the attempt makes the instance missing again, which is what has the next reconcile create it.
-        this.launches.delete(desired.instanceKey);
+        if (this.launches.get(desired.instanceKey) === attempt) {
+          this.launches.delete(desired.instanceKey);
+        }
       })
       .catch((error: unknown) => {
         this.logger.error({ error, reference }, 'pull(): Pulling a backend image failed');
+
+        if (this.launches.get(desired.instanceKey) !== attempt) {
+          return;
+        }
 
         this.launches.set(desired.instanceKey, {
           revision: desired.revision,

@@ -43,6 +43,10 @@ export interface ISupervisorFacts {
 
   makingRoomNodeIds: number[];
 
+  restarting: boolean;
+
+  failedOnLatest: boolean;
+
   idleTimeoutMs: number;
   idleSince: Date | null;
   backoffUntil: Date | null;
@@ -76,6 +80,16 @@ export class SupervisorPolicyService {
     return facts.idleSince !== null && this.idleFor(facts.idleSince, facts.now) >= facts.idleTimeoutMs
       ? SupervisorAction.STOP_IDLE
       : SupervisorAction.NONE;
+  }
+
+  mayRestart(action: SupervisorAction, facts: ISupervisorFacts): boolean {
+    return (
+      (action === SupervisorAction.NONE || action === SupervisorAction.START) &&
+      facts.waiting === 0 &&
+      facts.starting === 0 &&
+      !facts.failedOnLatest &&
+      facts.makingRoomNodeIds.length === 0
+    );
   }
 
   private startOrHold(facts: ISupervisorFacts): SupervisorAction {

@@ -22,6 +22,7 @@ import {
   formatDownloadTimeLeft,
   defaultDownloadDirectory,
   describeDownloadSpace,
+  downloadModelDirectory,
   parseRepositoryAddress,
   selectedBytes,
   summariseDownload,
@@ -34,6 +35,7 @@ const buildTarget = (overrides: Partial<DownloadTargetDto> = {}): DownloadTarget
   nodeId: 1,
   nodeName: 'gpu-01',
   nodeState: NodeState.ONLINE,
+  modelDirectory: '/models',
   state: DownloadTargetState.ACTIVE,
   progress: null,
   message: null,
@@ -206,53 +208,73 @@ describe('selectedBytes', () => {
   });
 });
 
+const spaceHost = (modelDirectories: ModelDirectorySpaceDto[]): NodeHostTelemetryDto => ({
+  cpuModel: null,
+  cpuCount: 8,
+  loadAverage1m: null,
+  memoryTotalBytes: 32 * GIB,
+  memoryFreeBytes: 16 * GIB,
+  heldByModelsBytes: 0,
+  heldByModelsUnknown: false,
+  memoryAvailableBytes: 16 * GIB,
+  instanceMemory: [],
+  modelDirectories,
+});
+
+const spaceDirectory = (overrides: Partial<ModelDirectorySpaceDto> = {}): ModelDirectorySpaceDto => ({
+  path: '/models',
+  freeBytes: 10 * GIB,
+  totalBytes: 100 * GIB,
+  writeAccess: ModelDirectoryWriteAccess.WRITABLE,
+  ...overrides,
+});
+
+describe('downloadModelDirectory', () => {
+  const host = spaceHost([spaceDirectory(), spaceDirectory({ path: '/bulk', freeBytes: GIB })]);
+
+  it('takes the directory chosen on the node', () => {
+    expect(downloadModelDirectory(host, '/bulk')?.path).toBe('/bulk');
+  });
+
+  it.each([
+    ['none was chosen', undefined],
+    ['the node no longer reports the one chosen', '/gone'],
+  ])('takes the first where %s, which is where the node lands a download naming none', (_label, chosen) => {
+    expect(downloadModelDirectory(host, chosen)?.path).toBe('/models');
+  });
+
+  it.each([
+    ['a node that has not reported', null],
+    ['an agent that predates reporting it', spaceHost([])],
+  ])('finds none on %s', (_label, reported) => {
+    expect(downloadModelDirectory(reported, '/models')).toBeUndefined();
+  });
+});
+
 describe('describeDownloadSpace', () => {
-  const host = (modelDirectories: ModelDirectorySpaceDto[]): NodeHostTelemetryDto => ({
-    cpuModel: null,
-    cpuCount: 8,
-    loadAverage1m: null,
-    memoryTotalBytes: 32 * GIB,
-    memoryFreeBytes: 16 * GIB,
-    heldByModelsBytes: 0,
-    heldByModelsUnknown: false,
-    memoryAvailableBytes: 16 * GIB,
-    instanceMemory: [],
-    modelDirectories,
+  it('reads room against the directory it is given', () => {
+    expect(describeDownloadSpace(spaceDirectory({ path: '/bulk' }), 4 * GIB)).toEqual({
+      warns: false,
+      text: '10 GiB free',
+    });
   });
 
-  const directory = (overrides: Partial<ModelDirectorySpaceDto> = {}): ModelDirectorySpaceDto => ({
-    path: '/models',
-    freeBytes: 10 * GIB,
-    totalBytes: 100 * GIB,
-    writeAccess: ModelDirectoryWriteAccess.WRITABLE,
-    ...overrides,
-  });
-
-  it('reads room against the first model directory, where downloads land', () => {
-    const space = describeDownloadSpace(host([directory(), directory({ path: '/bulk', freeBytes: 1 * GIB })]), 4 * GIB);
-
-    expect(space).toEqual({ warns: false, text: '10 GiB free' });
-  });
-
-  it('marks a node where the ticked files will not fit, saying both figures', () => {
-    const space = describeDownloadSpace(host([directory({ freeBytes: 2 * GIB })]), 4 * GIB);
+  it('marks a directory where the ticked files will not fit, saying both figures', () => {
+    const space = describeDownloadSpace(spaceDirectory({ freeBytes: 2 * GIB }), 4 * GIB);
 
     expect(space).toEqual({ warns: true, text: '2 GiB free · needs 4 GiB' });
   });
 
   it('fits exactly the free space', () => {
-    expect(describeDownloadSpace(host([directory({ freeBytes: GIB })]), GIB).warns).toBe(false);
+    expect(describeDownloadSpace(spaceDirectory({ freeBytes: GIB }), GIB).warns).toBe(false);
   });
 
-  it.each([
-    ['a node that has not reported', null],
-    ['an agent that predates reporting it', host([])],
-  ])('reads %s as unknown rather than as full', (_label, reported) => {
-    expect(describeDownloadSpace(reported, GIB)).toEqual({ warns: false, text: 'Free space unknown' });
+  it('reads no directory as unknown rather than as full', () => {
+    expect(describeDownloadSpace(undefined, GIB)).toEqual({ warns: false, text: 'Free space unknown' });
   });
 
   it('reads a directory the node could not measure as unknown', () => {
-    const space = describeDownloadSpace(host([directory({ freeBytes: null, totalBytes: null })]), GIB);
+    const space = describeDownloadSpace(spaceDirectory({ freeBytes: null, totalBytes: null }), GIB);
 
     expect(space).toEqual({ warns: false, text: 'Free space unknown' });
   });
@@ -260,13 +282,13 @@ describe('describeDownloadSpace', () => {
   it.each([
     [ModelDirectoryWriteAccess.READ_ONLY, 'Read-only · 10 GiB free'],
     [ModelDirectoryWriteAccess.DENIED, 'Not writable by the agent · 10 GiB free'],
-  ])('marks a node whose model directory is %s, naming why, even with room to spare', (writeAccess, text) => {
-    expect(describeDownloadSpace(host([directory({ writeAccess })]), GIB)).toEqual({ warns: true, text });
+  ])('marks a model directory that is %s, naming why, even with room to spare', (writeAccess, text) => {
+    expect(describeDownloadSpace(spaceDirectory({ writeAccess }), GIB)).toEqual({ warns: true, text });
   });
 
   it('names both the refusal and the shortfall where a directory has both', () => {
     const space = describeDownloadSpace(
-      host([directory({ freeBytes: GIB, writeAccess: ModelDirectoryWriteAccess.READ_ONLY })]),
+      spaceDirectory({ freeBytes: GIB, writeAccess: ModelDirectoryWriteAccess.READ_ONLY }),
       4 * GIB
     );
 
@@ -274,7 +296,7 @@ describe('describeDownloadSpace', () => {
   });
 
   it('reads a directory whose write access is unknown by its free space alone', () => {
-    expect(describeDownloadSpace(host([directory({ writeAccess: null })]), GIB)).toEqual({
+    expect(describeDownloadSpace(spaceDirectory({ writeAccess: null }), GIB)).toEqual({
       warns: false,
       text: '10 GiB free',
     });

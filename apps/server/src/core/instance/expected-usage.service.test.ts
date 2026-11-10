@@ -8,7 +8,6 @@ import { DeploymentService } from '@/core/deployment/deployment.service';
 import { GpuService } from '@/core/gpu/gpu.service';
 import { ExpectedUsageService, IExpectedUsage } from '@/core/instance/expected-usage.service';
 import { InstanceLaunchService } from '@/core/instance/instance-launch.service';
-import { MeasuredVramService } from '@/core/instance/measured-vram.service';
 import { ModelReferenceService } from '@/core/model/model-reference.service';
 
 import { IResolvedModelReference } from '@/core/model/model-reference';
@@ -68,8 +67,6 @@ describe('ExpectedUsageService', () => {
   let backend: BackendId;
   let configuration: Record<string, unknown>;
   let model: typeof MODEL | Record<string, unknown>;
-  let remembered: number | null;
-  let rememberedFor: ReturnType<typeof vi.fn>;
   let cardTotals: Map<string, number | null>;
   let references: IResolvedModelReference[];
   let expectedUsageService: ExpectedUsageService;
@@ -81,8 +78,6 @@ describe('ExpectedUsageService', () => {
     backend = BackendId.LLAMA_CPP;
     configuration = CONFIGURATION;
     model = MODEL;
-    remembered = null;
-    rememberedFor = vi.fn(() => Promise.resolve(remembered));
     cardTotals = new Map([
       ['GPU-a', 24 * GIB],
       ['GPU-b', 24 * GIB],
@@ -104,7 +99,6 @@ describe('ExpectedUsageService', () => {
         ),
       } as unknown as GpuService,
       { describeModel: vi.fn(() => model) } as unknown as InstanceLaunchService,
-      { rememberedFor } as unknown as MeasuredVramService,
       { resolve: vi.fn(() => Promise.resolve(references)) } as unknown as ModelReferenceService
     );
   });
@@ -113,30 +107,6 @@ describe('ExpectedUsageService', () => {
     const usage = await expectedFor();
 
     expect(usage).toMatchObject({ known: true, source: ExpectedUsageSource.ESTIMATED });
-  });
-
-  it('takes the remembered measured figure ahead of the estimate', async () => {
-    remembered = 9 * 1024 * MIB;
-
-    const usage = await expectedFor();
-
-    expect(usage).toEqual({
-      known: true,
-      bytes: 9 * 1024 * MIB,
-      source: ExpectedUsageSource.MEASURED,
-      hostWeightsBytes: 0,
-      hostResidentBytes: 0,
-      hostCacheBytes: 8192 * MIB,
-      cardShares: null,
-    });
-  });
-
-  it("asks for the figure remembered for the deployment's configuration and pins", async () => {
-    const pins = { cpu: false, gpus: ['GPU-a', 'GPU-b'] };
-
-    await expectedFor(buildDeployment({ configurationRevision: 'raised-context' }), pins);
-
-    expect(rememberedFor).toHaveBeenCalledWith('raised-context', pins);
   });
 
   it('estimates for the pinned card count, counting the per-card overhead on each', async () => {
@@ -175,9 +145,23 @@ describe('ExpectedUsageService', () => {
     expect(usage).toMatchObject({ known: true, hostWeightsBytes: 900 * MIB, hostResidentBytes: 0 });
   });
 
-  it('takes the host figures from the estimate beside a measured figure, which cannot see them', async () => {
-    remembered = 9 * 1024 * MIB;
-    configuration = { ...CONFIGURATION, tensorOverrides: ['exps=CPU'] };
+  it('tells the estimate a CPU pin is set, so a tensor split keeps RAM out of the pool', async () => {
+    configuration = { ...CONFIGURATION, tensorSplit: [1, 1] };
+
+    const usage = await expectedFor(buildDeployment(), { cpu: true, gpus: ['GPU-a', 'GPU-b'] });
+
+    expect(usage.known && usage.cardsOnlyReason).toMatch(/automatic fitting/);
+  });
+
+  it('hands the estimate what the scan read about the attention layers', async () => {
+    const decision = { ...MODEL, quantisationMixed: false, decisionType: 'classify' };
+    const usage = await expectedFor(buildDeployment({ model: buildModel({ ggufMetadata: decision }) }));
+
+    expect(usage.known && usage.hostCacheBytes).toBe(0);
+  });
+
+  it('takes the host figures from the estimate beside a declared figure, which cannot see them', async () => {
+    configuration = { ...CONFIGURATION, vramGib: 9, tensorOverrides: ['exps=CPU'] };
 
     const deployment = buildDeployment({ model: buildModel({ ggufMetadata: OFFLOADED_EXPERTS }) });
     const usage = await expectedFor(deployment);
@@ -185,41 +169,48 @@ describe('ExpectedUsageService', () => {
     expect(usage).toEqual({
       known: true,
       bytes: 9 * 1024 * MIB,
-      source: ExpectedUsageSource.MEASURED,
+      source: ExpectedUsageSource.DECLARED,
       hostWeightsBytes: 900 * MIB,
       hostResidentBytes: 900 * MIB,
       hostCacheBytes: 8192 * MIB,
       cardShares: null,
+      balancedOnFreeMemory: true,
     });
   });
 
+  it.each([
+    ['an estimate', {}],
+    ['a declared figure', { vramGib: 9 }],
+  ])('carries the fit target beside %s, in bytes', async (_source, sized) => {
+    configuration = { ...CONFIGURATION, ...sized, fitTarget: 512 };
+
+    expect(await expectedFor()).toMatchObject({ known: true, headroomBytes: 512 * MIB });
+  });
+
   it("takes each card's share from the backend, whatever source sized the deployment", async () => {
-    remembered = 9 * GIB;
-    configuration = { ...CONFIGURATION, tensorSplit: [3, 1] };
+    configuration = { ...CONFIGURATION, vramGib: 9, tensorSplit: [3, 1] };
 
     const usage = await expectedFor(buildDeployment(), { cpu: false, gpus: ['GPU-a', 'GPU-b'] });
     const [first, second] = (usage.known ? usage.cardShares : null) ?? [];
 
-    expect(usage).toMatchObject({ known: true, source: ExpectedUsageSource.MEASURED });
+    expect(usage).toMatchObject({ known: true, source: ExpectedUsageSource.DECLARED });
     expect(first).toBeGreaterThan(second);
   });
 
-  it('takes no host figures beside a measured figure where the estimate cannot be made', async () => {
-    remembered = 9 * 1024 * MIB;
-    configuration = { ...CONFIGURATION, contextSize: undefined, tensorOverrides: ['exps=CPU'] };
+  it('takes no host figures beside a declared figure where the estimate cannot be made', async () => {
+    configuration = { ...CONFIGURATION, vramGib: 9, contextSize: undefined, tensorOverrides: ['exps=CPU'] };
 
     const deployment = buildDeployment({ model: buildModel({ ggufMetadata: OFFLOADED_EXPERTS }) });
     const usage = await expectedFor(deployment);
 
-    expect(usage).toMatchObject({ source: ExpectedUsageSource.MEASURED, hostWeightsBytes: 0, hostResidentBytes: 0 });
+    expect(usage).toMatchObject({ source: ExpectedUsageSource.DECLARED, hostWeightsBytes: 0, hostResidentBytes: 0 });
   });
 
-  it('still counts the prompt cache beside a measured figure where the estimate cannot be made', async () => {
-    remembered = 9 * 1024 * MIB;
-    configuration = { ...CONFIGURATION, contextSize: undefined, promptCache: 2048 };
+  it('still counts the prompt cache beside a declared figure where the estimate cannot be made', async () => {
+    configuration = { ...CONFIGURATION, vramGib: 9, contextSize: undefined, promptCache: 2048 };
 
     await expect(expectedFor()).resolves.toMatchObject({
-      source: ExpectedUsageSource.MEASURED,
+      source: ExpectedUsageSource.DECLARED,
       hostResidentBytes: 0,
       hostCacheBytes: 2048 * MIB,
     });
@@ -321,12 +312,6 @@ describe('ExpectedUsageService', () => {
       expect(drafted.known && without.known ? drafted.bytes - without.bytes : null).toBe(DRAFT_TOTAL_BYTES);
     });
 
-    it('leaves a measured figure as it is, which already holds the draft', async () => {
-      remembered = 9 * GIB;
-
-      await expect(expectedFor()).resolves.toMatchObject({ bytes: 9 * GIB, source: ExpectedUsageSource.MEASURED });
-    });
-
     it('leaves a declared figure as it is', async () => {
       configuration = { ...CONFIGURATION, vramGib: 6 };
 
@@ -340,12 +325,6 @@ describe('ExpectedUsageService', () => {
     });
 
     it('admits on it ahead of the estimate', async () => {
-      await expect(expectedFor()).resolves.toMatchObject({ bytes: 6 * GIB, source: ExpectedUsageSource.DECLARED });
-    });
-
-    it('outranks a remembered measured figure, since the operator may know of a change it has not seen', async () => {
-      remembered = 9 * GIB;
-
       await expect(expectedFor()).resolves.toMatchObject({ bytes: 6 * GIB, source: ExpectedUsageSource.DECLARED });
     });
 
@@ -396,18 +375,11 @@ describe('ExpectedUsageService', () => {
       await expect(expectedFor()).resolves.toMatchObject({ source: ExpectedUsageSource.CONFIGURED });
     });
 
-    it('is not replaced by a remembered figure, which may have been measured on a card of another size', async () => {
-      remembered = 9 * GIB;
-
-      await expect(expectedFor()).resolves.toMatchObject({ bytes: 12 * GIB, source: ExpectedUsageSource.CONFIGURED });
-    });
-
     it('names a card that has not reported its total, rather than sizing the deployment some other way', async () => {
       cardTotals = new Map([
         ['GPU-a', null],
         ['GPU-b', 24 * GIB],
       ]);
-      remembered = 9 * GIB;
       configuration = { ...CONFIGURATION, vramGib: 6 };
 
       await expect(expectedFor()).resolves.toEqual({

@@ -69,6 +69,11 @@ const configService = {
   instanceLogTailLines: 20,
 } as unknown as ConfigService;
 
+interface IPullSettlers {
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
 const container = (overrides: Partial<IInstanceContainer> = {}): IInstanceContainer => ({
   id: CONTAINER_ID,
   labels: {
@@ -472,7 +477,7 @@ describe('InstanceRuntimeService', () => {
       const [observed] = await instanceRuntimeService.list();
 
       expect(observed.instanceState).toBe(InstanceState.STARTING);
-      expect(observed.message).toContain('Pulling');
+      expect(observed.message).toBe('Pulling the backend image ghcr.io/ggml-org/llama.cpp:server-cuda');
     });
 
     it('pulls for each instance sharing an image, so the second is not left waiting on the first', async () => {
@@ -486,6 +491,67 @@ describe('InstanceRuntimeService', () => {
 
       expect(containerService.pullImage).toHaveBeenCalledTimes(2);
       expect(await instanceRuntimeService.list()).toHaveLength(2);
+    });
+
+    it('reports the reason a pull failed', async () => {
+      containerService.hasImage.mockResolvedValue(false);
+      containerService.pullImage.mockRejectedValue(new Error('no space left on device'));
+
+      await instanceRuntimeService.start(buildDesiredInstance(), GPU_TOTALS);
+      await new Promise(resolve => setImmediate(resolve));
+
+      const [observed] = await instanceRuntimeService.list();
+
+      expect(observed.instanceState).toBe(InstanceState.FAILED);
+      expect(observed.message).toBe('no space left on device');
+    });
+
+    it('keeps a failed pull off an instance that has since been stopped', async () => {
+      let failPull: (error: Error) => void = () => undefined;
+
+      containerService.hasImage.mockResolvedValue(false);
+      containerService.pullImage.mockReturnValue(
+        new Promise<void>((_resolve, reject) => {
+          failPull = reject;
+        })
+      );
+
+      await instanceRuntimeService.start(buildDesiredInstance(), GPU_TOTALS);
+      await instanceRuntimeService.stop(buildDesiredInstance().instanceKey);
+
+      failPull(new Error('manifest unknown'));
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(await instanceRuntimeService.list()).toEqual([]);
+    });
+
+    it.each([
+      ['fails', (settle: IPullSettlers) => settle.reject(new Error('manifest unknown'))],
+      ['finishes', (settle: IPullSettlers) => settle.resolve()],
+    ])('keeps a replacement pulling when the pull before it %s', async (_outcome, settleFirstPull) => {
+      let first: IPullSettlers = { resolve: () => undefined, reject: () => undefined };
+
+      containerService.hasImage.mockResolvedValue(false);
+      containerService.pullImage
+        .mockReturnValueOnce(
+          new Promise<void>((resolve, reject) => {
+            first = { resolve, reject };
+          })
+        )
+        .mockReturnValueOnce(new Promise<void>(() => undefined));
+
+      await instanceRuntimeService.start(buildDesiredInstance(), GPU_TOTALS);
+      await instanceRuntimeService.stop(buildDesiredInstance().instanceKey);
+      await instanceRuntimeService.start(buildDesiredInstance({ revision: 2 }), GPU_TOTALS);
+
+      settleFirstPull(first);
+      await new Promise(resolve => setImmediate(resolve));
+
+      const [observed] = await instanceRuntimeService.list();
+
+      expect(observed.revision).toBe(2);
+      expect(observed.instanceState).toBe(InstanceState.STARTING);
+      expect(observed.message).toContain('Pulling');
     });
 
     it('reports what the daemon said even where removing the container it refused to start also fails', async () => {

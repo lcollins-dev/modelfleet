@@ -8,6 +8,7 @@ import {
   MAX_DOWNLOAD_DIRECTORY_LENGTH,
   MAX_DOWNLOADS_PER_NODE,
   MAX_FILES_PER_DOWNLOAD,
+  MAX_MODEL_PATH_LENGTH,
   isContainedDownloadPath,
 } from '@libs/agent-protocol';
 import { DownloadSource, DownloadTargetState, EventPartyType, EventSeverity, EventType } from '@libs/dto';
@@ -28,6 +29,20 @@ export interface IDownloadDefinition {
   revision: string;
   files: string[];
   nodeIds: number[];
+
+  /** A node left out lands the files in its first model directory. */
+  modelDirectories: IModelDirectoryChoice[];
+}
+
+export interface IModelDirectoryChoice {
+  nodeId: number;
+  path: string;
+}
+
+/** Null reads as the node's first model directory. */
+interface ITargetPlacement {
+  nodeId: number;
+  modelDirectory: string | null;
 }
 
 /** Where a file lands under the model directory, which is what two downloads must not share. */
@@ -38,6 +53,7 @@ const RETRYABLE_STATES: DownloadTargetState[] = [DownloadTargetState.FAILED, Dow
 interface IFileOnNode {
   path: string;
   nodeId: number;
+  modelDirectory: string | null;
 }
 
 /** Asking nodes for files, the first time and again after a failure, and every check that asking must pass. */
@@ -65,8 +81,13 @@ export class DownloadAdmissionService {
       await this.nodeService.findWithThrow(nodeId);
     }
 
+    const placements = nodeIds.map(nodeId => ({
+      nodeId,
+      modelDirectory: definition.modelDirectories.find(choice => choice.nodeId === nodeId)?.path ?? null,
+    }));
+
     const snapshot = await this.hubReaderService.read(definition.repository, definition.revision, paths);
-    const download = await this.insert(snapshot, definition.directory, nodeIds, actorId);
+    const download = await this.insert(snapshot, definition.directory, placements, actorId);
 
     this.downloadService.announce(nodeIds);
 
@@ -88,13 +109,13 @@ export class DownloadAdmissionService {
     const retrying = (download.targets ?? []).filter(target => RETRYABLE_STATES.includes(target.state));
 
     if (retrying.length === 0) {
-      throw new BadRequestException('This download has not failed or been stopped on any node');
+      throw new BadRequestException('Only failed or cancelled downloads can be retried');
     }
 
     await this.checkNodesCanTake(
       download.directory,
       (download.files ?? []).map(file => file.path),
-      retrying.map(target => target.nodeId)
+      retrying.map(target => ({ nodeId: target.nodeId, modelDirectory: target.modelDirectory }))
     );
 
     await this.downloadTargetRepository.update(
@@ -118,15 +139,17 @@ export class DownloadAdmissionService {
 
   private checkDefinition(definition: IDownloadDefinition, paths: string[]): void {
     if (!DOWNLOAD_REPOSITORY_PATTERN.test(definition.repository)) {
-      throw new BadRequestException('A repository is named as owner/name');
+      throw new BadRequestException('Enter the repository as owner/name');
     }
 
     if (definition.directory.length > MAX_DOWNLOAD_DIRECTORY_LENGTH || !isContainedDownloadPath(definition.directory)) {
-      throw new BadRequestException('A destination is a path inside the model directory, with no empty, . or .. part');
+      throw new BadRequestException(
+        'Enter a path within the model directory. Each part must be a folder name, not empty, . or ..'
+      );
     }
 
     if (paths.length === 0 || paths.length > MAX_FILES_PER_DOWNLOAD) {
-      throw new BadRequestException(`A download names between 1 and ${MAX_FILES_PER_DOWNLOAD} files`);
+      throw new BadRequestException(`Select between 1 and ${MAX_FILES_PER_DOWNLOAD} files per download`);
     }
 
     const refused = paths.filter(path => !isContainedDownloadPath(path));
@@ -136,21 +159,52 @@ export class DownloadAdmissionService {
     }
 
     if (definition.nodeIds.length === 0) {
-      throw new BadRequestException('A download names at least one node');
+      throw new BadRequestException('Select at least one node');
     }
+
+    this.checkModelDirectories(definition);
+  }
+
+  /** Which directories a node has is the node's to check, since only it knows its own configuration. */
+  private checkModelDirectories(definition: IDownloadDefinition): void {
+    const chosen = definition.modelDirectories.map(choice => choice.nodeId);
+
+    if (chosen.some(nodeId => !definition.nodeIds.includes(nodeId))) {
+      throw new BadRequestException('Select a model directory only for nodes included in this download.');
+    }
+
+    if (new Set(chosen).size !== chosen.length) {
+      throw new BadRequestException('Select only one model directory per node.');
+    }
+
+    if (definition.modelDirectories.some(choice => !this.isModelDirectoryPath(choice.path))) {
+      throw new BadRequestException(
+        `Model directory paths must be non-empty, at most ${MAX_MODEL_PATH_LENGTH} characters long, and contain no null characters.`
+      );
+    }
+  }
+
+  /**
+   * Postgres refuses a NUL in text, and the desired set measures length in UTF-16 units where the request counts code
+   * points, so a longer one would make the node's whole set unsendable.
+   */
+  private isModelDirectoryPath(path: string): boolean {
+    return path.trim().length > 0 && path.length <= MAX_MODEL_PATH_LENGTH && !path.includes('\0');
   }
 
   @Transactional()
   private async insert(
     snapshot: IHubSnapshot,
     directory: string,
-    nodeIds: number[],
+    placements: ITargetPlacement[],
     actorId: number
   ): Promise<Download> {
+    const nodeIds = placements.map(placement => placement.nodeId);
+
     await this.checkNodesCanTake(
       directory,
       snapshot.files.map(file => file.path),
-      nodeIds
+      placements
     );
 
     const download = new Download({
@@ -168,7 +222,7 @@ export class DownloadAdmissionService {
     );
 
     await this.downloadTargetRepository.insert(
-      nodeIds.map(nodeId => new DownloadTarget({ downloadId: download.id, nodeId }))
+      placements.map(placement => new DownloadTarget({ downloadId: download.id, ...placement }))
     );
 
     const nodeNames = await this.nodeService.findNames(nodeIds);
@@ -186,23 +240,31 @@ export class DownloadAdmissionService {
     return download;
   }
 
-  /** Two downloads landing a file at one path on one node would share its partial, whatever each is downloading. */
-  private async checkNodesCanTake(directory: string, paths: string[], nodeIds: number[]): Promise<void> {
+  /**
+   * Two downloads landing a file at one path in one model directory on one node would share its partial, whatever each
+   * is downloading. A target naming no directory is taken to share whichever the other names, since only the node knows
+   * which is its first.
+   */
+  private async checkNodesCanTake(directory: string, paths: string[], placements: ITargetPlacement[]): Promise<void> {
+    const nodeIds = placements.map(placement => placement.nodeId);
+
     // Serialises creates that share a node until this transaction ends, so two cannot both pass the checks below.
     await this.downloadTargetRepository.query('SELECT "id" FROM "node" WHERE "id" = ANY($1) ORDER BY "id" FOR UPDATE', [
       nodeIds,
     ]);
 
-    const busy = await this.downloadFileRepository
+    const landed = await this.downloadFileRepository
       .createQueryBuilder('file')
       .innerJoin('file.download', 'download')
       .innerJoin('download.targets', 'target')
       .select(LANDED_PATH_SQL, 'path')
       .addSelect('target.nodeId', 'nodeId')
+      .addSelect('target.modelDirectory', 'modelDirectory')
       .where('target.state = :state', { state: DownloadTargetState.ACTIVE })
       .andWhere('target.nodeId IN (:...nodeIds)', { nodeIds })
       .andWhere(`${LANDED_PATH_SQL} IN (:...landed)`, { landed: paths.map(path => `${directory}/${path}`) })
       .getRawMany<IFileOnNode>();
+    const busy = landed.filter(entry => this.sharesModelDirectory(entry, placements));
 
     if (busy.length > 0) {
       const names = await this.nodeService.findNames(busy.map(entry => entry.nodeId));
@@ -226,5 +288,19 @@ export class DownloadAdmissionService {
 
       throw new BadRequestException(`${nodes} already has ${MAX_DOWNLOADS_PER_NODE} downloads in progress`);
     }
+  }
+
+  private sharesModelDirectory(entry: IFileOnNode, placements: ITargetPlacement[]): boolean {
+    const placement = placements.find(candidate => candidate.nodeId === entry.nodeId);
+
+    if (placement === undefined) {
+      return false;
+    }
+
+    return (
+      entry.modelDirectory === null ||
+      placement.modelDirectory === null ||
+      entry.modelDirectory === placement.modelDirectory
+    );
   }
 }

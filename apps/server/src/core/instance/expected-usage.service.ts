@@ -18,7 +18,6 @@ import { DeploymentService } from '../deployment/deployment.service';
 import { GpuService } from '../gpu/gpu.service';
 import { ModelReferenceService } from '../model/model-reference.service';
 import { InstanceLaunchService } from './instance-launch.service';
-import { MeasuredVramService } from './measured-vram.service';
 
 import { DECLARED_VRAM_KEY, IDocumentHalves, splitByOwner } from '../configuration/schema/fleet';
 
@@ -37,6 +36,8 @@ export interface IKnownUsage {
 
   cardShares: number[] | null;
   cardsOnlyReason?: string;
+  balancedOnFreeMemory?: boolean;
+  headroomBytes?: number;
 }
 
 export interface IUnknownUsage {
@@ -53,20 +54,18 @@ interface ISizing {
   estimate: IVramEstimate;
   cardShares: number[] | null;
   cardsOnlyReason?: string;
+  balancedOnFreeMemory?: boolean;
+  headroomBytes?: number;
 }
 
 type UsageSource = (sizing: ISizing) => Promise<IKnownUsage | null>;
 
 @Injectable()
 export class ExpectedUsageService {
-  /**
-   * In trust order, and the first to know a figure answers. A configured estimate is what the backend allocates, and an
-   * operator's declared figure may reflect a change a measurement has not seen.
-   */
+  /** Order matters: configured allocation takes precedence, then an operator override, then a model-based estimate. */
   private readonly sources: UsageSource[] = [
     sizing => this.estimated(sizing, [EstimateBasis.CONFIGURATION], ExpectedUsageSource.CONFIGURED),
     sizing => this.declared(sizing),
-    sizing => this.measured(sizing),
     sizing => this.estimated(sizing, [EstimateBasis.METADATA, EstimateBasis.WEIGHTS], ExpectedUsageSource.ESTIMATED),
   ];
 
@@ -74,7 +73,6 @@ export class ExpectedUsageService {
     private readonly deploymentService: DeploymentService,
     private readonly gpuService: GpuService,
     private readonly instanceLaunchService: InstanceLaunchService,
-    private readonly measuredVramService: MeasuredVramService,
     private readonly modelReferenceService: ModelReferenceService
   ) {}
 
@@ -118,13 +116,9 @@ export class ExpectedUsageService {
       hostCacheBytes: estimate.hostCacheBytes,
       cardShares: sizing.cardShares,
       cardsOnlyReason: sizing.cardsOnlyReason,
+      balancedOnFreeMemory: sizing.balancedOnFreeMemory,
+      headroomBytes: sizing.headroomBytes,
     });
-  }
-
-  private async measured(sizing: ISizing): Promise<IKnownUsage | null> {
-    const bytes = await this.measuredVramService.rememberedFor(sizing.deployment.configurationRevision, sizing.pins);
-
-    return bytes === null ? null : this.withEstimatedHost(sizing, bytes, ExpectedUsageSource.MEASURED);
   }
 
   private declared(sizing: ISizing): Promise<IKnownUsage | null> {
@@ -149,6 +143,8 @@ export class ExpectedUsageService {
       hostCacheBytes: estimate.hostCacheBytes,
       cardShares: sizing.cardShares,
       cardsOnlyReason: sizing.cardsOnlyReason,
+      balancedOnFreeMemory: sizing.balancedOnFreeMemory,
+      headroomBytes: sizing.headroomBytes,
     };
   }
 
@@ -165,10 +161,12 @@ export class ExpectedUsageService {
       model: {
         ...this.instanceLaunchService.describeModel(deployment),
         tensors: deployment.model?.ggufMetadata?.tensors ?? null,
+        attention: deployment.model?.ggufMetadata ?? null,
       },
       companions: await this.companionsOf(deployment, halves),
       configuration: halves.backend,
       deviceCount: pins.gpus.length,
+      cpuPinned: pins.cpu,
       devices: pins.gpus.map(deviceKey => ({ deviceKey, totalBytes: totals.get(deviceKey) ?? null })),
     };
   }

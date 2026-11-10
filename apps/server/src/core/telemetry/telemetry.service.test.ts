@@ -33,6 +33,134 @@ describe('TelemetryService', () => {
     telemetryService = new TelemetryService();
   });
 
+  describe('measuredUsage', () => {
+    const FIRST_KEY = '6f1c2d3e-0000-4000-8000-000000000001';
+    const SECOND_KEY = '6f1c2d3e-0000-4000-8000-000000000002';
+    const CARD_A = 'GPU-a';
+    const CARD_B = 'GPU-b';
+
+    const process = (instanceKey: string, usedBytes: number | null) => ({
+      pid: 1,
+      usedBytes,
+      name: null,
+      containerId: null,
+      containerName: null,
+      instanceKey,
+    });
+
+    const device = (
+      deviceKey: string,
+      processes: ReturnType<typeof process>[],
+      processAttribution = ProcessAttribution.EXACT
+    ) => ({
+      deviceKey,
+      index: 0,
+      memoryUsedBytes: null,
+      utilisationPercent: null,
+      temperatureC: null,
+      powerDrawWatts: null,
+      processAttribution,
+      processes,
+    });
+
+    const host = (instanceMemory: { instanceKey: string; heldBytes: null; residentBytes: number | null }[]) => ({
+      cpuModel: null,
+      cpuCount: 8,
+      loadAverage1m: null,
+      memoryTotalBytes: 16,
+      memoryFreeBytes: 8,
+      instanceMemory,
+    });
+
+    const resident = (instanceKey: string, residentBytes: number | null) => ({
+      instanceKey,
+      heldBytes: null,
+      residentBytes,
+    });
+
+    const first = { instanceKey: FIRST_KEY, gpus: [CARD_A, CARD_B] };
+    const second = { instanceKey: SECOND_KEY, gpus: [CARD_A, CARD_B] };
+
+    it('sums what the instances hold across their cards and in RAM', () => {
+      telemetryService.recordTelemetry(
+        NODE_ID,
+        telemetry({
+          devices: [
+            device(CARD_A, [process(FIRST_KEY, 10), process(SECOND_KEY, 20)]),
+            device(CARD_B, [process(FIRST_KEY, 5)]),
+          ],
+          host: host([resident(FIRST_KEY, 100), resident(SECOND_KEY, 200)]),
+        })
+      );
+
+      expect(telemetryService.measuredUsage(NODE_ID, [first, second])).toEqual({ vramBytes: 35, ramBytes: 300 });
+    });
+
+    it('counts a pinned card holding none of the instance as nothing', () => {
+      telemetryService.recordTelemetry(
+        NODE_ID,
+        telemetry({ devices: [device(CARD_A, [process(FIRST_KEY, 10)]), device(CARD_B, [])], host: host([]) })
+      );
+
+      expect(telemetryService.measuredUsage(NODE_ID, [first]).vramBytes).toBe(10);
+    });
+
+    it('is blank for a node with no reading', () => {
+      expect(telemetryService.measuredUsage(NODE_ID, [first])).toEqual({ vramBytes: null, ramBytes: null });
+    });
+
+    it.each([
+      ['has no process on any card yet', [device(CARD_A, []), device(CARD_B, [])]],
+      [
+        'holds a process with no figure',
+        [device(CARD_A, [process(FIRST_KEY, null)], ProcessAttribution.APPROXIMATE), device(CARD_B, [])],
+      ],
+      [
+        'is on a card only partly attributed',
+        [device(CARD_A, [process(FIRST_KEY, 10)], ProcessAttribution.APPROXIMATE), device(CARD_B, [])],
+      ],
+      ['is pinned to a card the node has stopped reporting', [device(CARD_A, [process(FIRST_KEY, 10)])]],
+      [
+        'is pinned to a card whose processes cannot be seen',
+        [device(CARD_A, [process(FIRST_KEY, 10)]), device(CARD_B, [], ProcessAttribution.UNAVAILABLE)],
+      ],
+    ])('leaves VRAM blank for an instance that %s', (_case, devices) => {
+      telemetryService.recordTelemetry(NODE_ID, telemetry({ devices, host: host([resident(FIRST_KEY, 100)]) }));
+
+      expect(telemetryService.measuredUsage(NODE_ID, [first])).toEqual({ vramBytes: null, ramBytes: 100 });
+    });
+
+    it('leaves a figure blank when any one instance has no reading for it, rather than reading short', () => {
+      telemetryService.recordTelemetry(
+        NODE_ID,
+        telemetry({
+          devices: [device(CARD_A, [process(FIRST_KEY, 10)]), device(CARD_B, [])],
+          host: host([resident(FIRST_KEY, 100), resident(SECOND_KEY, null)]),
+        })
+      );
+
+      expect(telemetryService.measuredUsage(NODE_ID, [first, second])).toEqual({ vramBytes: null, ramBytes: null });
+    });
+
+    it('leaves RAM blank for an agent that does not report it', () => {
+      telemetryService.recordTelemetry(
+        NODE_ID,
+        telemetry({ devices: [device(CARD_A, [process(FIRST_KEY, 10)]), device(CARD_B, [])] })
+      );
+
+      expect(telemetryService.measuredUsage(NODE_ID, [first])).toEqual({ vramBytes: 10, ramBytes: null });
+    });
+
+    it('leaves VRAM blank for an instance on no cards', () => {
+      telemetryService.recordTelemetry(NODE_ID, telemetry({ host: host([resident(FIRST_KEY, 100)]) }));
+
+      expect(telemetryService.measuredUsage(NODE_ID, [{ instanceKey: FIRST_KEY, gpus: [] }])).toEqual({
+        vramBytes: null,
+        ramBytes: 100,
+      });
+    });
+  });
+
   it('answers with the last reading a node sent', () => {
     telemetryService.recordTelemetry(NODE_ID, telemetry());
 

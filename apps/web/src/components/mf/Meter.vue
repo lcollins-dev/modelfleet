@@ -16,7 +16,7 @@
         :key="`${index}-${band.label}`"
         :class="METER_TONE_CLASSES[band.tone]"
         :style="{ width: `${band.percent * scale}%` }"
-        :title="band.value === undefined ? band.label : `${band.label} · ${band.value}`"
+        :title="bandTitle(band)"
       />
 
       <div
@@ -34,10 +34,14 @@
         v-for="(band, index) of props.bands"
         :key="`${index}-${band.label}`"
         class="flex min-w-0 items-center gap-1.5 text-xs text-muted"
+        :class="{ 'cursor-help': band.hoverNote !== undefined }"
+        :title="band.hoverNote"
       >
         <span class="size-2 shrink-0 rounded-xs" :class="METER_TONE_CLASSES[band.tone]" />
 
-        <span class="truncate">{{ band.label }}</span>
+        <span class="truncate" :class="{ [HINT_UNDERLINE_CLASSES]: band.hoverNote !== undefined }">{{
+          band.label
+        }}</span>
 
         <span v-if="band.value" class="whitespace-nowrap font-mono text-highlight">{{ band.value }}</span>
       </span>
@@ -56,6 +60,8 @@
 <script setup lang="ts">
 import { PropType, computed } from 'vue';
 
+import { HINT_UNDERLINE_CLASSES } from '@/components/ui';
+
 import { METER_OVERFLOW_CLASS, METER_TONE_CLASSES, MeterTone } from './meterTone';
 
 /** `percent` is of the whole bar, so bands totalling under 100 leave the track showing. */
@@ -64,6 +70,7 @@ export interface IMeterBand {
   tone: MeterTone;
   percent: number;
   value?: string;
+  hoverNote?: string;
 }
 
 const props = defineProps({
@@ -96,4 +103,7 @@ const totalPercent = computed(() => props.bands.reduce((sum, band) => sum + band
 const overflowing = computed(() => props.overflowValue !== null && totalPercent.value > 100);
 
 const scale = computed(() => (overflowing.value ? 100 / totalPercent.value : 1));
+
+const bandTitle = (band: IMeterBand): string =>
+  [band.label, band.value, band.hoverNote].filter(part => part !== undefined).join(' · ');
 </script>

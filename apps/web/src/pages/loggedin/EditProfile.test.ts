@@ -6,7 +6,7 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 import { PASSWORD_MISMATCH } from '@/utils/password';
 
 import { useErrorStore } from '@/stores/error';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import EditProfile from './EditProfile.vue';
@@ -66,7 +66,7 @@ describe('Profile and security page', () => {
     await flushPromises();
 
     expect(updateProfile).toHaveBeenCalledWith({ name: 'Ada W', email: 'ada@modelfleet.test' }, 'profile');
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Profile updated');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Profile updated');
 
     wrapper.unmount();
   });
@@ -85,7 +85,7 @@ describe('Profile and security page', () => {
       'password'
     );
     expect(wrapper.get<HTMLInputElement>('input[name="new-password"]').element.value).toBe('');
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Password changed');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Password changed');
 
     wrapper.unmount();
   });

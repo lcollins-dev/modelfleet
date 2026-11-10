@@ -39,6 +39,7 @@ const download = (id: number, state: DownloadState): DownloadDto => ({
       nodeId: 1,
       nodeName: 'rig-01',
       nodeState: NodeState.ONLINE,
+      modelDirectory: '/models',
       state: state === DownloadState.ACTIVE ? DownloadTargetState.ACTIVE : DownloadTargetState.SUCCEEDED,
       progress: null,
       message: null,

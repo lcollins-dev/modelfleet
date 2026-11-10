@@ -6,7 +6,7 @@ export const OUTPUT_LINE_CAP = 5000;
 
 const OWN_REFUSAL_STATUSES = [400, 404, 409, 502];
 
-const STOCK_REFUSAL = 'The output could not be read. Try again in a moment.';
+const STOCK_REFUSAL = 'Could not load output. Try again in a moment.';
 
 export interface IOutputLine {
   id: number;

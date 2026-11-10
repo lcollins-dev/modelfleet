@@ -8,9 +8,10 @@ import { Download } from './download.entity';
 /** One node's share of a download. Only the outcome is kept; progress lives with the node's session. */
 @Entity()
 export class DownloadTarget {
-  constructor(fields: { downloadId: number; nodeId: number }) {
+  constructor(fields: { downloadId: number; nodeId: number; modelDirectory: string | null }) {
     this.downloadId = fields.downloadId;
     this.nodeId = fields.nodeId;
+    this.modelDirectory = fields.modelDirectory;
     this.state = DownloadTargetState.ACTIVE;
     this.attempt = 0;
     this.message = null;
@@ -33,6 +34,10 @@ export class DownloadTarget {
   @ManyToOne(() => Node, { onDelete: 'CASCADE', nullable: false })
   @JoinColumn({ name: 'nodeId' })
   node?: Relation<Node>;
+
+  /** As the node reports it. Null reads as the node's first, which is what a create naming none asked for. */
+  @Column({ type: 'varchar', length: 1024, nullable: true })
+  modelDirectory: string | null;
 
   @Column({ type: 'varchar', length: 16 })
   state: DownloadTargetState;

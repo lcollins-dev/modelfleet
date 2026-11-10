@@ -70,6 +70,15 @@ describe('DeploymentActionsService', () => {
       expect(instanceService.bringUp).toHaveBeenCalledWith(deployment.id, expect.objectContaining({ reason }));
     });
 
+    it('records settings changes as the reason for replacement launches', async () => {
+      await deploymentActionsService.start(deployment, [], 0, undefined, true);
+
+      expect(instanceService.bringUp).toHaveBeenCalledWith(
+        deployment.id,
+        expect.objectContaining({ reason: InstanceChangeReason.SETTINGS_CHANGED })
+      );
+    });
+
     it('refuses nothing where something started', async () => {
       await expect(deploymentActionsService.start(deployment, [], 0)).resolves.toBeNull();
     });
@@ -176,6 +185,42 @@ describe('DeploymentActionsService', () => {
         expect.any(Array),
         expect.objectContaining({ reason: InstanceChangeReason.DEPLOYMENT_DISABLED })
       );
+    });
+  });
+
+  describe('restarting', () => {
+    it('records the settings change when stopping for restart', async () => {
+      const instance = buildInstance();
+
+      await deploymentActionsService.stopForRestart(instance);
+
+      expect(instanceService.takeDown).toHaveBeenCalledWith(
+        [instance],
+        expect.objectContaining({
+          actorId: null,
+          reason: InstanceChangeReason.SETTINGS_CHANGED,
+          note: ' to restart it on the latest settings',
+        })
+      );
+    });
+
+    it('records capacity refusals during restart', async () => {
+      await deploymentActionsService.sayRestartRefused(deployment, 'gpu-box: Not enough GPU memory for 20.0 GiB');
+
+      expect(eventService.recordEvent).toHaveBeenCalledWith(
+        EventType.INSTANCE_START_REFUSED,
+        expect.anything(),
+        expect.objectContaining({
+          message: expect.stringContaining(deployment.name) as string,
+          detail: { name: deployment.name, problem: 'gpu-box: Not enough GPU memory for 20.0 GiB' },
+        })
+      );
+    });
+
+    it('continues when recording a refusal fails', async () => {
+      eventService.recordEvent.mockRejectedValue(new Error('down'));
+
+      await expect(deploymentActionsService.sayRestartRefused(deployment, 'problem')).resolves.toBeUndefined();
     });
   });
 });

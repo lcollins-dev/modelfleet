@@ -7,7 +7,7 @@
     <template #title>{{ indexLabel }} · {{ gpuName(props.device) }}</template>
 
     <template v-if="attribution !== null" #tags>
-      <ui-tag type="warning" :title="attribution.note">Unattributed</ui-tag>
+      <ui-tag type="warning" :hint="attribution.note">Unattributed</ui-tag>
     </template>
 
     <template #meta>

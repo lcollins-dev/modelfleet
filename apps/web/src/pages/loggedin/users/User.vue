@@ -82,7 +82,7 @@
           <ui-form-field
             v-slot="{ input }"
             label="Roles"
-            help="Each role opens part of the console to them. With none, they only call deployments."
+            help="Roles grant console access. Users without roles can only send requests to deployments."
             path="userRoleIds"
           >
             <div class="w-100 max-w-full">
@@ -231,7 +231,7 @@ import { useEventAdminService } from '@/services/api/admin/EventAdminService';
 import { useUserAdminService } from '@/services/api/admin/UserAdminService';
 import { useDialogStore } from '@/stores/dialog';
 import { useErrorStore } from '@/stores/error';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import { EventTableColumn, MfEventTable } from '@/components/mf';
@@ -273,7 +273,7 @@ const route = useRoute();
 
 const dialogStore = useDialogStore();
 const errorStore = useErrorStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const userStore = useUserStore();
 const adminUserService = useUserAdminService();
 const eventAdminService = useEventAdminService();
@@ -399,7 +399,7 @@ const doSaveProfile = () => {
     'profile',
     async () => {
       await adminUserService.updateUser(updateUserRequest, target.id, PROFILE_FORM);
-      notificationStore.addToast('Profile updated', `${updateUserRequest.name}'s details have been saved.`);
+      toastStore.addToast('Profile updated');
       await reloadUser();
       fillProfile();
     },
@@ -447,7 +447,7 @@ const doSetPassword = () => {
           await adminUserService.updateUser(updateUserRequest, target.id, PASSWORD_FORM);
           newPassword.value = '';
           confirmPassword.value = '';
-          notificationStore.addToast('Password set', `${target.name} signs in with the new password from now on.`);
+          toastStore.addToast('Password set');
         },
         'doSetPassword(): Failed to set the password'
       );
@@ -469,7 +469,7 @@ const doToggleEnabled = () => {
       'state',
       async () => {
         await adminUserService.updateState({ enabled: true }, target.id);
-        notificationStore.addToast('Account enabled', `${target.name} can sign in again.`);
+        toastStore.addToast('Account enabled');
         await reloadUser();
       },
       'doToggleEnabled(): Failed to enable the account'
@@ -487,7 +487,7 @@ const doToggleEnabled = () => {
     },
     async () => {
       await adminUserService.updateState({ enabled: false }, target.id);
-      notificationStore.addToast('Account disabled', `${target.name} has been signed out everywhere.`);
+      toastStore.addToast('Account disabled', 'Signed out on all devices.');
       await reloadUser();
     }
   );
@@ -505,12 +505,12 @@ const doSignOutEverywhere = () => {
     {
       type: DialogType.WARNING,
       title: `Sign ${target.name} out everywhere?`,
-      message: 'Every session they have ends. They can sign in again straight away.',
+      message: 'They will be signed out on all devices. They can sign in again immediately.',
       confirmLabel: 'Sign Out Everywhere',
     },
     async () => {
       await adminUserService.logoutAllSessions(target.id);
-      notificationStore.addToast('Signed out everywhere', `${target.name} has to sign in again.`);
+      toastStore.addToast('Signed out everywhere');
     }
   );
 };

@@ -25,13 +25,20 @@ export default {
       type: Boolean,
       default: false,
     },
+
+    muted: {
+      type: Boolean,
+      default: false,
+    },
   },
   setup(props, { slots }) {
     return () => {
       const styleProps = !props.unstyled
         ? {
-            class:
-              'inline-flex items-center gap-0.5 border-b border-divider text-header transition-colors hover:border-header',
+            class: [
+              'inline-flex items-center gap-0.5 border-b border-divider transition-colors hover:border-header',
+              props.muted ? 'text-muted hover:text-header' : 'text-header',
+            ],
           }
         : {};
 

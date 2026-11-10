@@ -3,11 +3,12 @@ import Docker from 'dockerode';
 import { pipeline, Readable } from 'node:stream';
 
 import { INSTANCE_LABEL } from '@libs/backends/runtime';
+import { Stall } from '@libs/runtime';
 
 import { ConfigService } from '../config/config.service';
 import { describeDockerError } from './api/errors';
 import { LogFrameReader, LogFrameStream } from './api/log-frames';
-import { containerInspectSchema, ContainerInspect, pullProgressSchema } from './api/responses';
+import { containerInspectSchema, ContainerInspect, PullProgress, pullProgressSchema } from './api/responses';
 import { DOCKER_CLIENT } from './docker.client';
 
 export interface IInstanceContainer {
@@ -164,37 +165,99 @@ export class ContainerService {
     }
   }
 
-  /** The daemon reports a failed layer in the progress stream rather than in the status. */
+  /**
+   * The daemon reports a failed layer in the progress stream rather than in the status. A pull that reports nothing
+   * new for the stall timeout is abandoned, however long it has run, so a slow pull carries on and a hung one fails.
+   */
   async pullImage(reference: string): Promise<void> {
-    const stream = await this.docker.pull(reference);
-    const progress = await this.drain(stream);
-    const failure = this.readPullFailure(progress);
+    const stall = new Stall(this.configService.imagePullStallTimeoutMs);
 
-    if (failure !== null) {
-      throw new Error(failure);
+    try {
+      const stream = await this.docker.pull(reference, { abortSignal: stall.signal });
+      const failure = await this.followPull(stream, stall.signal, () => stall.progressed());
+
+      if (failure !== null) {
+        throw new Error(failure);
+      }
+    } catch (error: unknown) {
+      if (stall.stalled) {
+        throw new Error(`The image pull made no progress for ${this.configService.imagePullStallTimeout}`);
+      }
+
+      throw error;
+    } finally {
+      stall.stop();
     }
   }
 
-  private drain(stream: NodeJS.ReadableStream): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      const chunks: string[] = [];
+  /** Resolves with the last failure the stream reported, or null where it reported none. */
+  private followPull(
+    stream: NodeJS.ReadableStream,
+    signal: AbortSignal,
+    onProgress: () => void
+  ): Promise<string | null> {
+    return new Promise<string | null>((resolve, reject) => {
+      const latest = new Map<string, string>();
+      let partial = '';
+      let failure: string | null = null;
 
-      stream.on('data', (chunk: Buffer) => chunks.push(chunk.toString('utf8')));
-      stream.on('end', () => resolve(chunks.join('')));
+      const read = (line: string): void => {
+        const parsed = pullProgressSchema.safeParse(this.readJson(line));
+
+        if (!parsed.success) {
+          return;
+        }
+
+        failure = parsed.data.error ?? failure;
+
+        if (this.advances(parsed.data, latest)) {
+          onProgress();
+        }
+      };
+
+      const abandon = (): void => reject(new Error('The image pull was abandoned'));
+
+      if (signal.aborted) {
+        abandon();
+
+        return;
+      }
+
+      signal.addEventListener('abort', abandon, { once: true });
+
+      stream.setEncoding('utf8');
+      stream.on('data', (chunk: string) => {
+        const lines = (partial + chunk).split('\n');
+
+        partial = lines.pop() ?? '';
+        lines.forEach(read);
+      });
+      stream.on('end', () => {
+        read(partial);
+        resolve(failure);
+      });
       stream.on('error', reject);
+
+      // A stream cut off without an end or an error reports only a close.
+      stream.on('close', () => reject(new Error('The Docker daemon closed the image pull before it finished')));
     });
   }
 
-  private readPullFailure(progress: string): string | null {
-    for (const line of progress.split('\n').reverse()) {
-      const parsed = pullProgressSchema.safeParse(this.readJson(line));
+  /**
+   * A daemon may keep repeating a stalled layer's last figures rather than going quiet, so only a line that changes
+   * its layer's status or byte count is progress.
+   */
+  private advances(progress: PullProgress, latest: Map<string, string>): boolean {
+    const layer = progress.id ?? '';
+    const reading = `${progress.status ?? ''} ${progress.progressDetail?.current ?? ''}`;
 
-      if (parsed.success && parsed.data.error !== undefined) {
-        return parsed.data.error;
-      }
+    if (latest.get(layer) === reading) {
+      return false;
     }
 
-    return null;
+    latest.set(layer, reading);
+
+    return true;
   }
 
   private readJson(line: string): unknown {

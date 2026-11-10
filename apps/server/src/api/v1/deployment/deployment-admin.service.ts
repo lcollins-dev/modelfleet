@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
 import {
-  ApplyDeploymentsResponseDto,
   CreateDeploymentRequestDto,
   CreateDeploymentResponseDto,
   DeploymentDto,
@@ -12,6 +11,7 @@ import {
   OutOfDateDeploymentsResponseDto,
   PresetSwapRequestDto,
   PresetSwapResponseDto,
+  RestartDeploymentsResponseDto,
   UpdateDeploymentRequestDto,
 } from '@libs/dto';
 
@@ -19,6 +19,7 @@ import { Deployment } from '@/core/deployment/entities/deployment.entity';
 
 import { ConfigService } from '@/config/config.service';
 import { DeploymentService } from '@/core/deployment/deployment.service';
+import { InstanceService } from '@/core/instance/instance.service';
 
 import { getIModelLicence } from '../model/model-description';
 
@@ -26,7 +27,8 @@ import { getIModelLicence } from '../model/model-description';
 export class DeploymentAdminService {
   constructor(
     private readonly configService: ConfigService,
-    private readonly deploymentService: DeploymentService
+    private readonly deploymentService: DeploymentService,
+    private readonly instanceService: InstanceService
   ) {}
 
   async getDeploymentList(
@@ -79,15 +81,15 @@ export class DeploymentAdminService {
   }
 
   async getOutOfDateDeployments(): Promise<OutOfDateDeploymentsResponseDto> {
-    return { outOfDate: await this.deploymentService.countOutOfDate() };
+    return { outOfDate: await this.instanceService.countDeploymentsOnOlderSettings() };
   }
 
-  applyDeployment(deploymentId: number, actorId: number): Promise<void> {
-    return this.deploymentService.apply(deploymentId, actorId);
+  async restartDeployment(deploymentId: number, actorId: number): Promise<void> {
+    await this.instanceService.requestRestart(deploymentId, actorId);
   }
 
-  async applyDeployments(actorId: number): Promise<ApplyDeploymentsResponseDto> {
-    return { applied: await this.deploymentService.applyAll(actorId) };
+  restartDeployments(actorId: number): Promise<RestartDeploymentsResponseDto> {
+    return this.instanceService.requestRestartAll(actorId);
   }
 
   async previewPresetSwap(
@@ -159,7 +161,6 @@ export class DeploymentAdminService {
       backend: this.deploymentService.getBackend(deployment),
       activationPolicy: deployment.activationPolicy,
       enabled: deployment.enabled,
-      outOfDate: this.deploymentService.isOutOfDate(deployment),
       createdDate: deployment.createdDate,
     };
   }

@@ -78,6 +78,7 @@ const verdict = (nodeId: number, nodeName: string, overrides: Partial<PlacementN
     hostResidentBytes: 0,
     hostCacheBytes: 0,
   },
+  measured: null,
   capacity: { expectedBytes: 20 * GIB, availableBytes: 23 * GIB, hostFreeBytes: null, cards: [], hostWeights: null },
   evictions: [],
   ...overrides,
@@ -165,7 +166,7 @@ describe('MfPlacementField', () => {
 
     expect(memory.text()).toBe('VRAM 20 / 13 GiB free');
     expect(memory.classes()).toContain('text-error');
-    expect(memory.attributes('title')).toBe('Estimated');
+    expect(memory.get('[title]').attributes('title')).toBe('Estimated');
     expect(refused.text()).not.toContain('Not enough GPU memory');
   });
 

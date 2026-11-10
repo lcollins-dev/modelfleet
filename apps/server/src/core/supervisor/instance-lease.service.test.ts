@@ -208,4 +208,48 @@ describe('InstanceLeaseService', () => {
 
     expect(instanceLeaseService.startingOnLiveNode(instanceOf(1, InstanceState.STARTING))).toBe(false);
   });
+
+  describe('watching for a restart', () => {
+    const leased = async (instance: Instance) => {
+      const lease = await instanceLeaseService.lease(DEPLOYMENT_ID, [instance]);
+
+      if (lease === null) {
+        throw new Error('Expected a lease');
+      }
+
+      return lease;
+    };
+
+    it('emits a change when a watched instance finishes its last request', async () => {
+      const instance = instanceOf(1);
+      const announced = vi.fn();
+
+      instanceLeaseService.drainedChanges().subscribe(announced);
+      instanceLeaseService.watchForRestart(DEPLOYMENT_ID, [instance]);
+
+      const first = await leased(instance);
+      const second = await leased(instance);
+
+      first.release();
+
+      expect(announced).not.toHaveBeenCalled();
+
+      second.release();
+
+      expect(announced).toHaveBeenCalledExactlyOnceWith(DEPLOYMENT_ID);
+    });
+
+    it('emits no change for unwatched instances', async () => {
+      const instance = instanceOf(1);
+      const announced = vi.fn();
+
+      instanceLeaseService.drainedChanges().subscribe(announced);
+      instanceLeaseService.watchForRestart(DEPLOYMENT_ID, [instance]);
+      instanceLeaseService.watchForRestart(DEPLOYMENT_ID, []);
+
+      (await leased(instance)).release();
+
+      expect(announced).not.toHaveBeenCalled();
+    });
+  });
 });

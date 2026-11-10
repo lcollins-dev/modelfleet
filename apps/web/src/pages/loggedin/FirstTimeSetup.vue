@@ -4,7 +4,7 @@
       <ui-form-heading title="Set up your account" subtitle="Choose the email and password you'll sign in with." />
 
       <ui-notice class="mb-6" type="warning" title="Set your own password to continue">
-        This account's password was given to you rather than chosen, so others may know it.
+        Your current password may be known to others. Choose a new password to secure your account.
       </ui-notice>
 
       <ui-form-field
@@ -64,7 +64,7 @@ import { PASSWORD_HELP, PASSWORD_MISMATCH } from '@/utils/password';
 
 import { useLogService } from '@/services/LogService';
 import { useUserService } from '@/services/api/UserService';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import { UiButton, UiCard, UiForm, UiFormField, UiFormHeading, UiInput, UiNotice } from '@/components/ui';
@@ -78,7 +78,7 @@ const logger = logService.createLogger('pages/loggedin/FirstTimeSetup');
 
 const router = useRouter();
 
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const userStore = useUserStore();
 const userService = useUserService();
 
@@ -118,7 +118,7 @@ const finishSetup = async () => {
   setupForm.confirmPassword = '';
 
   await router.push(HOME_PATH);
-  notificationStore.addToast('Account set up', 'Sign in with your new email and password from now on.');
+  toastStore.addToast('Account set up', 'Use your new email and password next time you sign in.');
 };
 
 const doFinishSetup = () => {

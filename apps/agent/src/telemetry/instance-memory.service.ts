@@ -12,10 +12,12 @@ export interface IHeldMemoryReading {
 
 interface IProcessMemory {
   heldBytes: number;
+  sharedBytes: number;
   residentBytes: number;
 }
 
 const BYTES_PER_KIB = 1024;
+const UNKNOWN_MEMORY = { heldBytes: null, sharedBytes: null, residentBytes: null };
 
 /** Reads `status`, the one procfs file whose cost does not scale with the size of a mapping. */
 @Injectable()
@@ -49,27 +51,26 @@ export class InstanceMemoryService {
   }
 
   /** Null where no process could be read or one refused, so the sums would read short. */
-  private async memoryOfProcesses(
-    pids: readonly number[]
-  ): Promise<{ heldBytes: number | null; residentBytes: number | null }> {
+  private async memoryOfProcesses(pids: readonly number[]): Promise<IProcessMemory | typeof UNKNOWN_MEMORY> {
     const figures = await Promise.all(pids.map(pid => this.memoryOf(pid)));
-    const total: IProcessMemory = { heldBytes: 0, residentBytes: 0 };
+    const total: IProcessMemory = { heldBytes: 0, sharedBytes: 0, residentBytes: 0 };
 
     let read = 0;
 
     for (const figure of figures) {
       if (figure === null) {
-        return { heldBytes: null, residentBytes: null };
+        return UNKNOWN_MEMORY;
       }
 
       if (figure !== undefined) {
         total.heldBytes += figure.heldBytes;
+        total.sharedBytes += figure.sharedBytes;
         total.residentBytes += figure.residentBytes;
         read += 1;
       }
     }
 
-    return read === 0 ? { heldBytes: null, residentBytes: null } : total;
+    return read === 0 ? UNKNOWN_MEMORY : total;
   }
 
   /**
@@ -90,12 +91,15 @@ export class InstanceMemoryService {
     const fileBackedBytes = this.statusBytes(status, 'RssFile');
     const anonymousBytes = this.statusBytes(status, 'RssAnon');
 
-    if (fileBackedBytes !== null && anonymousBytes !== null) {
-      return { heldBytes: fileBackedBytes, residentBytes: fileBackedBytes + anonymousBytes };
+    // CUDA pinned host buffers come from the nvidia driver and show here, in neither of the other two.
+    const sharedBytes = this.statusBytes(status, 'RssShmem');
+
+    if (fileBackedBytes !== null && anonymousBytes !== null && sharedBytes !== null) {
+      return { heldBytes: fileBackedBytes, sharedBytes, residentBytes: fileBackedBytes + anonymousBytes + sharedBytes };
     }
 
-    // A zombie has no memory lines at all and holds nothing. A process with VmRSS and either line missing is unreadable.
-    return /^VmRSS:/m.test(status) ? null : { heldBytes: 0, residentBytes: 0 };
+    // A zombie has no memory lines at all and holds nothing. A process with VmRSS and any line missing is unreadable.
+    return /^VmRSS:/m.test(status) ? null : { heldBytes: 0, sharedBytes: 0, residentBytes: 0 };
   }
 
   private statusBytes(status: string, field: string): number | null {

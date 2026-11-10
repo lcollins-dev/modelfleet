@@ -30,8 +30,6 @@ export const ListDeploymentDto = z.object({
 
   enabled: z.boolean(),
 
-  outOfDate: z.boolean(),
-
   createdDate: timestamp(),
 });
 export type ListDeploymentDto = z.infer<typeof ListDeploymentDto>;

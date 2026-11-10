@@ -202,6 +202,7 @@ describe('Instance admin routes (integration)', () => {
             hostResidentBytes: 0,
             hostCacheBytes: 8192 * 1024 * 1024,
           },
+          measured: null,
           capacity: expect.objectContaining({ cards: [expect.objectContaining({ deviceKey: DEVICE_KEY })] }),
           evictions: [],
         },
@@ -226,7 +227,7 @@ describe('Instance admin routes (integration)', () => {
 
     const response = await getDeploymentInstances(app, adminToken, placed.deploymentId).expect(200);
 
-    expect(response.body.placement.nodes[0].problem).toContain('does not hold');
+    expect(response.body.placement.nodes[0].problem).toContain('is not stored on this node');
   });
 
   it('passes over a node the placement cannot proceed with, creating nothing', async () => {
@@ -235,7 +236,7 @@ describe('Instance admin routes (integration)', () => {
     const response = await startDeployment(app, adminToken, placed.deploymentId).expect(201);
 
     expect(response.body.started).toBe(0);
-    expect(response.body.refused[0].problem).toContain('does not hold');
+    expect(response.body.refused[0].problem).toContain('is not stored on this node');
   });
 
   it('gives every node the placement names an instance of its own', async () => {

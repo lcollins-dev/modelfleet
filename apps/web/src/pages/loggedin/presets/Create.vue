@@ -33,7 +33,7 @@ import { DocumentEdits, applyToDocument } from '@/utils/yaml';
 
 import { useLogService } from '@/services/LogService';
 import { usePresetAdminService } from '@/services/api/admin/PresetAdminService';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import { MfPresetForm } from '@/components/mf';
 import { UiButton, UiPageContainer, UiPageHeading } from '@/components/ui';
@@ -62,7 +62,7 @@ const logger = logService.createLogger('pages/loggedin/presets/Create');
 const router = useRouter();
 const { goBack } = useGoBack();
 
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const presetAdminService = usePresetAdminService();
 
 const form = reactive<ICreatePresetForm>({
@@ -100,7 +100,7 @@ const doCreatePreset = () => {
   presetAdminService
     .createPreset(createPresetRequest)
     .then(created => {
-      notificationStore.addToast('Preset created', 'You can pick it for any deployment.');
+      toastStore.addToast('Preset created');
 
       router.push(`/presets/${created.id}`).catch((error: unknown) => {
         logger.error({ error }, 'doCreatePreset(): Failed to navigate to preset');

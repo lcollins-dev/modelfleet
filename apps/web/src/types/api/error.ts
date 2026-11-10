@@ -19,7 +19,7 @@ export class ApiErrorBase {
 
   public static readonly TOO_MANY_REQUESTS = new ApiErrorBase(
     ApiErrorType.TOO_MANY_REQUESTS,
-    "You've done that too often in a short time. Wait a moment and try again."
+    'Too many requests. Wait a moment and try again.'
   );
 
   public static readonly TIMEOUT = new ApiErrorBase(ApiErrorType.TIMEOUT, 'That took too long. Try again in a moment.');
@@ -43,7 +43,7 @@ export class ApiErrorBase {
 
   public static readonly UNKNOWN = new ApiErrorBase(
     ApiErrorType.UNKNOWN,
-    "We couldn't finish that. Try again in a moment."
+    'Something went wrong. Try again in a moment.'
   );
 }
 

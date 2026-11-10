@@ -2,38 +2,27 @@ import { type APIRequestContext, expect, type Locator, type Page, test } from '@
 import { resolve } from 'node:path';
 
 import { SignInPage } from '../pages/SignInPage';
-import { webRoute } from '../utils/urls';
+import { SERVER_URL, webRoute } from '../utils/urls';
 import { TEST_USER } from '../utils/users';
+import { FAKE_GPU, FakeAgent } from './fake-agent';
 
 const OUT_DIR = resolve(__dirname, '../../resources/screenshots');
 
 // Outlasts the 150 ms colour transitions on the selected tab and hovered rows.
 const SETTLE_MS = 500;
 
-// A 4B GGUF loads in well under a minute; the rest covers a cold disk.
-const INSTANCE_READY_MS = 5 * 60_000;
-// A GPU launch Docker refuses never fails outright: the scheduler backs off, so the fallback waits only this long.
-const GPU_ATTEMPT_MS = 60_000;
+// A new deployment waits for the residency batch job, which runs every 30 seconds by default.
+const INSTANCE_READY_MS = 90_000;
+const NODE_REPORT_MS = 30_000;
 
-// What a 4B GGUF takes on a 32 GiB card, shown where the instance ran on the CPU.
-const FAKE_HOST = {
-  cpu: 'AMD EPYC 9124 16-Core Processor',
-  owner: 'gemma-3-4b',
-  modelDirectory: '/var/lib/modelfleet/models',
-};
-const FAKE_PLACEMENT = { vram: '3.4 GiB / 28.4 GiB free', ram: '8.2 GiB / 9.9 GiB free' };
+// Half a second past the reading, so it reads 0s old and an uptime reported in whole seconds lands mid-second.
+const CLOCK_LEAD_MS = 500;
 
 interface IFleetTelemetry {
   nodes: {
     nodeId: number;
-    status: { telemetryState: string | null; devices: { deviceKey: string; name: string | null }[] };
+    status: { receivedAt: string | null; devices: { deviceKey: string }[] };
   }[];
-}
-
-interface IPinnedGpu {
-  nodeId: number;
-  deviceKey: string;
-  name: string;
 }
 
 interface IModelList {
@@ -43,8 +32,6 @@ interface IModelList {
 interface IDeploymentInstances {
   instances: { state: string }[];
 }
-
-type SettledState = 'ready' | 'failed';
 
 const DEPLOYMENT = {
   name: 'gemma-3-4b',
@@ -60,37 +47,40 @@ const authorization = async (page: Page): Promise<Record<string, string>> => {
   return { Authorization: `Bearer ${token ?? ''}` };
 };
 
-// A node reconnecting after the database was cleaned reports its GPU and models a few seconds in.
-const NODE_REPORT_MS = 60_000;
+const fleetTelemetry = async (
+  request: APIRequestContext,
+  headers: Record<string, string>
+): Promise<IFleetTelemetry['nodes']> => {
+  const response = await request.get('/api/v1/admin/telemetry', { headers });
 
-const firstGpu = async (request: APIRequestContext, headers: Record<string, string>): Promise<IPinnedGpu> => {
-  let gpu: IPinnedGpu | undefined;
+  return ((await response.json()) as IFleetTelemetry).nodes;
+};
+
+const fakeNodeId = async (request: APIRequestContext, headers: Record<string, string>): Promise<number> => {
+  let nodeId: number | undefined;
 
   await expect
     .poll(
       async () => {
-        const response = await request.get('/api/v1/admin/telemetry', { headers });
-        const { nodes } = (await response.json()) as IFleetTelemetry;
-        // An offline node still lists the GPUs it last reported.
-        const node = nodes.find(entry => entry.status.telemetryState !== null && entry.status.devices.length > 0);
-        const device = node?.status.devices[0];
+        const nodes = await fleetTelemetry(request, headers);
 
-        gpu =
-          node === undefined || device === undefined
-            ? undefined
-            : { nodeId: node.nodeId, deviceKey: device.deviceKey, name: device.name ?? device.deviceKey };
+        nodeId = nodes.find(
+          node =>
+            node.status.receivedAt !== null &&
+            node.status.devices.some(device => device.deviceKey === FAKE_GPU.deviceKey)
+        )?.nodeId;
 
-        return gpu;
+        return nodeId;
       },
-      { message: 'a node reporting a GPU', timeout: NODE_REPORT_MS }
+      { message: 'the fake agent reporting its GPU', timeout: NODE_REPORT_MS }
     )
     .toBeDefined();
 
-  if (gpu === undefined) {
-    throw new Error('No node reports a GPU');
+  if (nodeId === undefined) {
+    throw new Error('The fake agent reports no GPU');
   }
 
-  return gpu;
+  return nodeId;
 };
 
 const gemmaModelId = async (request: APIRequestContext, headers: Record<string, string>): Promise<number> => {
@@ -129,10 +119,8 @@ const deleteStaleDeployment = async (request: APIRequestContext, headers: Record
   }
 };
 
-const gpuPlacement = (gpu: IPinnedGpu): string =>
-  `contextSize: 8192\nplacement:\n  gpus:\n    - nodeId: ${gpu.nodeId}\n      deviceKey: ${gpu.deviceKey}\n`;
-
-const cpuPlacement = (nodeId: number): string => `contextSize: 8192\nplacement:\n  nodeIds:\n    - ${nodeId}\n`;
+const gpuPlacement = (nodeId: number): string =>
+  `contextSize: 8192\nplacement:\n  gpus:\n    - nodeId: ${nodeId}\n      deviceKey: ${FAKE_GPU.deviceKey}\n`;
 
 const createDeployment = async (
   request: APIRequestContext,
@@ -161,30 +149,21 @@ const instanceStates = async (
   return instances.map(instance => instance.state);
 };
 
-/** Undefined where the deployment neither readied nor failed in time. */
-const settledState = async (
+const waitForReady = async (
   request: APIRequestContext,
   headers: Record<string, string>,
-  deploymentId: number,
-  waitMs: number
-): Promise<SettledState | undefined> => {
-  const deadline = Date.now() + waitMs;
+  deploymentId: number
+): Promise<void> => {
+  await expect
+    .poll(
+      async () => {
+        const states = await instanceStates(request, headers, deploymentId);
 
-  while (Date.now() < deadline) {
-    const states = await instanceStates(request, headers, deploymentId);
-
-    if (states.includes('failed')) {
-      return 'failed';
-    }
-
-    if (states.length > 0 && states.every(state => state === 'ready')) {
-      return 'ready';
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 2_000));
-  }
-
-  return undefined;
+        return states.length > 0 && states.every(state => state === 'ready');
+      },
+      { message: 'the deployment ready', timeout: INSTANCE_READY_MS }
+    )
+    .toBe(true);
 };
 
 const deleteDeployment = async (
@@ -197,110 +176,40 @@ const deleteDeployment = async (
   expect(response.status()).toBe(200);
 };
 
-// Docker on a dev host may have no GPU, so a CPU run is rewritten to read as the GPU run a real install shows.
-const disguiseCpuAsGpu = async (page: Page, gpu: IPinnedGpu): Promise<void> => {
-  await page.evaluate(
-    ({ name, placement, host }) => {
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      const textNodes: Text[] = [];
+/**
+ * Has the fake report afresh and fixes the browser's clock just after the server received it, so the last heartbeat,
+ * the reading's age and the instance's uptime come out the same on every run.
+ */
+const fixClock = async (
+  page: Page,
+  request: APIRequestContext,
+  headers: Record<string, string>,
+  agent: FakeAgent,
+  nodeId: number
+): Promise<void> => {
+  const sinceMs = Date.now();
+  let receivedMs: number | undefined;
 
-      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-        textNodes.push(node as Text);
-      }
+  agent.report();
 
-      for (const node of textNodes) {
-        const text = node.textContent;
+  await expect
+    .poll(
+      async () => {
+        const node = (await fleetTelemetry(request, headers)).find(entry => entry.nodeId === nodeId);
+        const receivedAt = node?.status.receivedAt;
 
-        if (text.includes('(CPU)')) {
-          node.textContent = text.replace('(CPU)', `(${name})`);
-        } else if (text.trim() === 'CPU' && node.parentElement?.closest('[data-testid="instance-row"]') !== null) {
-          node.textContent = name;
-        }
-      }
+        receivedMs = receivedAt === null || receivedAt === undefined ? undefined : new Date(receivedAt).getTime();
 
-      for (const kpi of document.querySelectorAll('[data-testid="host-kpis"] span')) {
-        if (kpi.children.length === 0 && kpi.textContent.includes('Processor')) {
-          kpi.textContent = host.cpu;
-        } else if (kpi.children.length === 0 && kpi.textContent.endsWith('/models')) {
-          kpi.textContent = host.modelDirectory;
-        }
-      }
+        return receivedMs !== undefined && receivedMs >= sinceMs;
+      },
+      { message: 'a fresh reading from the fake agent', timeout: NODE_REPORT_MS, intervals: [100] }
+    )
+    .toBe(true);
 
-      for (const legend of document.querySelectorAll('[data-testid="gpus-card"] [data-testid="meter-legend"]')) {
-        const bar = legend.previousElementSibling;
-        const items = [...legend.children];
-        const segments = [...(bar?.querySelectorAll<HTMLElement>(':scope > *') ?? [])];
-        let ownerIndex = -1;
-        let ownedPercent = 0;
-
-        items.forEach((item, index) => {
-          const label = item.querySelector('.truncate');
-
-          if (label === null || label.textContent === 'Headroom') {
-            return;
-          }
-
-          ownedPercent += Number.parseFloat(segments.at(index)?.style.width ?? '0');
-
-          if (ownerIndex === -1) {
-            ownerIndex = index;
-            label.textContent = host.owner;
-          } else {
-            item.remove();
-            segments.at(index)?.remove();
-          }
-        });
-
-        if (ownerIndex === -1) {
-          continue;
-        }
-
-        const ownerSegment = segments.at(ownerIndex);
-        const ownerValue = items.at(ownerIndex)?.querySelector('.font-mono');
-        const used = bar?.previousElementSibling?.firstElementChild?.textContent.split(' of ').at(0);
-
-        if (ownerSegment !== undefined) {
-          ownerSegment.style.width = `${ownedPercent}%`;
-        }
-
-        if (ownerValue !== null && ownerValue !== undefined && used !== undefined) {
-          ownerValue.textContent = used;
-        }
-      }
-
-      for (const row of document.querySelectorAll('[data-testid="placement-row"]')) {
-        const status = row.querySelector('[data-testid="placement-status"]');
-
-        if (status === null || status.textContent.trim() !== 'CPU only') {
-          continue;
-        }
-
-        const vram = row.querySelector('[data-testid="placement-vram"]');
-        const ram = row.querySelector('[data-testid="placement-ram"]');
-
-        if (vram !== null) {
-          vram.textContent = placement.vram;
-        }
-
-        if (ram !== null) {
-          ram.textContent = placement.ram;
-        }
-
-        status.textContent = 'Fits';
-        status.classList.replace('bg-emphasis', 'bg-success-soft');
-        status.classList.replace('text-highlight', 'text-success');
-      }
-    },
-    {
-      name: gpu.name,
-      placement: FAKE_PLACEMENT,
-      host: FAKE_HOST,
-    }
-  );
+  await page.clock.setFixedTime((receivedMs ?? sinceMs) + CLOCK_LEAD_MS);
 };
 
-const shoot = async (page: Page, name: string, gpu: IPinnedGpu): Promise<void> => {
-  await disguiseCpuAsGpu(page, gpu);
+const shoot = async (page: Page, name: string): Promise<void> => {
   await page.mouse.move(0, 0);
   await page.waitForTimeout(SETTLE_MS);
   await page.screenshot({ path: `${OUT_DIR}/${name}.png` });
@@ -313,45 +222,50 @@ const open = async (page: Page, path: string, rows: Locator): Promise<void> => {
 };
 
 test('README screenshots', async ({ page, request }) => {
-  test.setTimeout(GPU_ATTEMPT_MS + INSTANCE_READY_MS + 3 * NODE_REPORT_MS + 60_000);
+  test.setTimeout(INSTANCE_READY_MS + 6 * NODE_REPORT_MS + 60_000);
 
   await page.addInitScript(() => localStorage.setItem('isDarkMode', 'true'));
   await new SignInPage(page).signIn({ email: 'alex@example.com', password: TEST_USER.password });
 
   const headers = await authorization(page);
-  const gpu = await firstGpu(request, headers);
-  const modelId = await gemmaModelId(request, headers);
-  await deleteStaleDeployment(request, headers);
-  let deploymentId = await createDeployment(request, headers, modelId, gpuPlacement(gpu));
+  const agent = new FakeAgent();
+  let deploymentId: number | undefined;
 
   try {
-    let state = await settledState(request, headers, deploymentId, GPU_ATTEMPT_MS);
+    await agent.start(SERVER_URL);
 
-    if (state !== 'ready') {
-      await deleteDeployment(request, headers, deploymentId);
-      deploymentId = await createDeployment(request, headers, modelId, cpuPlacement(gpu.nodeId));
-      state = await settledState(request, headers, deploymentId, INSTANCE_READY_MS);
-    }
+    const nodeId = await fakeNodeId(request, headers);
+    const modelId = await gemmaModelId(request, headers);
+    await deleteStaleDeployment(request, headers);
+    deploymentId = await createDeployment(request, headers, modelId, gpuPlacement(nodeId));
+    await waitForReady(request, headers, deploymentId);
 
-    expect(state).toBe('ready');
-
+    await fixClock(page, request, headers, agent, nodeId);
     await open(page, '/dashboard', page.getByTestId('fleet-deployment-row'));
-    await shoot(page, 'dashboard', gpu);
+    await shoot(page, 'dashboard');
 
-    await open(page, `/nodes/${gpu.nodeId}`, page.getByTestId('instance-row'));
-    // The node reports a new instance's memory a few seconds after it becomes ready.
-    await expect(page.getByTestId('host-kpis')).toContainText(DEPLOYMENT.name, { timeout: NODE_REPORT_MS });
+    await fixClock(page, request, headers, agent, nodeId);
+    await open(page, `/nodes/${nodeId}`, page.getByTestId('instance-row'));
+    await expect(page.getByTestId('host-kpis')).toContainText(DEPLOYMENT.name);
     await page.getByRole('heading', { level: 1 }).evaluate(title => {
       window.scrollTo(0, title.getBoundingClientRect().top + window.scrollY - 72);
     });
-    await shoot(page, 'node', gpu);
+    await shoot(page, 'node');
 
+    await fixClock(page, request, headers, agent, nodeId);
     await open(page, `/deployments/${deploymentId}`, page.getByTestId('instance-row'));
-    await shoot(page, 'deployment', gpu);
+    // Placement shows the expected use and what is free until it holds the node's readings of the instance.
+    await expect(page.getByTestId('placement-row')).not.toContainText('free');
+    await shoot(page, 'deployment');
 
+    await fixClock(page, request, headers, agent, nodeId);
     await open(page, '/models', page.getByTestId('model-row'));
-    await shoot(page, 'models', gpu);
+    await shoot(page, 'models');
   } finally {
-    await deleteDeployment(request, headers, deploymentId);
+    if (deploymentId !== undefined) {
+      await deleteDeployment(request, headers, deploymentId);
+    }
+
+    await agent.stop();
   }
 });

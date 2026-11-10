@@ -32,7 +32,7 @@ describe('MfTelemetryTag', () => {
     await nextTick();
 
     expect(wrapper.text()).toBe('Telemetry live · 3s');
-    expect(wrapper.get('span span').classes()).toContain('text-success');
+    expect(wrapper.classes()).toContain('text-success');
   });
 
   it('reports a disconnected stream as stale', async () => {
@@ -43,6 +43,6 @@ describe('MfTelemetryTag', () => {
     await nextTick();
 
     expect(wrapper.text()).toBe('Telemetry stale · 41s old');
-    expect(wrapper.get('span span').classes()).toContain('text-warning');
+    expect(wrapper.classes()).toContain('text-warning');
   });
 });

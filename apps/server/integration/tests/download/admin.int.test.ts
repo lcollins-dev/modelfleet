@@ -122,6 +122,34 @@ describe('Downloads (integration)', () => {
       expect((response.body as DownloadDto).directory).toBe('gguf/public');
     });
 
+    it('lets one file land at the same path in two model directories on a node, but not twice in one', async () => {
+      const nodeId = await register();
+
+      for (const path of ['/models', '/bulk']) {
+        const response = await createDownload(app, adminToken, {
+          repository: FAKE_HUB_PUBLIC,
+          directory: 'gguf/directories',
+          files: ['model.gguf'],
+          nodeIds: [nodeId],
+          modelDirectories: [{ nodeId, path }],
+        }).expect(201);
+
+        expect((response.body as DownloadDto).targets[0].modelDirectory).toBe(path);
+      }
+
+      const response = await createDownload(app, adminToken, {
+        repository: FAKE_HUB_PUBLIC,
+        directory: 'gguf/directories',
+        files: ['model.gguf'],
+        nodeIds: [nodeId],
+        modelDirectories: [{ nodeId, path: '/bulk' }],
+      }).expect(400);
+
+      expect(response.body.message).toMatch(
+        /^Another download is already writing gguf\/directories\/model\.gguf on rig-/
+      );
+    });
+
     it('refuses a second download landing a file at the same place on a node', async () => {
       const nodeId = await register();
 
@@ -143,13 +171,17 @@ describe('Downloads (integration)', () => {
     });
 
     it.each([
-      [FAKE_HUB_GATED, ['config.json'], `${FAKE_HUB_GATED} is gated, and cannot be downloaded without a token`],
+      [FAKE_HUB_GATED, ['config.json'], `${FAKE_HUB_GATED} requires an access token to download`],
       [
         'owner/private',
         ['config.json'],
-        'owner/private does not exist, or is private and cannot be reached without a token',
+        'This repository does not exist or is private. Private repositories require an access token.',
       ],
-      [FAKE_HUB_PUBLIC, ['missing.gguf', 'Q4_K_M'], `${FAKE_HUB_PUBLIC} holds no file missing.gguf, Q4_K_M at`],
+      [
+        FAKE_HUB_PUBLIC,
+        ['missing.gguf', 'Q4_K_M'],
+        `Files not found in ${FAKE_HUB_PUBLIC} at revision ${FAKE_HUB_COMMIT}: missing.gguf, Q4_K_M`,
+      ],
     ])('refuses %s with the reason the Hub gives, writing nothing', async (repository, files, reason) => {
       const nodeId = await register();
 
@@ -227,8 +259,12 @@ describe('Downloads (integration)', () => {
     });
 
     it.each([
-      ['owner/private', 'main', 'owner/private does not exist, or is private and cannot be reached without a token'],
-      [FAKE_HUB_PUBLIC, 'nope', `${FAKE_HUB_PUBLIC} has no revision nope`],
+      [
+        'owner/private',
+        'main',
+        'This repository does not exist or is private. Private repositories require an access token.',
+      ],
+      [FAKE_HUB_PUBLIC, 'nope', `Revision nope was not found in this repository.`],
     ])('answers the Hub refusing %s at %s with the reason', async (repository, revision, reason) => {
       const response = await getRepositoryListing(app, adminToken, { repository, revision }).expect(400);
 

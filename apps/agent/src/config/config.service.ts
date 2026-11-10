@@ -72,6 +72,15 @@ export class ConfigService {
     return this.env.DOCKER_SOCKET_PATH;
   }
 
+  /** As the operator wrote it, for a message that names it. */
+  get imagePullStallTimeout() {
+    return this.env.IMAGE_PULL_STALL_TIMEOUT;
+  }
+
+  get imagePullStallTimeoutMs() {
+    return ms(this.env.IMAGE_PULL_STALL_TIMEOUT);
+  }
+
   // Instances
   get instanceNetwork() {
     return this.env.INSTANCE_NETWORK;

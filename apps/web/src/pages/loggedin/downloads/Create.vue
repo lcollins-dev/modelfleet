@@ -48,11 +48,11 @@
             class="mb-3 flex flex-col gap-3"
           >
             <ui-notice v-if="listing.truncated" type="warning">
-              This repo holds more files than can be listed, so only {{ listing.files.length }} of them are shown.
+              Showing the first {{ listing.files.length }} files in this repository.
             </ui-notice>
 
             <ui-notice v-if="overFileLimit" type="warning">
-              A download names at most {{ listing.maxFilesPerDownload }} files. Untick some, or start more than one.
+              Select up to {{ listing.maxFilesPerDownload }} files per download.
             </ui-notice>
 
             <ui-field-error v-if="filesError" data-testid="field-error">{{ filesError }}</ui-field-error>
@@ -70,9 +70,15 @@
             data-testid="download-files"
           >
             <template v-if="listingError !== null" #status>
-              <div class="p-4">
-                <ui-notice type="error" title="The files could not be listed">{{ listingError }}</ui-notice>
-              </div>
+              <ui-result
+                class="px-4 py-6"
+                :icon="IconError"
+                type="error"
+                title="Could not load files"
+                data-testid="download-listing-error"
+              >
+                {{ listingError }}
+              </ui-result>
             </template>
 
             <template #summary>
@@ -85,7 +91,11 @@
         </ui-form-section>
 
         <ui-form-section title="Destination" subtitle="Which nodes get a copy, and where it goes.">
-          <ui-form-field label="Nodes" help="Each node downloads its own copy." path="nodeIds">
+          <ui-form-field
+            label="Nodes"
+            help="Each node downloads its own copy. Choose a model directory for nodes with multiple directories."
+            path="nodeIds"
+          >
             <ui-checklist
               v-model:selected="selectedNodes"
               label="Nodes"
@@ -100,6 +110,7 @@
 
               <template #aside="{ item }">
                 <span
+                  v-if="!choosesDirectory(item.value)"
                   class="flex items-center gap-1.5 whitespace-nowrap font-mono text-xs"
                   :class="spaceOf(item.value).warns ? 'text-warning' : 'text-muted'"
                 >
@@ -107,13 +118,48 @@
                   {{ spaceOf(item.value).text }}
                 </span>
               </template>
+
+              <template #nested="{ item }">
+                <div
+                  v-if="choosesDirectory(item.value)"
+                  role="radiogroup"
+                  :aria-label="`Model directory on ${item.label}`"
+                  class="[&>*+*]:border-t [&>*+*]:border-divider"
+                  data-testid="download-model-directories"
+                >
+                  <div
+                    v-for="modelDirectory of directoriesOf(item.value)"
+                    :key="modelDirectory.path"
+                    class="flex items-center gap-3 py-1.5 pl-10 pr-4"
+                    data-testid="download-model-directory"
+                  >
+                    <ui-radio
+                      :selected="chosenDirectoryOf(item.value)?.path ?? null"
+                      :name="`model-directory-${item.value}`"
+                      :value="modelDirectory.path"
+                      class="min-w-0 flex-1"
+                      @update:selected="path => chooseDirectory(item.value, path)"
+                    >
+                      <mf-download-file-path :path="modelDirectory.path" />
+                    </ui-radio>
+
+                    <span
+                      class="flex items-center gap-1.5 whitespace-nowrap font-mono text-xs"
+                      :class="directorySpaceOf(modelDirectory).warns ? 'text-warning' : 'text-muted'"
+                    >
+                      <icon-warning v-if="directorySpaceOf(modelDirectory).warns" class="size-4" />
+                      {{ directorySpaceOf(modelDirectory).text }}
+                    </span>
+                  </div>
+                </div>
+              </template>
             </ui-checklist>
           </ui-form-field>
 
           <ui-form-field
             v-slot="{ input }"
             label="Folder"
-            help="Relative to each node's first model directory."
+            help="Folder within the model directory on each node."
             path="directory"
           >
             <ui-input
@@ -144,11 +190,14 @@
 import { useDebounceFn } from '@vueuse/core';
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import IconError from '~icons/material-symbols/error-outline-rounded';
 import IconWarning from '~icons/material-symbols/warning-outline-rounded';
 
 import type {
+  DownloadModelDirectoryRequestDto,
   FleetTelemetryResponseDto,
   ListNodeDto,
+  ModelDirectorySpaceDto,
   NodeHostTelemetryDto,
   RepositoryListingResponseDto,
 } from '@libs/dto';
@@ -162,6 +211,7 @@ import {
   IDownloadSpace,
   defaultDownloadDirectory,
   describeDownloadSpace,
+  downloadModelDirectory,
   parseRepositoryAddress,
   selectedBytes,
 } from '@/utils/download';
@@ -173,8 +223,9 @@ import { useDownloadAdminService } from '@/services/api/admin/DownloadAdminServi
 import { useNodeAdminService } from '@/services/api/admin/NodeAdminService';
 import { useTelemetryAdminService } from '@/services/api/admin/TelemetryAdminService';
 import { useErrorStore } from '@/stores/error';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
+import { MfDownloadFilePath } from '@/components/mf';
 import {
   IChecklistItem,
   UiButton,
@@ -188,6 +239,8 @@ import {
   UiNotice,
   UiPageContainer,
   UiPageHeading,
+  UiRadio,
+  UiResult,
 } from '@/components/ui';
 
 import { useGoBack } from '@/composables/useGoBack';
@@ -214,7 +267,7 @@ const downloadAdminService = useDownloadAdminService();
 const nodeAdminService = useNodeAdminService();
 const telemetryAdminService = useTelemetryAdminService();
 const errorStore = useErrorStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 
 const repository = ref('');
 const revision = ref('');
@@ -229,6 +282,9 @@ const selectedPaths = ref<string[]>([]);
 const directory = ref('');
 const directoryEdited = ref(false);
 const selectedNodes = ref<string[]>([]);
+
+/** By node id. A node with none chosen, or whose choice it no longer reports, takes its first. */
+const chosenDirectories = ref(new Map<number, string>());
 
 const nodes = ref<ListNodeDto[]>([]);
 const hosts = ref(new Map<number, NodeHostTelemetryDto | null>());
@@ -276,13 +332,49 @@ const nodeSummary = computed(() =>
   selectedNodes.value.length === 0 ? 'None selected' : `${selectedNodes.value.length} of ${nodes.value.length} selected`
 );
 
-const spaceOf = (nodeValue: string): IDownloadSpace => {
-  const node = nodes.value.find(candidate => `${candidate.id}` === nodeValue);
+const nodeOf = (nodeValue: string): ListNodeDto | undefined =>
+  nodes.value.find(candidate => `${candidate.id}` === nodeValue);
 
-  return node?.state === NodeState.ONLINE
-    ? describeDownloadSpace(hosts.value.get(node.id) ?? null, totalBytes.value)
-    : { warns: false, text: 'Offline' };
+const chosenDirectoryOf = (nodeValue: string): ModelDirectorySpaceDto | undefined => {
+  const node = nodeOf(nodeValue);
+
+  return node === undefined
+    ? undefined
+    : downloadModelDirectory(hosts.value.get(node.id) ?? null, chosenDirectories.value.get(node.id));
 };
+
+/** Only an online node's, since an offline node's last report may no longer hold. */
+const directoriesOf = (nodeValue: string): ModelDirectorySpaceDto[] => {
+  const node = nodeOf(nodeValue);
+
+  return node?.state === NodeState.ONLINE ? (hosts.value.get(node.id)?.modelDirectories ?? []) : [];
+};
+
+const choosesDirectory = (nodeValue: string): boolean =>
+  selectedNodes.value.includes(nodeValue) && directoriesOf(nodeValue).length > 1;
+
+/** The radios offer no clear, so they never send null. */
+const chooseDirectory = (nodeValue: string, path: string | null) => {
+  if (path !== null) {
+    chosenDirectories.value = new Map(chosenDirectories.value).set(parseInt(nodeValue, 10), path);
+  }
+};
+
+const directorySpaceOf = (directory: ModelDirectorySpaceDto): IDownloadSpace =>
+  describeDownloadSpace(directory, totalBytes.value);
+
+const spaceOf = (nodeValue: string): IDownloadSpace =>
+  nodeOf(nodeValue)?.state === NodeState.ONLINE
+    ? describeDownloadSpace(chosenDirectoryOf(nodeValue), totalBytes.value)
+    : { warns: false, text: 'Offline' };
+
+/** Every ticked node the console knows a directory for, so the download's page can name it. */
+const modelDirectoryChoices = (): DownloadModelDirectoryRequestDto[] =>
+  selectedNodes.value.flatMap(nodeValue => {
+    const directory = nodeOf(nodeValue)?.state === NodeState.ONLINE ? chosenDirectoryOf(nodeValue) : undefined;
+
+    return directory === undefined ? [] : [{ nodeId: parseInt(nodeValue, 10), path: directory.path }];
+  });
 
 /** A reply is kept only while its key is current, and a request already sent for the current key is not sent again. */
 const keyOf = (requestedRepository: string, requestedRevision: string): string =>
@@ -425,11 +517,12 @@ const doCreateDownload = () => {
         directory: directory.value.trim(),
         files: listed.files.filter(file => selectedPaths.value.includes(file.path)).map(file => file.path),
         nodeIds: selectedNodes.value.map(nodeValue => parseInt(nodeValue, 10)),
+        modelDirectories: modelDirectoryChoices(),
       },
       FORM_NAME
     )
     .then(() => {
-      notificationStore.addToast('Download started', 'Each selected node downloads its own copy.');
+      toastStore.addToast('Download started');
 
       return router.push('/downloads');
     })

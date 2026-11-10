@@ -92,7 +92,7 @@ describe('InstanceOutputAdminService', () => {
       const refusal = watch();
 
       await expect(refusal).rejects.toBeInstanceOf(ConflictException);
-      await expect(refusal).rejects.toThrow('not connected');
+      await expect(refusal).rejects.toThrow('disconnected');
       expect(relayClientService.logs).not.toHaveBeenCalled();
     });
 
@@ -102,7 +102,7 @@ describe('InstanceOutputAdminService', () => {
       const refusal = watch();
 
       await expect(refusal).rejects.toBeInstanceOf(NotFoundException);
-      await expect(refusal).rejects.toThrow('no container');
+      await expect(refusal).rejects.toThrow('container for this instance was not found');
     });
 
     it('refuses as a bad gateway where the relay answers with anything else', async () => {

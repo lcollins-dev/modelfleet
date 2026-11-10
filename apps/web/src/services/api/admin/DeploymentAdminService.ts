@@ -157,9 +157,9 @@ export const useDeploymentAdminService = () => {
     notificationStore.clearTimedOutNotifications();
   }
 
-  async function applyDeployment(deploymentId: number, form: string | null = null): Promise<void> {
+  async function restartDeployment(deploymentId: number, form: string | null = null): Promise<void> {
     await apiService
-      .makeRequest(`admin/deployment/${deploymentId}/apply`, RequestType.POST, {
+      .makeRequest(`admin/deployment/${deploymentId}/restart`, RequestType.POST, {
         token: userStore.token,
         form,
       })
@@ -178,6 +178,6 @@ export const useDeploymentAdminService = () => {
     updateDeployment,
     updateDeploymentState,
     deleteDeployment,
-    applyDeployment,
+    restartDeployment,
   };
 };

@@ -7,7 +7,7 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 import type { EventDto } from '@libs/dto';
 import { EventPartyType, EventSeverity, EventType, NodeState } from '@libs/dto';
 
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Register from './Register.vue';
 
@@ -129,7 +129,7 @@ describe('Register node page', () => {
     await flushPromises();
 
     expect(router.currentRoute.value.path).toBe('/nodes');
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Node registered');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Node registered');
 
     wrapper.unmount();
 

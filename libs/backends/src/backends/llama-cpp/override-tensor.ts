@@ -20,7 +20,12 @@ const LOOKUP_TABLES: ReadonlySet<string> = new Set([
   'position_embd.weight',
   'token_types.weight',
   'per_layer_token_embd.weight',
+  'value_embd.weight',
+  'mask_embd.weight',
 ]);
+
+/** Also in llama.cpp's input layer, but read whole rather than by row. */
+const HELD_INPUT_TENSORS: ReadonlySet<string> = new Set(['masked_embd_centroids.weight', 'masked_embd_ordering']);
 
 const TOKEN_TABLE = 'token_embd.weight';
 
@@ -110,7 +115,7 @@ function isLazy(tensor: IModelTensor, architecture: string | null, values: IConf
 }
 
 function defaultBuffer(name: string): string | undefined {
-  return LOOKUP_TABLES.has(name) ? HOST_BUFFER : undefined;
+  return LOOKUP_TABLES.has(name) || HELD_INPUT_TENSORS.has(name) ? HOST_BUFFER : undefined;
 }
 
 /** One override stands in for the N `--n-cpu-moe` patterns, which sit together and share a buffer. */
@@ -169,6 +174,11 @@ function parseOverride(entry: string): ITensorOverride | null {
   } catch {
     return null;
   }
+}
+
+/** Whether llama.cpp computes experts on the CPU, which needs a compute buffer there. */
+export function expertsOnCpu(values: IConfiguredValues): boolean {
+  return values.boolean(LlamaCppField.CPU_MOE) === true || (values.number(LlamaCppField.CPU_MOE_LAYERS) ?? 0) > 0;
 }
 
 /** `--cpu-moe` and `--n-cpu-moe` are tensor overrides too, and any override turns off fit and pipelining. */

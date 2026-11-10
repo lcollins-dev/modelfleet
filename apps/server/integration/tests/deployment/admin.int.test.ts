@@ -1,7 +1,7 @@
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { ModelType } from '@libs/agent-protocol';
 import { BackendId } from '@libs/backends';
@@ -15,19 +15,16 @@ import {
 } from '@libs/dto';
 
 import {
-  applyDeployment,
-  applyDeployments,
   createDeployment,
   deleteDeployment,
   getDeployment,
   getDeploymentConfiguration,
   getDeploymentList,
-  getOutOfDateDeployments,
   previewPresetSwap,
   updateDeployment,
 } from '../../clients/deployment.client';
 import { deleteModel, updateModel } from '../../clients/model.client';
-import { createPreset, updatePreset } from '../../clients/preset.client';
+import { createPreset } from '../../clients/preset.client';
 import { login } from '../../clients/user.client';
 import { createTestUser } from '../../factories/user.factory';
 import { bootstrapApp } from '../../setup';
@@ -422,134 +419,6 @@ describe('Deployment admin routes (integration)', () => {
 
       await deleteDeployment(app, adminToken, deploymentId).expect(200);
       await deleteModel(app, adminToken, projectorId).expect(200);
-    });
-  });
-
-  describe('out of date and apply', () => {
-    let outOfDatePresetId: number;
-    let outOfDateModelId: number;
-
-    const edit = (deploymentId: number, document: string, name: string = uniqueName()) =>
-      updateDeployment(app, adminToken, deploymentId, {
-        name,
-        modelId: outOfDateModelId,
-        presetId: outOfDatePresetId,
-        backend: null,
-        activationPolicy: ActivationPolicy.ALWAYS,
-        description: '',
-        document,
-      });
-
-    const createFrom = (document: string, name: string = uniqueName()): Promise<number> =>
-      create({ name, modelId: outOfDateModelId, presetId: outOfDatePresetId, document });
-
-    const isOutOfDate = async (deploymentId: number): Promise<boolean> => {
-      const response = await getDeployment(app, adminToken, deploymentId).expect(200);
-
-      return response.body.outOfDate;
-    };
-
-    const countOutOfDate = async (): Promise<number> => {
-      const response = await getOutOfDateDeployments(app, adminToken).expect(200);
-
-      return response.body.outOfDate;
-    };
-
-    beforeEach(async () => {
-      outOfDateModelId = await insertModel();
-
-      const preset = await createPreset(app, adminToken, {
-        name: `preset-${randomUUID()}`,
-        backend: BackendId.LLAMA_CPP,
-        document: PRESET_DOCUMENT,
-      }).expect(201);
-
-      outOfDatePresetId = preset.body.id;
-    });
-
-    it('reads a newly created deployment as up to date', async () => {
-      await expect(isOutOfDate(await createFrom(OVERRIDE_DOCUMENT))).resolves.toBe(false);
-    });
-
-    it('marks a deployment out of date when an edit moves a relaunch-required field', async () => {
-      const deploymentId = await createFrom(OVERRIDE_DOCUMENT);
-
-      await edit(deploymentId, 'threads: 4\n').expect(200);
-
-      await expect(isOutOfDate(deploymentId)).resolves.toBe(true);
-    });
-
-    it('leaves a deployment up to date when an edit moves a hot field alone', async () => {
-      const deploymentId = await createFrom(OVERRIDE_DOCUMENT);
-
-      await edit(deploymentId, 'threads: 8\nreplicas: 4\n').expect(200);
-
-      await expect(isOutOfDate(deploymentId)).resolves.toBe(false);
-    });
-
-    it('marks the deployment inheriting a preset field it changed, and leaves the one overriding it alone', async () => {
-      const inheriting = await createFrom('threads: 8\n');
-      const overriding = await createFrom("threads: 8\nflashAttn: 'on'\n");
-
-      await updatePreset(app, adminToken, outOfDatePresetId, {
-        name: `preset-${randomUUID()}`,
-        description: '',
-        document: `${PRESET_DOCUMENT}flashAttn: 'off'\n`,
-      }).expect(200);
-
-      await expect(isOutOfDate(inheriting)).resolves.toBe(true);
-      await expect(isOutOfDate(overriding)).resolves.toBe(false);
-    });
-
-    it('leaves every deployment alone when a preset edit moves a hot field alone', async () => {
-      const deploymentId = await createFrom(OVERRIDE_DOCUMENT);
-
-      await updatePreset(app, adminToken, outOfDatePresetId, {
-        name: `preset-${randomUUID()}`,
-        description: '',
-        document: `${PRESET_DOCUMENT}replicas: 4\n`,
-      }).expect(200);
-
-      await expect(isOutOfDate(deploymentId)).resolves.toBe(false);
-    });
-
-    it('brings a deployment back up to date on apply', async () => {
-      const deploymentId = await createFrom(OVERRIDE_DOCUMENT);
-      await edit(deploymentId, 'threads: 4\n').expect(200);
-
-      await applyDeployment(app, adminToken, deploymentId).expect(201);
-
-      await expect(isOutOfDate(deploymentId)).resolves.toBe(false);
-    });
-
-    it('counts the out-of-date deployments fleet-wide', async () => {
-      const before = await countOutOfDate();
-      const deploymentId = await createFrom(OVERRIDE_DOCUMENT);
-
-      await edit(deploymentId, 'threads: 4\n').expect(200);
-
-      await expect(countOutOfDate()).resolves.toBe(before + 1);
-    });
-
-    it('applies every out-of-date deployment across the fleet', async () => {
-      const deploymentId = await createFrom(OVERRIDE_DOCUMENT);
-      await edit(deploymentId, 'threads: 4\n').expect(200);
-
-      const response = await applyDeployments(app, adminToken).expect(201);
-
-      expect(response.body.applied).toBeGreaterThanOrEqual(1);
-      await expect(countOutOfDate()).resolves.toBe(0);
-    });
-
-    it('flags an out-of-date deployment in the list', async () => {
-      const name = uniqueName();
-      const deploymentId = await createFrom(OVERRIDE_DOCUMENT, name);
-
-      await edit(deploymentId, 'threads: 4\n', name).expect(200);
-
-      const list = await getDeploymentList(app, adminToken, { search: name }).expect(200);
-
-      expect(list.body.deploymentList[0].outOfDate).toBe(true);
     });
   });
 

@@ -41,7 +41,11 @@ const fitReport = (overrides: Partial<IFitReport> = {}): IFitReport => ({
 
 describe('InstanceAdmissionService', () => {
   let expectedUsageService: { expectedFor: ReturnType<typeof vi.fn> };
-  let vramLedgerService: { check: ReturnType<typeof vi.fn>; admit: ReturnType<typeof vi.fn> };
+  let vramLedgerService: {
+    check: ReturnType<typeof vi.fn>;
+    checkReleasing: ReturnType<typeof vi.fn>;
+    admit: ReturnType<typeof vi.fn>;
+  };
   let instanceAdmissionService: InstanceAdmissionService;
 
   beforeEach(() => {
@@ -58,6 +62,7 @@ describe('InstanceAdmissionService', () => {
     };
     vramLedgerService = {
       check: vi.fn().mockResolvedValue(fitReport()),
+      checkReleasing: vi.fn().mockResolvedValue(fitReport()),
       admit: vi.fn().mockResolvedValue(fitReport()),
     };
 
@@ -79,6 +84,43 @@ describe('InstanceAdmissionService', () => {
       ON_GPU.pins,
       { expectedBytes: 20 * GIB, hostBytes: 0, hostCacheBytes: 0, cardShares: null }
     );
+  });
+
+  describe("a deployment's own margin", () => {
+    const WITH_MARGIN = expect.objectContaining({ headroomBytes: GIB / 2 }) as unknown;
+
+    beforeEach(() => {
+      expectedUsageService.expectedFor.mockResolvedValue({
+        known: true,
+        bytes: 20 * GIB,
+        source: ExpectedUsageSource.ESTIMATED,
+        hostWeightsBytes: 0,
+        hostResidentBytes: 0,
+        hostCacheBytes: 0,
+        cardShares: null,
+        headroomBytes: GIB / 2,
+      });
+    });
+
+    it('reaches the ledger on a start', async () => {
+      await instanceAdmissionService.admit(buildDeployment(), ON_GPU, TEST_INSTANCE_KEY);
+
+      expect(vramLedgerService.admit).toHaveBeenCalledWith(
+        TEST_INSTANCE_KEY,
+        TEST_DEPLOYMENT_ID,
+        TEST_NODE_ID,
+        ON_GPU.pins,
+        WITH_MARGIN
+      );
+    });
+
+    it('reaches the ledger on an eviction plan', async () => {
+      await instanceAdmissionService.checkReleasing(buildDeployment(), ON_GPU, [TEST_INSTANCE_KEY]);
+
+      expect(vramLedgerService.checkReleasing).toHaveBeenCalledWith(TEST_NODE_ID, ON_GPU.pins, WITH_MARGIN, [
+        TEST_INSTANCE_KEY,
+      ]);
+    });
   });
 
   it('admits a CPU-only instance without asking the ledger or for an estimate', async () => {
@@ -183,6 +225,78 @@ describe('InstanceAdmissionService', () => {
     expect(admission.problem).toBe('Not enough VRAM and RAM for 25.0 GiB');
   });
 
+  describe('previewReleasing', () => {
+    it('counts memory released by the specified instances', async () => {
+      await instanceAdmissionService.previewReleasing(buildDeployment(), ON_GPU, [TEST_INSTANCE_KEY]);
+
+      expect(vramLedgerService.checkReleasing).toHaveBeenCalledWith(
+        TEST_NODE_ID,
+        ON_GPU.pins,
+        expect.objectContaining({ expectedBytes: 20 * GIB }),
+        [TEST_INSTANCE_KEY]
+      );
+    });
+
+    it('returns the capacity refusal from the ledger', async () => {
+      vramLedgerService.checkReleasing.mockResolvedValue(fitReport({ refusal: FitRefusal.TOO_LARGE }));
+
+      await expect(
+        instanceAdmissionService.previewReleasing(buildDeployment(), ON_GPU, [TEST_INSTANCE_KEY])
+      ).resolves.toMatchObject({ problem: 'Not enough GPU memory for 20.0 GiB' });
+    });
+
+    it('reports missing data needed to estimate memory usage', async () => {
+      expectedUsageService.expectedFor.mockResolvedValue({
+        known: false,
+        missing: [{ source: EstimateInputSource.CONFIGURATION, field: 'contextSize' }],
+      });
+
+      const admission = await instanceAdmissionService.previewReleasing(buildDeployment(), ON_GPU, [TEST_INSTANCE_KEY]);
+
+      expect(admission.problem).toContain('`contextSize`');
+      expect(vramLedgerService.checkReleasing).not.toHaveBeenCalled();
+    });
+
+    it('allows CPU-only placement', async () => {
+      await expect(
+        instanceAdmissionService.previewReleasing(buildDeployment(), ON_CPU, [TEST_INSTANCE_KEY])
+      ).resolves.toEqual({ problem: null });
+    });
+  });
+
+  describe('a launch that uses live free memory for placement', () => {
+    it('returns a loading refusal with capacity figures', async () => {
+      vramLedgerService.check.mockResolvedValue(fitReport({ refusal: FitRefusal.LOAD_IN_PROGRESS }));
+
+      await expect(instanceAdmissionService.preview(buildDeployment(), ON_GPU)).resolves.toMatchObject({
+        problem: expect.stringContaining('Waiting for another model') as string,
+        capacity: { refusal: FitRefusal.LOAD_IN_PROGRESS },
+      });
+    });
+
+    it('passes the sizing restrictions to the ledger', async () => {
+      expectedUsageService.expectedFor.mockResolvedValue({
+        known: true,
+        bytes: 20 * GIB,
+        source: ExpectedUsageSource.ESTIMATED,
+        hostWeightsBytes: 0,
+        hostResidentBytes: 0,
+        hostCacheBytes: 0,
+        cardShares: null,
+        balancedOnFreeMemory: true,
+        headroomBytes: GIB / 2,
+      });
+
+      await instanceAdmissionService.preview(buildDeployment(), ON_GPU);
+
+      expect(vramLedgerService.check).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ balancedOnFreeMemory: true, headroomBytes: GIB / 2 })
+      );
+    });
+  });
+
   describe('a launch without RAM offloading', () => {
     const REASON = 'Tensor mode requires the whole model in VRAM';
     const heldCard = { ...fitReport().cards[0], neededBytes: 15 * GIB };
@@ -231,7 +345,7 @@ describe('InstanceAdmissionService', () => {
 
       await expect(instanceAdmissionService.admit(buildDeployment(), ON_GPU, TEST_INSTANCE_KEY)).resolves.toMatchObject(
         {
-          problem: 'Not enough RAM for up to 8.0 GiB of prompt cache',
+          problem: 'Not enough RAM for up to 8.0 GiB of prompt cache and checkpoints',
         }
       );
     });
@@ -273,8 +387,12 @@ describe('InstanceAdmissionService', () => {
   });
 
   it.each([
-    ['weights and cache', 38 * GIB, 'Not enough RAM for 30.0 GiB of model weights and up to 8.0 GiB of prompt cache'],
-    ['a cache alone', 8 * GIB, 'Not enough RAM for up to 8.0 GiB of prompt cache'],
+    [
+      'weights and cache',
+      38 * GIB,
+      'Not enough RAM for 30.0 GiB of model weights and up to 8.0 GiB of prompt cache and checkpoints',
+    ],
+    ['a cache alone', 8 * GIB, 'Not enough RAM for up to 8.0 GiB of prompt cache and checkpoints'],
   ])('names %s apart in a host-memory refusal, whatever is free', async (_, neededBytes, problem) => {
     for (const freeBytes of [GIB, 2 * GIB]) {
       vramLedgerService.admit.mockResolvedValue(

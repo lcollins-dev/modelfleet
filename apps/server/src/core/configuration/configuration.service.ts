@@ -22,8 +22,9 @@ import { fieldRefusal, toValidationErrors } from '@/common/validation-errors';
 const PLACEMENT_KEY = 'placement';
 
 const PINS_REFUSAL_MESSAGES: Record<PinsRefusal, string> = {
-  [PinsRefusal.SEVERAL_DEVICES]: 'Pins several GPUs on one node, and this backend runs on a single GPU.',
-  [PinsRefusal.CPU_BESIDE_DEVICES]: "Pins a node's CPU beside its GPUs, and this backend cannot offload to RAM.",
+  [PinsRefusal.SEVERAL_DEVICES]: 'This backend supports only one GPU per node. Select a single GPU.',
+  [PinsRefusal.CPU_BESIDE_DEVICES]:
+    'This backend does not support CPU and GPU offloading. Select either the CPU or the GPUs on each node.',
 };
 
 interface IConfigurationIssue {

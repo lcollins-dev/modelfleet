@@ -38,6 +38,7 @@ export class Instance {
     this.exitCode = null;
     this.reportedDate = null;
     this.readyDate = null;
+    this.restartRequestedDate = null;
   }
 
   @PrimaryGeneratedColumn({ type: 'int4' })
@@ -90,6 +91,9 @@ export class Instance {
   /** When the node first reported the instance ready, which its deployment's idleness is counted from. */
   @Column({ type: 'timestamp', nullable: true })
   readyDate: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  restartRequestedDate: Date | null;
 
   @CreateDateColumn({ type: 'timestamp' })
   createdDate!: Date;

@@ -8,9 +8,11 @@ import {
   MAX_DOWNLOAD_DIRECTORY_LENGTH,
   MAX_DOWNLOAD_PATH_LENGTH,
   MAX_FILES_PER_DOWNLOAD,
+  MAX_MODEL_PATH_LENGTH,
 } from '@libs/agent-protocol';
 import {
   DOWNLOAD_MAX_DIRECTORY_LENGTH,
+  DOWNLOAD_MAX_MODEL_DIRECTORY_LENGTH,
   DOWNLOAD_MAX_FILES,
   DOWNLOAD_MAX_PATH_LENGTH,
   DownloadFileState,
@@ -66,7 +68,7 @@ function buildDownload(states: DownloadTargetState[]): Download {
     }),
   ];
   download.targets = states.map((state, index) => {
-    const target = new DownloadTarget({ downloadId: 1, nodeId: index + 1 });
+    const target = new DownloadTarget({ downloadId: 1, nodeId: index + 1, modelDirectory: null });
 
     target.state = state;
     target.node = { id: index + 1, name: `gpu-0${index + 1}` } as Node;
@@ -175,7 +177,7 @@ describe('DownloadAdminService', () => {
 
   describe('createDownload', () => {
     it.each([undefined, '   '])(
-      'asks for main where the revision is %j, and trims what it is handed',
+      'asks for main where the revision is %j, trims what it is handed, and lands every node in its first directory',
       async revision => {
         await downloadAdminService.createDownload(
           { repository: ' owner/repo ', directory: ' gguf/qwen/ ', revision, files: ['model.gguf'], nodeIds: [1] },
@@ -183,7 +185,12 @@ describe('DownloadAdminService', () => {
         );
 
         expect(create).toHaveBeenCalledWith(
-          expect.objectContaining({ repository: 'owner/repo', directory: 'gguf/qwen', revision: 'main' }),
+          expect.objectContaining({
+            repository: 'owner/repo',
+            directory: 'gguf/qwen',
+            revision: 'main',
+            modelDirectories: [],
+          }),
           7
         );
       }
@@ -287,10 +294,16 @@ describe('DownloadAdminService', () => {
   });
 
   it('refuses a request by the same limits the agent protocol holds a download to', () => {
-    expect([DOWNLOAD_MAX_FILES, DOWNLOAD_MAX_PATH_LENGTH, DOWNLOAD_MAX_DIRECTORY_LENGTH]).toEqual([
+    expect([
+      DOWNLOAD_MAX_FILES,
+      DOWNLOAD_MAX_PATH_LENGTH,
+      DOWNLOAD_MAX_DIRECTORY_LENGTH,
+      DOWNLOAD_MAX_MODEL_DIRECTORY_LENGTH,
+    ]).toEqual([
       MAX_FILES_PER_DOWNLOAD,
       MAX_DOWNLOAD_PATH_LENGTH,
       MAX_DOWNLOAD_DIRECTORY_LENGTH,
+      MAX_MODEL_PATH_LENGTH,
     ]);
   });
 });

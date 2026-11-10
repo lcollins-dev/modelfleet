@@ -35,6 +35,8 @@ export class InstanceLeaseService {
    */
   private readonly claimed = new Set<number>();
 
+  private readonly restartWatches = new Map<number, Set<number>>();
+
   private readonly drained = new Subject<number>();
 
   constructor(
@@ -42,7 +44,7 @@ export class InstanceLeaseService {
     private readonly deploymentService: DeploymentService
   ) {}
 
-  /** The deployment of each instance the last request left while it was draining, so a stop waiting on it goes ahead. */
+  /** Emits a deployment ID when a draining or restart-watched instance finishes its last request. */
   drainedChanges(): Observable<number> {
     return this.drained.asObservable();
   }
@@ -160,6 +162,17 @@ export class InstanceLeaseService {
     }
   }
 
+  /** An empty list clears the watch for this deployment. */
+  watchForRestart(deploymentId: number, instances: Instance[]): void {
+    if (instances.length === 0) {
+      this.restartWatches.delete(deploymentId);
+
+      return;
+    }
+
+    this.restartWatches.set(deploymentId, new Set(instances.map(instance => instance.id)));
+  }
+
   /** Answers the release that drops the request, once however often it is called. */
   private carry(deploymentId: number, instanceId: number): () => void {
     this.inFlight.set(instanceId, this.inFlightFor(instanceId) + 1);
@@ -183,7 +196,7 @@ export class InstanceLeaseService {
 
       this.inFlight.delete(instanceId);
 
-      if (this.draining.has(instanceId)) {
+      if (this.draining.has(instanceId) || this.restartWatches.get(deploymentId)?.has(instanceId) === true) {
         this.drained.next(deploymentId);
       }
     };

@@ -56,6 +56,10 @@ export const DownloadTargetDto = z.object({
   nodeId: z.number(),
   nodeName: z.string(),
   nodeState: z.enum(NodeState),
+
+  /** Null where the download named none, which the node reads as its first. */
+  modelDirectory: z.string().nullable(),
+
   state: z.enum(DownloadTargetState),
 
   progress: z.enum(DownloadProgressState).nullable(),
@@ -80,7 +84,7 @@ export const DownloadDto = z.object({
   source: z.enum(DownloadSource),
   repository: z.string(),
 
-  /** Relative to each node's first model directory. */
+  /** Relative to each node's model directory. */
   directory: z.string(),
 
   revision: z.string(),

@@ -12,7 +12,7 @@
 <script setup lang="ts">
 import { PropType, computed } from 'vue';
 
-import type { GpuTelemetryDto } from '@libs/dto';
+import type { GpuProcessDto, GpuTelemetryDto } from '@libs/dto';
 
 import { formatBytes } from '@/utils/format/number';
 import { pooledCapacity, processLabel, vramUsage } from '@/utils/gpu';
@@ -67,7 +67,11 @@ const usedLabel = computed(() => {
 
 const freeLabel = computed(() => (props.legend && measured.value ? `${formatBytes(freeBytes.value)} free` : undefined));
 
-const heldBy = computed(() => props.devices.flatMap(device => device.processes));
+const heldBy = computed(() =>
+  props.devices
+    .filter(device => device.memoryUsedBytes !== null && device.memoryTotalBytes !== null)
+    .flatMap(device => device.processes)
+);
 
 const percentOf = (bytes: number): number => (measured.value ? (bytes / usage.value.totalBytes) * 100 : 0);
 
@@ -78,27 +82,62 @@ const bandOf = (label: string, tone: MeterTone, bytes: number): IMeterBand => ({
   percent: percentOf(bytes),
 });
 
-const processBands = computed<IMeterBand[]>(() => {
-  const own = new Map<string, number>();
-  const external = new Map<string, number>();
+const foldByLabel = (
+  processes: GpuProcessDto[],
+  labelOf: (process: GpuProcessDto) => string
+): Map<string, number | null> => {
+  const held = new Map<string, number | null>();
 
-  for (const process of heldBy.value) {
-    if (process.usedBytes !== null) {
-      const held = process.instanceKey === null ? external : own;
-      const label = process.deploymentName ?? processLabel(process);
+  for (const process of processes) {
+    const label = labelOf(process);
+    const heldBytes = held.get(label) ?? null;
 
-      held.set(label, (held.get(label) ?? 0) + process.usedBytes);
-    }
+    held.set(label, process.usedBytes === null ? heldBytes : (heldBytes ?? 0) + process.usedBytes);
   }
 
-  const attributedBytes = [...own.values(), ...external.values()].reduce((sum, bytes) => sum + bytes, 0);
-  const otherBytes = Math.max(0, usage.value.usedBytes - attributedBytes);
+  return held;
+};
 
-  const bands = [...own, ...external].map(([label, bytes], index) =>
-    bandOf(label, PROCESS_METER_TONES[index % PROCESS_METER_TONES.length], bytes)
+const deployments = computed(() =>
+  foldByLabel(
+    heldBy.value.filter(process => process.instanceKey !== null),
+    process => process.deploymentName ?? processLabel(process)
+  )
+);
+
+const outsideProcessList = computed(() => {
+  const outside = foldByLabel(
+    heldBy.value.filter(process => process.instanceKey === null),
+    processLabel
   );
 
-  return otherBytes > 0 ? [...bands, bandOf('Other', 'muted', otherBytes)] : bands;
+  if (outside.size === 0) {
+    return undefined;
+  }
+
+  return [...outside]
+    .sort(([, leftBytes], [, rightBytes]) => (rightBytes ?? -1) - (leftBytes ?? -1))
+    .map(([label, bytes]) => `${label} ${bytes === null ? 'unknown' : formatBytes(bytes)}`)
+    .join(', ');
+});
+
+const deploymentBand = (label: string, bytes: number | null, index: number): IMeterBand => {
+  const tone = PROCESS_METER_TONES[index % PROCESS_METER_TONES.length];
+
+  return bytes === null ? { label, tone, value: 'Unknown', percent: 0 } : bandOf(label, tone, bytes);
+};
+
+const processBands = computed<IMeterBand[]>(() => {
+  const deploymentBytes = [...deployments.value.values()].reduce<number>((sum, bytes) => sum + (bytes ?? 0), 0);
+  const otherBytes = Math.max(0, usage.value.usedBytes - deploymentBytes);
+
+  const bands = [...deployments.value].map(([label, bytes], index) => deploymentBand(label, bytes, index));
+
+  if (otherBytes === 0 && outsideProcessList.value === undefined) {
+    return bands;
+  }
+
+  return [...bands, { ...bandOf('Other', 'muted', otherBytes), hoverNote: outsideProcessList.value }];
 });
 
 const headroomBand = computed<IMeterBand[]>(() =>

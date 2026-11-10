@@ -9,7 +9,9 @@
       <ui-tag :type="downloadStateTone(props.download.state)">{{ formatDownloadState(props.download.state) }}</ui-tag>
     </div>
 
-    <span class="font-mono text-xs" :title="nodeNames">{{ props.download.targets.length }}</span>
+    <span class="font-mono text-xs">
+      <ui-hint :text="nodeNames">{{ props.download.targets.length }}</ui-hint>
+    </span>
 
     <mf-download-progress
       :bytes-done="props.download.bytesDone"
@@ -30,7 +32,7 @@ import type { DownloadDto } from '@libs/dto';
 import { downloadStateTone, formatDownloadState, summariseDownload } from '@/utils/download';
 import { formatCount } from '@/utils/format/number';
 
-import { UiTableRow, UiTag } from '@/components/ui';
+import { UiHint, UiTableRow, UiTag } from '@/components/ui';
 
 import MfDownloadProgress from './Progress.vue';
 
@@ -49,5 +51,7 @@ const description = computed(
   () => `${summariseDownload(props.download)} · ${formatCount(props.download.files.length, 'file')}`
 );
 
-const nodeNames = computed(() => props.download.targets.map(target => target.nodeName).join(', '));
+const nodeNames = computed(() =>
+  props.download.targets.length === 0 ? undefined : props.download.targets.map(target => target.nodeName).join(', ')
+);
 </script>

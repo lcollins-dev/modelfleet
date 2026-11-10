@@ -39,15 +39,46 @@ describe('UiNavItem', () => {
   });
 
   it('shows its count slot after a label that truncates', () => {
-    const wrapper = mount(NavItem, { props: { label: 'Memory' }, slots: { count: '3' } });
+    const wrapper = mount(NavItem, {
+      props: { label: 'Memory' },
+      slots: { count: '<span data-testid="count">3</span>' },
+    });
 
     expect(wrapper.get('.truncate').text()).toBe('Memory');
-    expect(wrapper.get('.font-mono').text()).toBe('3');
+    expect(wrapper.get('[data-testid="count"]').text()).toBe('3');
   });
 
   it('renders no count without the slot', () => {
     const wrapper = mount(NavItem, { props: { label: 'Memory' } });
 
-    expect(wrapper.find('.font-mono').exists()).toBe(false);
+    expect(wrapper.get('button').text()).toBe('Memory');
+  });
+
+  it('turns its icon and label red with no hover, on the active highlight too', () => {
+    const wrapper = mount(NavItem, {
+      props: { label: 'CPU', icon: { template: '<svg data-testid="icon" />' }, active: true, error: true },
+    });
+
+    expect(wrapper.get('button').classes()).toContain('bg-emphasis');
+    expect(wrapper.get('[data-testid="icon"]').classes()).toContain('text-error');
+    expect(wrapper.get('.truncate').classes()).toContain('text-error');
+    expect(wrapper.find('[title]').exists()).toBe(false);
+  });
+
+  it('turns the icon red on an inactive item with an error', () => {
+    const wrapper = mount(NavItem, {
+      props: { label: 'CPU', icon: { template: '<svg data-testid="icon" />' }, error: true },
+    });
+
+    expect(wrapper.get('[data-testid="icon"]').classes()).toContain('text-error');
+    expect(wrapper.get('.truncate').classes()).toContain('text-error');
+  });
+
+  it('keeps the label plain without an error', () => {
+    const wrapper = mount(NavItem, { props: { label: 'CPU', icon: { template: '<svg data-testid="icon" />' } } });
+
+    expect(wrapper.get('[data-testid="icon"]').classes()).toContain('text-muted');
+    expect(wrapper.get('.truncate').classes()).not.toContain('text-error');
+    expect(wrapper.find('[title]').exists()).toBe(false);
   });
 });

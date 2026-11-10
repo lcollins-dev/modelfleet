@@ -23,7 +23,7 @@ test.describe('fleet overview', () => {
     const node = await registerNode(request, uniqueName('overview'));
 
     try {
-      await expect(dashboardPage.nodeRowByName(node.name)).toHaveAccessibleName(/Awaiting first contact/);
+      await expect(dashboardPage.nodeRowByName(node.name)).toHaveAccessibleName(/Waiting for agent/);
 
       await dashboardPage.nodeRowByName(node.name).click();
 
@@ -33,7 +33,10 @@ test.describe('fleet overview', () => {
     }
   });
 
-  test('reads an empty fleet as empty states that say what to do next', async ({ dashboardPage, page }) => {
+  test('reads an empty fleet as empty states that say what to do next, with no buttons', async ({
+    dashboardPage,
+    page,
+  }) => {
     await page.route('**/api/v1/admin/telemetry/stream', route =>
       route.fulfill(eventStream({ nodes: [], readAt: new Date().toJSON() }))
     );
@@ -41,48 +44,25 @@ test.describe('fleet overview', () => {
     await page.route('**/api/v1/admin/deployment/list?*', route =>
       route.fulfill({ json: { deploymentList: [], pages: 0, total: 0 } })
     );
-    await page.route('**/api/v1/admin/model/list?*', route => route.fulfill({ json: { modelList: [], pages: 0 } }));
 
     await dashboardPage.goto();
 
-    await expect(dashboardPage.nodesPanel.getByRole('link', { name: 'Register Node' })).toBeVisible();
-    await expect(dashboardPage.deploymentsPanel).toContainText('No models yet');
-    await expect(dashboardPage.deploymentsPanel.getByRole('link', { name: 'View Models' })).toBeVisible();
+    await expect(dashboardPage.nodesPanel).toContainText('No nodes yet. Register a machine to start serving models.');
+    await expect(dashboardPage.nodesPanel.getByRole('link', { name: 'Register Node' })).toHaveCount(0);
+    await expect(dashboardPage.deploymentsPanel).toContainText('No deployments yet');
+    await expect(dashboardPage.deploymentsPanel.getByRole('link', { name: 'View Models' })).toHaveCount(0);
   });
 
-  test('asks for a deployment once a model is there to deploy', async ({ dashboardPage, page }) => {
+  test('asks for a deployment when there is none, with no button', async ({ dashboardPage, page }) => {
     await page.route('**/api/v1/admin/deployment/list?*', route =>
       route.fulfill({ json: { deploymentList: [], pages: 0, total: 0 } })
     );
-    await page.route('**/api/v1/admin/model/list?*', route =>
-      route.fulfill({
-        json: {
-          modelList: [
-            {
-              id: 1,
-              fingerprint: 'a'.repeat(64),
-              name: 'Llama 3 8B',
-              displayName: null,
-              format: 'gguf',
-              type: 'model',
-              tasks: [],
-              licence: null,
-              quantisation: null,
-              quantisationMixed: false,
-              sizeBytes: 1,
-              shardCount: 1,
-              state: 'available',
-              availability: [],
-            },
-          ],
-          pages: 1,
-        },
-      })
-    );
 
     await dashboardPage.goto();
 
-    await expect(dashboardPage.deploymentsPanel).toContainText('No deployments yet');
-    await expect(dashboardPage.deploymentsPanel.getByRole('link', { name: 'Create Deployment' })).toBeVisible();
+    await expect(dashboardPage.deploymentsPanel).toContainText(
+      'No deployments yet. Create one to start serving a model.'
+    );
+    await expect(dashboardPage.deploymentsPanel.getByRole('link', { name: 'Create Deployment' })).toHaveCount(0);
   });
 });

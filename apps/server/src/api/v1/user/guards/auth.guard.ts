@@ -18,7 +18,7 @@ import { User } from '@/core/user/entities/user.entity';
 
 import { NOT_ALLOWED_MESSAGE, SESSION_EXPIRED_MESSAGE, UserService } from '@/core/user/user.service';
 
-export const SETUP_REQUIRED_MESSAGE = 'Set a new password before doing anything else';
+export const SETUP_REQUIRED_MESSAGE = 'Set a new password to continue';
 
 /** Set on a handler, never a controller, to let an account held to a password change call it. */
 export const ALLOWED_DURING_SETUP_METADATA_KEY = 'allowed-during-setup';

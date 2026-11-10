@@ -9,6 +9,7 @@ import { Instance } from '../instance/entities/instance.entity';
 import { DeploymentService, ILaunchFailureCount } from '../deployment/deployment.service';
 import { INodePlacement, IPlannedEviction } from '../instance/instance-launch.service';
 import { InstanceService, IRoomOutcome, IStartOutcome } from '../instance/instance.service';
+import { FitRefusal } from '../ledger/vram-ledger.service';
 import { DeploymentActionsService } from './deployment-actions.service';
 import { EvictionPlannerService, IEvictionPlan } from './eviction-planner.service';
 import { InstanceEvictionService } from './instance-eviction.service';
@@ -27,6 +28,7 @@ const MAKING_ROOM_TIMEOUT_MS = 300_000;
 interface IMakingRoom {
   deadlineMs: number;
   nodeIds: Set<number>;
+  restarting: boolean;
 }
 
 interface IRun {
@@ -178,6 +180,12 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
       inFlight: this.instanceLeaseService.inFlightAcross(instances),
       waiting: this.waiting.open(deployment.id).length,
       makingRoomNodeIds: [...(this.makingRoom.get(deployment.id)?.nodeIds ?? [])],
+      restarting: this.makingRoom.get(deployment.id)?.restarting === true,
+      failedOnLatest: instances.some(
+        instance =>
+          instance.instanceState === InstanceState.FAILED &&
+          instance.configurationRevision === deployment.configurationRevision
+      ),
       idleTimeoutMs: this.supervisorPolicyService.idleTimeoutMsFor(
         configuration,
         this.configService.schedulerIdleTimeoutMs
@@ -252,7 +260,8 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
           deployment,
           instances,
           facts.live,
-          (requester, placements, started) => this.makeRoom(requester, placements, started)
+          (requester, placements, started) => this.makeRoom(requester, placements, started),
+          facts.restarting
         );
 
         if (refused !== null) {
@@ -283,6 +292,81 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
     }
 
     await this.answerWaiters(deployment, instances, facts, action === SupervisorAction.START, refused);
+
+    if (refused === null && instances.some(instance => instance.restartRequestedDate !== null)) {
+      await this.restartDue(deployment, action);
+    } else {
+      this.instanceLeaseService.watchForRestart(deployment.id, []);
+    }
+  }
+
+  /** Reloads instances to include any launched earlier in this reconcile. */
+  private async restartDue(deployment: Deployment, action: SupervisorAction): Promise<void> {
+    const instances = await this.instanceService.findByDeploymentId(deployment.id);
+    const requested = instances.filter(instance => instance.restartRequestedDate !== null);
+    const due = requested.filter(instance => this.instanceService.isOnOlderSettings(instance));
+    const owedNothing = requested.filter(instance => !due.includes(instance));
+
+    await this.instanceService.clearRestartRequest(owedNothing);
+
+    this.instanceLeaseService.watchForRestart(deployment.id, due);
+
+    if (!this.supervisorPolicyService.mayRestart(action, this.factsFor(deployment, instances))) {
+      return;
+    }
+
+    const quiet = due.find(
+      instance =>
+        this.instanceLeaseService.inFlightOn(instance) === 0 && this.instanceLeaseService.reachable([instance]) !== null
+    );
+
+    if (quiet === undefined) {
+      return;
+    }
+
+    const problem = await this.instanceService.restartProblem(deployment, quiet);
+
+    if (problem?.outOfRoom === true) {
+      await this.deploymentActionsService.sayRestartRefused(deployment, problem.message);
+      await this.instanceService.clearRestartRequest([quiet]);
+    }
+
+    // A manual stop during the capacity check must prevent the replacement from starting.
+    if (problem === null && (await this.stillRuns(quiet))) {
+      await this.restartInstance(deployment, quiet);
+    }
+  }
+
+  private async stillRuns(instance: Instance): Promise<boolean> {
+    const current = await this.instanceService.findByDeploymentId(instance.deploymentId);
+
+    return current.some(row => row.id === instance.id);
+  }
+
+  /** Drains before checking active requests so new requests wait for the replacement. */
+  private async restartInstance(deployment: Deployment, instance: Instance): Promise<void> {
+    if (
+      this.makingRoom.has(deployment.id) ||
+      this.waiting.open(deployment.id).length > 0 ||
+      !this.instanceLeaseService.quietOnceDraining([instance])
+    ) {
+      this.instanceLeaseService.stopDraining([instance]);
+
+      return;
+    }
+
+    // Keeps the deployment active while its replacement waits for memory to be reported free.
+    this.makingRoom.set(deployment.id, {
+      deadlineMs: Date.now() + MAKING_ROOM_TIMEOUT_MS,
+      nodeIds: new Set([instance.nodeId]),
+      restarting: true,
+    });
+
+    try {
+      await this.deploymentActionsService.stopForRestart(instance);
+    } finally {
+      this.instanceLeaseService.stopDraining([instance]);
+    }
   }
 
   /** A refusal on a marked node waits for the retry; anything else is planned for, and a plan that fits is claimed. */
@@ -302,6 +386,12 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
     const nodeIds = new Set<number>();
 
     for (const placement of refused) {
+      if (placement.capacity?.refusal === FitRefusal.LOAD_IN_PROGRESS) {
+        nodeIds.add(placement.nodeId);
+
+        continue;
+      }
+
       const plan = await this.planFor(deployment, placement);
 
       if (plan !== null && this.instanceEvictionService.claim(plan, deployment)) {
@@ -319,11 +409,11 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
       return { standing, makingRoom: true, evicting: [] };
     }
 
-    if (plans.length === 0) {
+    if (nodeIds.size === 0) {
       return { standing, makingRoom: false, evicting: [] };
     }
 
-    this.makingRoom.set(deployment.id, { deadlineMs: Date.now() + MAKING_ROOM_TIMEOUT_MS, nodeIds });
+    this.makingRoom.set(deployment.id, { deadlineMs: Date.now() + MAKING_ROOM_TIMEOUT_MS, nodeIds, restarting: false });
 
     const evicting = plans.flatMap(plan => plan.victims);
 
@@ -501,6 +591,7 @@ export class DeploymentSupervisorService implements OnModuleInit, OnModuleDestro
     this.waiting.settleAll(deploymentId, this.resultOf({ refusal: AcquireRefusal.NOT_AVAILABLE }));
     this.deploymentActionsService.forget(deploymentId);
     this.instanceEvictionService.forget(deploymentId);
+    this.instanceLeaseService.watchForRestart(deploymentId, []);
     this.makingRoom.delete(deploymentId);
   }
 

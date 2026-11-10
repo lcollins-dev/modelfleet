@@ -18,6 +18,7 @@ export enum InstanceChangeReason {
   LAUNCH_OVERRAN = 'launch-overran',
   ON_REQUEST = 'on-request',
   EVICTED = 'evicted',
+  SETTINGS_CHANGED = 'settings-changed',
 }
 
 export enum ResidencyRule {
@@ -29,7 +30,6 @@ export enum ResidencyRule {
 export enum ExpectedUsageSource {
   CONFIGURED = 'configured',
   DECLARED = 'declared',
-  MEASURED = 'measured',
   ESTIMATED = 'estimated',
 }
 
@@ -114,7 +114,11 @@ export const ListInstanceDto = z.object({
 
   state: z.enum(InstanceState),
 
-  /** The backend's last output where the launch failed, with the extra flag values taken out. */
+  onOlderSettings: z.boolean(),
+
+  restartRequested: z.boolean(),
+
+  /** What the node reported: the image a launch is pulling, or why the launch failed, or the backend's last output. */
   message: z.string().nullable(),
 
   exitCode: z.number().nullable(),
@@ -139,6 +143,13 @@ export const PlacementEvictionDto = z.object({
 });
 export type PlacementEvictionDto = z.infer<typeof PlacementEvictionDto>;
 
+/** A figure is null until every instance has a reading for it. */
+export const PlacementMeasuredDto = z.object({
+  vramBytes: z.number().nullable(),
+  ramBytes: z.number().nullable(),
+});
+export type PlacementMeasuredDto = z.infer<typeof PlacementMeasuredDto>;
+
 export const PlacementNodeDto = z.object({
   nodeId: z.number(),
   nodeName: z.string(),
@@ -155,6 +166,9 @@ export const PlacementNodeDto = z.object({
   problemReason: z.enum(PlacementProblemReason).nullable(),
 
   expectedUsage: ExpectedUsageDto.nullable(),
+
+  /** Set on a deployment's own read where the node holds its full share. Null on a preview of a draft. */
+  measured: PlacementMeasuredDto.nullable(),
 
   capacity: PlacementCapacityDto.nullable(),
 
@@ -184,6 +198,9 @@ export const DeploymentResidencyDto = z.object({
   lastLaunchFailure: z.string().nullable(),
 
   makingRoomNodeIds: z.array(z.number()),
+
+  /** True between stopping an instance for restart and starting its replacement. */
+  restarting: z.boolean(),
 });
 export type DeploymentResidencyDto = z.infer<typeof DeploymentResidencyDto>;
 

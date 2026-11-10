@@ -92,7 +92,9 @@ export class HubReaderService {
     const missing = paths.filter(path => byPath.get(path)?.type !== 'file');
 
     if (missing.length > 0) {
-      throw new BadRequestException(`${pinned.repository} holds no file ${missing.join(', ')} at ${pinned.commit}`);
+      throw new BadRequestException(
+        `Files not found in ${pinned.repository} at revision ${pinned.commit}: ${missing.join(', ')}`
+      );
     }
 
     return {
@@ -145,7 +147,7 @@ export class HubReaderService {
    */
   private async pin(repository: string, revision: string): Promise<IHubCommit> {
     if (!DOWNLOAD_REPOSITORY_PATTERN.test(repository)) {
-      throw new BadRequestException('A repository is named as owner/name');
+      throw new BadRequestException('Enter the repository as owner/name');
     }
 
     const info = await this.ask(repository, revision, hubFetch =>
@@ -153,7 +155,7 @@ export class HubReaderService {
     );
 
     if (info.gated !== false && this.configService.huggingfaceToken === null) {
-      throw new BadRequestException(`${info.name} is gated, and cannot be downloaded without a token`);
+      throw new BadRequestException(`${info.name} requires an access token to download`);
     }
 
     if (typeof info.sha !== 'string' || !DOWNLOAD_REVISION_PATTERN.test(info.sha)) {
@@ -202,8 +204,7 @@ export class HubReaderService {
         return response;
       });
     } catch (error: unknown) {
-      const refusal =
-        error instanceof HubApiError ? this.refusalOf(error.statusCode, answer, repository, revision) : null;
+      const refusal = error instanceof HubApiError ? this.refusalOf(error.statusCode, answer, revision) : null;
 
       if (refusal !== null) {
         throw refusal;
@@ -226,30 +227,25 @@ export class HubReaderService {
    * share one message. With one it answers 404 for a repository the token cannot see, named apart from a missing
    * revision by its error code.
    */
-  private refusalOf(
-    statusCode: number,
-    answer: IHubAnswer,
-    repository: string,
-    revision: string
-  ): BadRequestException | null {
+  private refusalOf(statusCode: number, answer: IHubAnswer, revision: string): BadRequestException | null {
     const hasToken = this.configService.huggingfaceToken !== null;
 
     if (answer.errorCode === HubErrorCode.GATED_REPO && hasToken) {
       return new BadRequestException(
-        `${repository} is gated, and the account HUGGINGFACE_TOKEN belongs to has not been granted access`
+        `The account associated with HUGGINGFACE_TOKEN does not have access to this gated repository.`
       );
     }
 
     if (answer.errorCode === HubErrorCode.REPO_NOT_FOUND || statusCode === 401 || statusCode === 403) {
       return new BadRequestException(
         hasToken
-          ? `${repository} does not exist, or HUGGINGFACE_TOKEN cannot reach it`
-          : `${repository} does not exist, or is private and cannot be reached without a token`
+          ? `This repository does not exist or HUGGINGFACE_TOKEN does not have access to it.`
+          : `This repository does not exist or is private. Private repositories require an access token.`
       );
     }
 
     if (statusCode === 404) {
-      return new BadRequestException(`${repository} has no revision ${revision}`);
+      return new BadRequestException(`Revision ${revision} was not found in this repository.`);
     }
 
     return null;

@@ -7,7 +7,7 @@ import { BackendId } from '@libs/backends';
 import type { PresetDto } from '@libs/dto';
 
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Preset from './Preset.vue';
 
@@ -103,7 +103,7 @@ describe('Preset page', () => {
       description: 'Single 4090',
       document: '# tuned\nreplicas: 2\n',
     });
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Preset saved');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Preset saved');
 
     wrapper.unmount();
   });

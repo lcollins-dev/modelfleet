@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { firstValueFrom } from 'rxjs';
+import { In } from 'typeorm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InstanceState } from '@libs/agent-protocol';
@@ -69,6 +70,7 @@ describe('InstanceService', () => {
     admit: ReturnType<typeof vi.fn>;
     preview: ReturnType<typeof vi.fn>;
     expectedFor: ReturnType<typeof vi.fn>;
+    previewReleasing: ReturnType<typeof vi.fn>;
     capacityDetail: ReturnType<typeof vi.fn>;
   };
   let vramLedgerService: { release: ReturnType<typeof vi.fn>; markStopping: ReturnType<typeof vi.fn> };
@@ -76,6 +78,7 @@ describe('InstanceService', () => {
     find: ReturnType<typeof vi.fn>;
     insert: ReturnType<typeof vi.fn>;
     delete: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
   };
   let instanceService: InstanceService;
 
@@ -99,6 +102,7 @@ describe('InstanceService', () => {
       admit: vi.fn().mockResolvedValue({ problem: null }),
       preview: vi.fn().mockResolvedValue({ problem: null }),
       expectedFor: vi.fn().mockResolvedValue(null),
+      previewReleasing: vi.fn().mockResolvedValue({ problem: null }),
       capacityDetail: vi.fn().mockReturnValue({ expectedBytes: 20 * GIB, availableBytes: 15 * GIB, cards: 'figures' }),
     };
     vramLedgerService = { release: vi.fn(), markStopping: vi.fn() };
@@ -107,6 +111,7 @@ describe('InstanceService', () => {
       find: vi.fn().mockResolvedValue([]),
       insert: vi.fn().mockResolvedValue(undefined),
       delete: vi.fn().mockResolvedValue({ affected: 1 }),
+      update: vi.fn().mockResolvedValue({ affected: 1 }),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -676,7 +681,7 @@ describe('InstanceService', () => {
       const preview = await instanceService.previewDraft(draft, null);
 
       expect(preview.problem).toBe(
-        'This configuration holds a value its backend will not accept, so it cannot be sized'
+        'Cannot estimate memory use because this configuration contains an unsupported value'
       );
     });
 
@@ -688,6 +693,261 @@ describe('InstanceService', () => {
         replicas: 0,
         problem: 'Choose a backend',
       });
+    });
+  });
+
+  describe('restarting onto the latest settings', () => {
+    const OLDER_REVISION = 'b'.repeat(64);
+
+    const onOlderSettings = (overrides: Partial<Instance> = {}): Instance =>
+      buildInstance({
+        instanceState: InstanceState.READY,
+        configurationRevision: OLDER_REVISION,
+        deployment: buildDeployment(),
+        node: buildNode({ name: 'rig-a' }),
+        ...overrides,
+      });
+
+    beforeEach(() => {
+      nodeService.findWithThrow.mockResolvedValue(buildNode({ name: 'rig-a' }));
+    });
+
+    describe('isOnOlderSettings', () => {
+      it('flags a running instance on an earlier revision', () => {
+        expect(instanceService.isOnOlderSettings(onOlderSettings())).toBe(true);
+      });
+
+      it('recognises an instance on the latest revision', () => {
+        expect(instanceService.isOnOlderSettings(onOlderSettings({ configurationRevision: TEST_REVISION }))).toBe(
+          false
+        );
+      });
+
+      it('excludes failed instances', () => {
+        expect(instanceService.isOnOlderSettings(onOlderSettings({ instanceState: InstanceState.FAILED }))).toBe(false);
+      });
+    });
+
+    describe('requestRestart', () => {
+      it('marks instances on older settings and records the operator', async () => {
+        const instance = onOlderSettings();
+
+        instanceRepository.find.mockResolvedValue([
+          onOlderSettings({ id: 6, configurationRevision: TEST_REVISION }),
+          instance,
+        ]);
+
+        await instanceService.requestRestart(TEST_DEPLOYMENT_ID, TEST_ACTOR_ID);
+
+        expect(instanceRepository.update.mock.calls[0][0]).toMatchObject({ id: In([instance.id]) });
+        expect(instanceRepository.update.mock.calls[0][1]).toEqual({ restartRequestedDate: expect.any(Date) as Date });
+        expect(eventService.recordEvent).toHaveBeenCalledWith(
+          EventType.DEPLOYMENT_RESTART_REQUESTED,
+          expect.anything(),
+          expect.objectContaining({
+            actorType: EventPartyType.USER,
+            actorId: `${TEST_ACTOR_ID}`,
+            detail: expect.objectContaining({ instances: 1 }) as object,
+          })
+        );
+      });
+
+      it('emits a change to trigger immediate reconciliation', async () => {
+        instanceRepository.find.mockResolvedValue([onOlderSettings()]);
+
+        const changed = firstValueFrom(instanceService.instanceChanges());
+
+        await instanceService.requestRestart(TEST_DEPLOYMENT_ID, TEST_ACTOR_ID);
+
+        await expect(changed).resolves.toEqual([TEST_DEPLOYMENT_ID]);
+      });
+
+      it('marks no instances if any replacement would not fit', async () => {
+        instanceRepository.find.mockResolvedValue([onOlderSettings(), onOlderSettings({ id: 6 })]);
+        instanceAdmissionService.previewReleasing
+          .mockResolvedValueOnce({ problem: null })
+          .mockResolvedValueOnce({ problem: TOO_LARGE_PROBLEM });
+
+        await expect(instanceService.requestRestart(TEST_DEPLOYMENT_ID, TEST_ACTOR_ID)).rejects.toThrow(
+          TOO_LARGE_PROBLEM
+        );
+
+        expect(instanceRepository.update).not.toHaveBeenCalled();
+      });
+
+      it('checks the latest settings with that instance released', async () => {
+        const instance = onOlderSettings();
+
+        instanceRepository.find.mockResolvedValue([instance]);
+
+        await instanceService.requestRestart(TEST_DEPLOYMENT_ID, TEST_ACTOR_ID);
+
+        expect(instanceAdmissionService.previewReleasing).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ nodeId: TEST_NODE_ID }),
+          [instance.instanceKey]
+        );
+      });
+
+      it('refuses with the reason before marking anything', async () => {
+        instanceRepository.find.mockResolvedValue([onOlderSettings()]);
+        instanceAdmissionService.previewReleasing.mockResolvedValue({ problem: TOO_LARGE_PROBLEM });
+
+        await expect(instanceService.requestRestart(TEST_DEPLOYMENT_ID, TEST_ACTOR_ID)).rejects.toThrow(
+          `rig-a: ${TOO_LARGE_PROBLEM}`
+        );
+
+        expect(instanceRepository.update).not.toHaveBeenCalled();
+        expect(instanceRepository.delete).not.toHaveBeenCalled();
+      });
+
+      it('refuses a disabled deployment', async () => {
+        deploymentService.findWithThrow.mockResolvedValue(buildDeployment({ enabled: false }));
+
+        await expect(instanceService.requestRestart(TEST_DEPLOYMENT_ID, TEST_ACTOR_ID)).rejects.toThrow(
+          BadRequestException
+        );
+      });
+
+      it('records nothing when all instances on older settings are already marked', async () => {
+        instanceRepository.find.mockResolvedValue([onOlderSettings({ restartRequestedDate: new Date() })]);
+
+        await instanceService.requestRestart(TEST_DEPLOYMENT_ID, TEST_ACTOR_ID);
+
+        expect(instanceRepository.update).not.toHaveBeenCalled();
+        expect(eventService.recordEvent).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('requestRestartAll', () => {
+      it('requests restarts for eligible deployments and reports refusals', async () => {
+        vi.spyOn(instanceService, 'findOnOlderSettings').mockResolvedValue([
+          onOlderSettings({ deploymentId: 1, deployment: buildDeployment({ id: 1, name: 'fits' }) }),
+          onOlderSettings({ deploymentId: 2, deployment: buildDeployment({ id: 2, name: 'too-big' }) }),
+        ]);
+
+        const requested = vi
+          .spyOn(instanceService, 'requestRestart')
+          .mockResolvedValueOnce(true)
+          .mockRejectedValueOnce(new BadRequestException('rig-a: no room'));
+
+        await expect(instanceService.requestRestartAll(TEST_ACTOR_ID)).resolves.toEqual({
+          restarting: 1,
+          refused: [{ deploymentId: 2, deploymentName: 'too-big', problem: 'rig-a: no room' }],
+        });
+        expect(requested).toHaveBeenCalledTimes(2);
+      });
+
+      it('counts new restart requests and skips disabled deployments', async () => {
+        vi.spyOn(instanceService, 'findOnOlderSettings').mockResolvedValue([
+          onOlderSettings({ deploymentId: 1, deployment: buildDeployment({ id: 1 }) }),
+          onOlderSettings({ deploymentId: 2, deployment: buildDeployment({ id: 2, enabled: false }) }),
+        ]);
+
+        const requested = vi.spyOn(instanceService, 'requestRestart').mockResolvedValue(false);
+
+        await expect(instanceService.requestRestartAll(TEST_ACTOR_ID)).resolves.toEqual({ restarting: 0, refused: [] });
+        expect(requested).toHaveBeenCalledExactlyOnceWith(1, TEST_ACTOR_ID);
+      });
+    });
+
+    describe('restartProblem', () => {
+      const elsewhere = { nodeId: 99, pins: { cpu: false, gpus: ['GPU-b'] }, problem: null };
+
+      it('reports node availability problems as retryable', async () => {
+        instanceLaunchService.resolvePlacements.mockResolvedValue([
+          { nodeId: TEST_NODE_ID, pins: { cpu: false, gpus: [] }, problem: 'The node is offline' },
+        ]);
+
+        await expect(instanceService.restartProblem(buildDeployment(), onOlderSettings())).resolves.toEqual({
+          message: 'rig-a: The node is offline',
+          outOfRoom: false,
+        });
+        expect(instanceAdmissionService.previewReleasing).not.toHaveBeenCalled();
+      });
+
+      it('classifies capacity refusals as out of room', async () => {
+        instanceAdmissionService.previewReleasing.mockResolvedValue({
+          problem: TOO_LARGE_PROBLEM,
+          capacity: TOO_LARGE,
+        });
+
+        await expect(instanceService.restartProblem(buildDeployment(), onOlderSettings())).resolves.toEqual({
+          message: `rig-a: ${TOO_LARGE_PROBLEM}`,
+          outOfRoom: true,
+        });
+      });
+
+      it('treats missing node telemetry as retryable', async () => {
+        instanceAdmissionService.previewReleasing.mockResolvedValue({
+          problem: 'No GPU memory readings received from this node',
+          capacity: { ...TOO_LARGE, refusal: FitRefusal.NO_TELEMETRY },
+        });
+
+        await expect(instanceService.restartProblem(buildDeployment(), onOlderSettings())).resolves.toMatchObject({
+          outOfRoom: false,
+        });
+      });
+
+      it('returns placement validation errors', async () => {
+        instanceLaunchService.resolvePlacements.mockRejectedValue(
+          new BadRequestException('This document names no node')
+        );
+
+        await expect(instanceService.restartProblem(buildDeployment(), onOlderSettings())).resolves.toEqual({
+          message: 'This document names no node',
+          outOfRoom: false,
+        });
+      });
+
+      describe('when the latest settings have moved off its node', () => {
+        beforeEach(() => {
+          instanceLaunchService.resolvePlacements.mockResolvedValue([elsewhere]);
+        });
+
+        it('checks the destination node without releasing memory there', async () => {
+          await expect(instanceService.restartProblem(buildDeployment(), onOlderSettings())).resolves.toBeNull();
+
+          expect(instanceAdmissionService.previewReleasing).toHaveBeenCalledWith(expect.anything(), elsewhere, []);
+        });
+
+        it('refuses when the destination node has no room', async () => {
+          instanceAdmissionService.previewReleasing.mockResolvedValue({
+            problem: TOO_LARGE_PROBLEM,
+            capacity: TOO_LARGE,
+          });
+
+          await expect(instanceService.restartProblem(buildDeployment(), onOlderSettings())).resolves.toMatchObject({
+            outOfRoom: true,
+          });
+        });
+
+        it('allows a restart when any destination node has room', async () => {
+          instanceLaunchService.resolvePlacements.mockResolvedValue([elsewhere, { ...elsewhere, nodeId: 98 }]);
+          instanceAdmissionService.previewReleasing
+            .mockResolvedValueOnce({ problem: TOO_LARGE_PROBLEM, capacity: TOO_LARGE })
+            .mockResolvedValueOnce({ problem: null });
+
+          await expect(instanceService.restartProblem(buildDeployment(), onOlderSettings())).resolves.toBeNull();
+        });
+
+        it('returns no problem when all destination nodes have enough replicas', async () => {
+          instanceRepository.find.mockResolvedValue([{ nodeId: 99 }]);
+
+          await expect(instanceService.restartProblem(buildDeployment(), onOlderSettings())).resolves.toBeNull();
+
+          expect(instanceAdmissionService.previewReleasing).not.toHaveBeenCalled();
+        });
+      });
+    });
+
+    it('clears the restart request and emits a change', async () => {
+      const changed = firstValueFrom(instanceService.instanceChanges());
+
+      await instanceService.clearRestartRequest([onOlderSettings()]);
+
+      expect(instanceRepository.update.mock.calls[0][1]).toEqual({ restartRequestedDate: null });
+      await expect(changed).resolves.toEqual([TEST_DEPLOYMENT_ID]);
     });
   });
 });

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { BackendId } from '../backend-id';
 
+export const MIB = 1024 ** 2;
 export const GIB = 1024 ** 3;
 
 const MAX_STAGES = 16;

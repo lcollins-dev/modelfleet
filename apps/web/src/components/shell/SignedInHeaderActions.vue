@@ -25,7 +25,7 @@ import { UserRoleId } from '@libs/dto';
 
 import { useLogService } from '@/services/LogService';
 import { useUserService } from '@/services/api/UserService';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import { MfTelemetryTag } from '@/components/mf';
@@ -45,7 +45,7 @@ const logger = logService.createLogger('components/shell/SignedInHeaderActions')
 
 const router = useRouter();
 
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const userStore = useUserStore();
 const userService = useUserService();
 
@@ -59,7 +59,7 @@ const signOut = () => {
   userService
     .logout()
     .then(() => {
-      notificationStore.addToast('Signed out', 'Your API keys keep working.');
+      toastStore.addToast('Signed out');
     })
     .catch((error: unknown) => {
       logger.error({ error }, 'signOut(): Sign out failed');

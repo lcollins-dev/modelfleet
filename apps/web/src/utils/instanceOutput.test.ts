@@ -130,17 +130,15 @@ describe('applyOutputFrame', () => {
 
 describe('describeOutputRefusal', () => {
   it("shows the api's own message for the refusals it words", () => {
-    expect(describeOutputRefusal(409, "This instance's node is not connected, so its output cannot be read")).toBe(
-      "This instance's node is not connected, so its output cannot be read."
+    expect(describeOutputRefusal(409, 'Cannot load output because the node is disconnected')).toBe(
+      'Cannot load output because the node is disconnected.'
     );
     expect(describeOutputRefusal(404, 'This instance does not exist')).toBe('This instance does not exist.');
   });
 
   it('shows a stock message for any other status, or a refusal with no message', () => {
-    expect(describeOutputRefusal(500, 'Internal server error')).toBe(
-      'The output could not be read. Try again in a moment.'
-    );
-    expect(describeOutputRefusal(502, null)).toBe('The output could not be read. Try again in a moment.');
+    expect(describeOutputRefusal(500, 'Internal server error')).toBe('Could not load output. Try again in a moment.');
+    expect(describeOutputRefusal(502, null)).toBe('Could not load output. Try again in a moment.');
   });
 
   it('adds no second full stop to a message that already ends with one', () => {

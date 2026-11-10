@@ -39,8 +39,20 @@ export const modelFingerprintSchema = z.string().regex(MODEL_FINGERPRINT_PATTERN
 export const ggufTensorSchema = z.object({
   name: z.string().min(1).max(MAX_GGUF_TENSOR_NAME_LENGTH),
   sizeBytes: z.number().int().nonnegative(),
+
+  /** Both absent from an agent predating them. From the start of the shard's tensor data. */
+  offsetBytes: z.number().int().nonnegative().optional(),
+  shard: z.number().int().nonnegative().optional(),
 });
 export type GgufTensor = z.infer<typeof ggufTensorSchema>;
+
+/** `LLAMA_MAX_LAYERS`, above any model that exists. */
+export const MAX_GGUF_LAYERS = 512;
+export const MAX_DECISION_TYPE_LENGTH = 32;
+
+const optionalCount = z.number().int().nonnegative().nullable().optional();
+const layerList = z.array(z.number().int().nonnegative()).max(MAX_GGUF_LAYERS);
+const optionalLayerList = layerList.nullable().optional();
 
 export const ggufMetadataSchema = z.object({
   architecture: z.string().min(1).max(MAX_ARCHITECTURE_LENGTH).nullable(),
@@ -55,6 +67,24 @@ export const ggufMetadataSchema = z.object({
   headCount: z.number().int().nonnegative().nullable(),
   headCountKv: z.number().int().nonnegative().nullable(),
   contextLength: z.number().int().nonnegative().nullable(),
+
+  /** Each of the following is absent from an agent predating it. Lists hold one entry per layer. */
+  keyLength: optionalCount,
+  valueLength: optionalCount,
+  keyLengthSwa: optionalCount,
+  valueLengthSwa: optionalCount,
+  keyLengthMla: optionalCount,
+  valueLengthMla: optionalCount,
+  indexerKeyLength: optionalCount,
+  headCountByLayer: optionalLayerList,
+  headCountKvByLayer: optionalLayerList,
+  recurrentLayers: optionalLayerList,
+  fullAttentionInterval: optionalCount,
+  slidingWindow: optionalCount,
+  slidingWindowPattern: z.union([z.number().int().nonnegative(), layerList]).nullable().optional(),
+  nextnLayerCount: optionalCount,
+  compressRatios: optionalLayerList,
+  decisionType: z.string().min(1).max(MAX_DECISION_TYPE_LENGTH).nullable().optional(),
 
   /**
    * The largest tensors across every shard, down to a floor the agent sets, so a small one is never listed. Null

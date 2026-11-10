@@ -1,10 +1,14 @@
 -- The fleet the README screenshots show. Run against a freshly cleaned instance database, whose test admin becomes
--- Alex Morgan with the same password. The node keeps its key and secret, so the local agent still connects.
+-- Alex Morgan with the same password. The development node becomes rig-01 under the key fake-agent.ts connects with,
+-- keeping its secret, and a registration date that does not move with the day the shots are taken.
 UPDATE "user"
 SET "name" = 'Alex Morgan', "email" = 'alex@example.com', "lastLoginSuccess" = now() - interval '1 day'
 WHERE "email" = 'admin@modelfleet.test';
 
-UPDATE "node" SET "name" = 'rig-01', "description" = 'Workstation under the desk' WHERE "name" = 'Development node';
+UPDATE "node"
+SET "name" = 'rig-01', "description" = 'Main GPU server', "nodeKey" = '7c3e9a14-5b2d-4f81-a6e0-2d9b4c8f1e35',
+  "createdDate" = '2026-10-29 09:12:00+00'
+WHERE "name" = 'Development node';
 
 -- Two more nodes, so the fleet has a state besides online: one that went quiet, one whose agent has not connected yet.
 -- They share the development node's secret hash, which never answers a connection here.

@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils';
 import { describe, expect, it } from 'vitest';
 
-import type { GpuTelemetryDto } from '@libs/dto';
+import type { GpuProcessDto, GpuTelemetryDto } from '@libs/dto';
 import { GpuProcessAttribution, GpuVendor } from '@libs/dto';
 
 import MfMeter from '../Meter.vue';
@@ -44,6 +44,28 @@ const loading = (deploymentName: string | null, bytes: number) => ({
   bytes,
 });
 
+const outside = (name: string, usedBytes: number | null): GpuProcessDto => ({
+  pid: 9,
+  usedBytes,
+  name,
+  containerId: null,
+  containerName: null,
+  instanceKey: null,
+  deploymentName: null,
+});
+
+interface IBand {
+  label: string;
+  tone: string;
+  percent: number;
+  value?: string;
+  hoverNote?: string;
+}
+
+const mountBar = (props: Record<string, unknown>) => mount(VramBar, { props: { devices: [], ...props } });
+
+const bandsOf = (bar: ReturnType<typeof mountBar>): IBand[] => bar.findComponent(MfMeter).props('bands') as IBand[];
+
 describe('MfGpuVramBar', () => {
   it('pools the devices it is given, in use against total and what is free', () => {
     const bar = mount(VramBar, { props: { devices: [device(), device({ deviceKey: 'GPU-9a1b' })], legend: true } });
@@ -79,7 +101,7 @@ describe('MfGpuVramBar', () => {
     ]);
   });
 
-  it('splits what is in use by the process holding it, with what none accounts for as other', () => {
+  it('splits what is in use by deployment, with what none accounts for as other', () => {
     const bar = mount(VramBar, { props: { devices: [device()], legend: true, processes: true } });
 
     expect(bar.text()).toContain('modelfleet-01928f3c38 GiB');
@@ -88,25 +110,107 @@ describe('MfGpuVramBar', () => {
     expect(bar.text()).not.toContain('In use');
   });
 
-  it('folds processes of the same name into one band', () => {
-    const python = {
-      pid: 2,
-      usedBytes: 1 * GIB,
-      name: '/usr/bin/python3',
-      containerId: null,
-      containerName: null,
-      instanceKey: null,
-      deploymentName: null,
-    };
-    const bar = mount(VramBar, {
-      props: {
-        devices: [device({ processes: [python, { ...python, pid: 3 }] })],
-        legend: true,
-        processes: true,
-      },
+  it('folds the instances of one deployment into one band', () => {
+    const serving = { ...device().processes[0], deploymentName: 'qwen-coder' };
+    const bar = mountBar({
+      devices: [device({ processes: [serving, { ...serving, pid: 2, usedBytes: 2 * GIB }] })],
+      legend: true,
+      processes: true,
     });
 
-    expect(bar.text()).toContain('python32 GiB');
+    expect(bar.text()).toContain('qwen-coder40 GiB');
+    expect(bandsOf(bar).map(band => band.label)).toEqual(['qwen-coder']);
+  });
+
+  it('gives an outside process no band, rolling it into other with what no process accounts for', () => {
+    const bar = mountBar({
+      devices: [device({ processes: [outside('/usr/bin/Xorg', 1 * GIB), ...device().processes] })],
+      legend: true,
+      processes: true,
+    });
+
+    expect(bandsOf(bar).map(band => [band.label, band.value])).toEqual([
+      ['modelfleet-01928f3c', '38 GiB'],
+      ['Other', '2 GiB'],
+    ]);
+  });
+
+  it('lists each outside process with its memory on hovering other, the most memory first', () => {
+    const processes = [outside('/usr/bin/ollama', 8 * GIB), outside('/usr/bin/python', 12 * GIB)];
+    const bar = mountBar({ devices: [device({ processes })], legend: true, processes: true });
+
+    expect(bandsOf(bar)).toEqual([expect.objectContaining({ label: 'Other', value: '40 GiB' })]);
+    expect(bandsOf(bar)[0].hoverNote).toBe('python 12 GiB, ollama 8 GiB');
+  });
+
+  it('keeps other and its list where the deployments read a moment after the card total more than its used', () => {
+    const processes = [outside('/usr/bin/python', 2 * GIB), ...device().processes];
+    const bar = mountBar({ devices: [device({ memoryUsedBytes: 30 * GIB, processes })], processes: true });
+
+    expect(bandsOf(bar)[1]).toMatchObject({ label: 'Other', value: '0 B', percent: 0, hoverNote: 'python 2 GiB' });
+  });
+
+  it('pools the list across devices, leaving out a device whose memory was not measured', () => {
+    const measured = (name: string) => device({ memoryUsedBytes: 5 * GIB, processes: [outside(name, 5 * GIB)] });
+    const unmeasured = device({ memoryUsedBytes: null, processes: [outside('/usr/bin/blender', 12 * GIB)] });
+    const bar = mountBar({
+      devices: [measured('/usr/bin/python'), measured('/usr/bin/ollama'), unmeasured],
+      processes: true,
+    });
+
+    expect(bandsOf(bar)).toEqual([
+      expect.objectContaining({ label: 'Other', value: '10 GiB', hoverNote: 'python 5 GiB, ollama 5 GiB' }),
+    ]);
+  });
+
+  it('keeps the band of a deployment that reported no memory, reading as unknown', () => {
+    const serving = { ...device().processes[0], deploymentName: 'qwen-coder', usedBytes: null };
+    const bar = mountBar({ devices: [device({ processes: [serving] })], processes: true });
+
+    expect(bandsOf(bar).map(band => [band.label, band.value, band.percent])).toEqual([
+      ['qwen-coder', 'Unknown', 0],
+      ['Other', '40 GiB', 50],
+    ]);
+  });
+
+  it('folds outside processes of the same name in that list, still naming one that reported no memory', () => {
+    const processes = [
+      outside('/usr/bin/python', 1 * GIB),
+      outside('/usr/bin/python', 1 * GIB),
+      outside('/usr/bin/Xorg', null),
+    ];
+    const bar = mountBar({ devices: [device({ processes })], processes: true });
+
+    expect(bandsOf(bar)[0].hoverNote).toBe('python 2 GiB, Xorg unknown');
+  });
+
+  it('gives other no process list with no outside processes reported', () => {
+    const held = mountBar({ devices: [device()], legend: true, processes: true });
+    const unlisted = mountBar({ devices: [device({ processes: [] })], legend: true, processes: true });
+
+    expect(bandsOf(held)[1]).toMatchObject({ label: 'Other', value: '2 GiB' });
+    expect(bandsOf(held)[1].hoverNote).toBeUndefined();
+    expect(bandsOf(unlisted)[0].hoverNote).toBeUndefined();
+  });
+
+  it('keeps the headroom and starting bands either side of the deployments and other', () => {
+    const bar = mountBar({
+      devices: [
+        device({
+          processes: [outside('/usr/bin/python', GIB), ...device().processes],
+          predictions: [loading('qwen-coder', 6 * GIB)],
+        }),
+      ],
+      processes: true,
+      headroomBytes: GIB,
+    });
+
+    expect(bandsOf(bar).map(band => [band.label, band.tone])).toEqual([
+      ['Headroom', 'strong'],
+      ['modelfleet-01928f3c', PROCESS_METER_TONES[0]],
+      ['Other', 'muted'],
+      ['qwen-coder (starting)', 'pending'],
+    ]);
   });
 
   it('still names the total of a device read for it but not yet for its use', () => {
@@ -206,76 +310,29 @@ describe('MfGpuVramBar', () => {
     expect(bar.text()).not.toContain('free');
   });
 
-  it("leads with Modelfleet's own instances in the first process tone, what else holds the card following on", () => {
-    const external = {
-      pid: 9,
-      usedBytes: GIB,
-      name: '/usr/bin/Xorg',
-      containerId: null,
-      containerName: null,
-      instanceKey: null,
-      deploymentName: null,
-    };
-    const bar = mount(VramBar, {
-      props: { devices: [device({ processes: [external, ...device().processes] })], processes: true },
-    });
-
-    const bands = bar.findComponent(MfMeter).props('bands') as { label: string; tone: string }[];
-
-    expect(bands.slice(0, 2).map(band => [band.label, band.tone])).toEqual([
-      ['modelfleet-01928f3c', PROCESS_METER_TONES[0]],
-      ['Xorg', PROCESS_METER_TONES[1]],
-    ]);
-  });
-
-  it('cycles every process through one palette in order, own then external, wrapping once it runs out', () => {
-    const own = (index: number) => ({
+  it('cycles every deployment through one palette in order, wrapping once it runs out', () => {
+    const serving = (index: number) => ({
       ...device().processes[0],
       pid: 100 + index,
-      instanceKey: `01928f3c-0000-7000-8000-00000000010${index}`,
+      usedBytes: GIB,
+      instanceKey: `01928f3c-0000-7000-8000-0000000001${index.toString().padStart(2, '0')}`,
       deploymentName: `deployment-${index}`,
     });
-    const external = (index: number) => ({
-      pid: 200 + index,
-      usedBytes: GIB,
-      name: `/usr/bin/app-${index}`,
-      containerId: null,
-      containerName: null,
-      instanceKey: null,
-      deploymentName: null,
-    });
-    const processes = [0, 1, 2, 3, 4].flatMap(index => [own(index), external(index)]);
-    const bar = mount(VramBar, {
-      props: { devices: [device({ memoryUsedBytes: 80 * GIB, processes })], processes: true },
-    });
+    const processes = Array.from({ length: PROCESS_METER_TONES.length + 2 }, (_unused, index) => serving(index));
+    const bar = mountBar({ devices: [device({ memoryUsedBytes: 80 * GIB, processes })], processes: true });
 
-    const tones = (bar.findComponent(MfMeter).props('bands') as { tone: string }[]).map(band => band.tone);
-
-    expect(tones.slice(0, 10)).toEqual([...PROCESS_METER_TONES, ...PROCESS_METER_TONES].slice(0, 10));
+    expect(bandsOf(bar).map(band => band.tone)).toEqual([
+      ...PROCESS_METER_TONES,
+      ...PROCESS_METER_TONES.slice(0, 2),
+      'muted',
+    ]);
   });
 
-  it('gives a card held only by other processes a different tone for each', () => {
-    const external = (name: string, pid: number) => ({
-      pid,
-      usedBytes: GIB,
-      name,
-      containerId: null,
-      containerName: null,
-      instanceKey: null,
-      deploymentName: null,
-    });
-    const processes = [external('/usr/bin/Xorg', 1), external('/usr/bin/kwin', 2), external('/opt/firefox', 3)];
-    const bar = mount(VramBar, {
-      props: { devices: [device({ memoryUsedBytes: 3 * GIB, processes })], processes: true },
-    });
+  it('reads a card held only by outside processes as other alone', () => {
+    const processes = [outside('/usr/bin/Xorg', GIB), outside('/usr/bin/kwin', GIB)];
+    const bar = mountBar({ devices: [device({ memoryUsedBytes: 2 * GIB, processes })], processes: true });
 
-    const bands = bar.findComponent(MfMeter).props('bands') as { label: string; tone: string }[];
-
-    expect(bands.map(band => [band.label, band.tone])).toEqual([
-      ['Xorg', PROCESS_METER_TONES[0]],
-      ['kwin', PROCESS_METER_TONES[1]],
-      ['firefox', PROCESS_METER_TONES[2]],
-    ]);
+    expect(bandsOf(bar).map(band => [band.label, band.tone])).toEqual([['Other', 'muted']]);
   });
 
   it('splits what is starting by deployment, and shows no starting band where nothing is loading', () => {

@@ -36,7 +36,7 @@ describe('ConfigurationRevisionService', () => {
     expect(revisionOf({ image: 'llama:latest', replicas: 1 })).toBe(revisionOf({ image: 'llama:latest', replicas: 4 }));
   });
 
-  it('stands where it is when a declared VRAM figure changes, so the measured figure stays its own', () => {
+  it('stands where it is when a declared VRAM figure changes, so declaring one relaunches nothing', () => {
     expect(revisionOf({ image: 'llama:latest', vramGib: 6 })).toBe(revisionOf({ image: 'llama:latest', vramGib: 12 }));
   });
 

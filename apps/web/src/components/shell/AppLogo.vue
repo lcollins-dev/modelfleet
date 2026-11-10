@@ -1,15 +1,16 @@
 <template>
   <span class="inline-flex items-center gap-2">
-    <mf-logo :size="props.size === 'lg' ? 36 : 26" />
+    <icon-logo class="select-none" aria-hidden="true" :width="logoSize" :height="logoSize" />
 
     <mf-wordmark :class="props.size === 'lg' ? 'text-xl' : 'text-base'" />
   </span>
 </template>
 
 <script setup lang="ts">
-import { PropType } from 'vue';
+import { PropType, computed } from 'vue';
+import IconLogo from '~icons/modelfleet/logo';
 
-import { MfLogo, MfWordmark } from '@/components/mf';
+import { MfWordmark } from '@/components/mf';
 
 const props = defineProps({
   size: {
@@ -17,4 +18,6 @@ const props = defineProps({
     default: 'md',
   },
 });
+
+const logoSize = computed(() => (props.size === 'lg' ? 36 : 26));
 </script>

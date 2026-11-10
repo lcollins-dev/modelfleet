@@ -11,7 +11,7 @@
 import { PropType } from 'vue';
 
 export type AvatarSize = 'sm' | 'md' | 'lg';
-type AvatarType = 'primary' | 'gray' | 'brand';
+type AvatarType = 'primary' | 'gray';
 
 const SIZE_CLASSES: Record<AvatarSize, string> = {
   sm: 'size-7 text-xs',
@@ -22,7 +22,6 @@ const SIZE_CLASSES: Record<AvatarSize, string> = {
 const TYPE_CLASSES: Record<AvatarType, string> = {
   primary: 'bg-primary-soft text-accent',
   gray: 'bg-emphasis text-muted',
-  brand: 'bg-brand-tile font-semibold text-brand-accent',
 };
 
 const props = defineProps({

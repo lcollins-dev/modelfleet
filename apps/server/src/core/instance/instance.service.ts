@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Observable, Subject, map } from 'rxjs';
-import { Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { v7 as uuidv7 } from 'uuid';
 
@@ -14,19 +14,26 @@ import { Instance } from './entities/instance.entity';
 
 import { DeploymentService, IDeploymentDraft } from '../deployment/deployment.service';
 import { EventService } from '../event/event.service';
-import { VramLedgerService } from '../ledger/vram-ledger.service';
+import { FitRefusal, VramLedgerService } from '../ledger/vram-ledger.service';
 import { NodeService } from '../node/node.service';
 import { InstanceAdmissionService } from './instance-admission.service';
 import { InstanceDesiredStateService } from './instance-desired-state.service';
 import { INodePlacement, InstanceLaunchService, IPlannedEviction } from './instance-launch.service';
 
 const NOTHING_RUNNING_MESSAGE = 'This deployment has no running instances to stop';
-const INVALID_DRAFT_MESSAGE = 'This configuration holds a value its backend will not accept, so it cannot be sized';
+const INVALID_DRAFT_MESSAGE = 'Cannot estimate memory use because this configuration contains an unsupported value';
 const DEPLOYMENT_DISABLED_MESSAGE = 'This deployment is disabled. Enable it before starting an instance';
 const REPLACING_FAILED_NOTE = ' because its container failed';
 
 /** Nothing raises this until a scheduler retargets a running instance. */
 const FIRST_REVISION = 1;
+
+const OUT_OF_ROOM_REFUSALS: ReadonlySet<FitRefusal> = new Set([
+  FitRefusal.TOO_LARGE,
+  FitRefusal.HOST_MEMORY,
+  FitRefusal.CARD_TOO_SMALL,
+  FitRefusal.CARD_OUTGROWN,
+]);
 
 export interface IPlacementPreview {
   placements: INodePlacement[];
@@ -36,6 +43,24 @@ export interface IPlacementPreview {
 
   /** The constraint that stops the deployment as a whole, rather than one of its nodes. */
   problem: string | null;
+}
+
+export interface IRestartProblem {
+  message: string;
+
+  /** False for temporary problems that should be retried, such as missing node reports. */
+  outOfRoom: boolean;
+}
+
+export interface IRestartRefusal {
+  deploymentId: number;
+  deploymentName: string;
+  problem: string;
+}
+
+export interface IFleetRestart {
+  restarting: number;
+  refused: IRestartRefusal[];
 }
 
 export interface IStartOutcome {
@@ -226,6 +251,151 @@ export class InstanceService {
     for (const nodeId of new Set(instances.map(instance => instance.nodeId))) {
       await this.instanceDesiredStateService.publish(nodeId);
     }
+
+    this.announceChanged([...new Set(instances.map(instance => instance.deploymentId))]);
+  }
+
+  /** Requires the deployment relation to be loaded. */
+  isOnOlderSettings(instance: Instance): boolean {
+    return (
+      instance.instanceState !== InstanceState.FAILED &&
+      instance.deployment !== undefined &&
+      instance.configurationRevision !== instance.deployment.configurationRevision
+    );
+  }
+
+  findOnOlderSettings(): Promise<Instance[]> {
+    return this.instanceRepository
+      .createQueryBuilder('instance')
+      .innerJoinAndSelect('instance.deployment', 'deployment')
+      .innerJoinAndSelect('instance.node', 'node')
+      .where('instance."configurationRevision" <> deployment."configurationRevision"')
+      .andWhere('instance."instanceState" <> :failed', { failed: InstanceState.FAILED })
+      .orderBy('instance."instanceKey"', 'ASC')
+      .getMany();
+  }
+
+  async countDeploymentsOnOlderSettings(): Promise<number> {
+    const instances = await this.findOnOlderSettings();
+
+    return new Set(instances.map(instance => instance.deploymentId)).size;
+  }
+
+  /** Checks capacity for all replacements before recording any restart requests. */
+  async requestRestart(deploymentId: number, actorId: number): Promise<boolean> {
+    const deployment = await this.deploymentService.findWithThrow(deploymentId);
+
+    if (!deployment.enabled) {
+      throw new BadRequestException(DEPLOYMENT_DISABLED_MESSAGE);
+    }
+
+    const older = (await this.findByDeploymentId(deploymentId)).filter(instance => this.isOnOlderSettings(instance));
+
+    for (const instance of older) {
+      const problem = await this.restartProblem(deployment, instance);
+
+      if (problem !== null) {
+        throw new BadRequestException(problem.message);
+      }
+    }
+
+    const unmarked = older.filter(instance => instance.restartRequestedDate === null);
+
+    if (unmarked.length === 0) {
+      return false;
+    }
+
+    await this.markForRestart(deployment, unmarked, actorId);
+
+    this.announceChanged([deploymentId]);
+
+    return true;
+  }
+
+  async requestRestartAll(actorId: number): Promise<IFleetRestart> {
+    const older = (await this.findOnOlderSettings()).filter(instance => instance.deployment?.enabled === true);
+    const names = new Map(older.map(instance => [instance.deploymentId, instance.deployment?.name ?? '']));
+    const outcome: IFleetRestart = { restarting: 0, refused: [] };
+
+    for (const [deploymentId, deploymentName] of names) {
+      try {
+        if (await this.requestRestart(deploymentId, actorId)) {
+          outcome.restarting++;
+        }
+      } catch (error: unknown) {
+        if (!(error instanceof BadRequestException)) {
+          throw error;
+        }
+
+        outcome.refused.push({ deploymentId, deploymentName, problem: error.message });
+      }
+    }
+
+    return outcome;
+  }
+
+  /** Counts the current instance's memory as available when checking a replacement on the same node. */
+  async restartProblem(deployment: Deployment, instance: Instance): Promise<IRestartProblem | null> {
+    try {
+      const placements = await this.instanceLaunchService.resolvePlacements(deployment);
+      const placement = placements.find(candidate => candidate.nodeId === instance.nodeId);
+
+      return placement === undefined
+        ? await this.moveProblem(deployment, placements)
+        : await this.problemOn(deployment, placement, [instance.instanceKey]);
+    } catch (error: unknown) {
+      if (!(error instanceof BadRequestException)) {
+        throw error;
+      }
+
+      return { message: error.message, outOfRoom: false };
+    }
+  }
+
+  private async moveProblem(deployment: Deployment, placements: INodePlacement[]): Promise<IRestartProblem | null> {
+    const held = await this.countByNode(deployment.id);
+    const replicas = this.instanceLaunchService.replicasOf(deployment);
+    const problems: (IRestartProblem | null)[] = [];
+
+    for (const placement of placements.filter(candidate => (held.get(candidate.nodeId) ?? 0) < replicas)) {
+      problems.push(await this.problemOn(deployment, placement, []));
+    }
+
+    return problems.includes(null) ? null : (problems.at(0) ?? null);
+  }
+
+  private async problemOn(
+    deployment: Deployment,
+    placement: INodePlacement,
+    releasing: string[]
+  ): Promise<IRestartProblem | null> {
+    const { problem, capacity } =
+      placement.problem === null
+        ? await this.instanceAdmissionService.previewReleasing(deployment, placement, releasing)
+        : placement;
+
+    if (problem === null) {
+      return null;
+    }
+
+    const node = await this.nodeService.findWithThrow(placement.nodeId);
+
+    return {
+      message: `${node.name}: ${problem}`,
+      outOfRoom:
+        capacity?.refusal !== undefined && capacity.refusal !== null && OUT_OF_ROOM_REFUSALS.has(capacity.refusal),
+    };
+  }
+
+  async clearRestartRequest(instances: Instance[]): Promise<void> {
+    if (instances.length === 0) {
+      return;
+    }
+
+    await this.instanceRepository.update(
+      { id: In(instances.map(instance => instance.id)) },
+      { restartRequestedDate: null }
+    );
 
     this.announceChanged([...new Set(instances.map(instance => instance.deploymentId))]);
   }
@@ -476,6 +646,23 @@ export class InstanceService {
     });
 
     return instance;
+  }
+
+  @Transactional()
+  private async markForRestart(deployment: Deployment, instances: Instance[], actorId: number): Promise<void> {
+    await this.instanceRepository.update(
+      { id: In(instances.map(instance => instance.id)), restartRequestedDate: IsNull() },
+      { restartRequestedDate: new Date() }
+    );
+
+    await this.eventService.recordEvent(EventType.DEPLOYMENT_RESTART_REQUESTED, EventSeverity.INFO, {
+      actorType: EventPartyType.USER,
+      actorId: `${actorId}`,
+      subjectType: EventPartyType.DEPLOYMENT,
+      subjectId: `${deployment.id}`,
+      message: `Requested restart of ${instances.length} ${instances.length === 1 ? 'instance' : 'instances'} of **${deployment.name}** with the latest settings`,
+      detail: { name: deployment.name, instances: instances.length },
+    });
   }
 
   @Transactional()

@@ -16,4 +16,5 @@ export const FIT_REFUSAL_REASONS: Record<FitRefusal, PlacementProblemReason> = {
   [FitRefusal.HOST_MEMORY]: PlacementProblemReason.NOT_ENOUGH_RAM,
   [FitRefusal.CARD_TOO_SMALL]: PlacementProblemReason.NOT_ENOUGH_VRAM,
   [FitRefusal.CARD_OUTGROWN]: PlacementProblemReason.NOT_ENOUGH_VRAM,
+  [FitRefusal.LOAD_IN_PROGRESS]: PlacementProblemReason.OTHER,
 };

@@ -1,7 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Observable, Subject } from 'rxjs';
 
-import { AgentTelemetry, GpuDeviceMetrics, HostResources, TelemetryError, TelemetryState } from '@libs/agent-protocol';
+import {
+  AgentTelemetry,
+  GpuDeviceMetrics,
+  HostResources,
+  ProcessAttribution,
+  TelemetryError,
+  TelemetryState,
+} from '@libs/agent-protocol';
 
 export interface INodeTelemetry {
   capturedAt: string;
@@ -10,6 +17,16 @@ export interface INodeTelemetry {
   host: HostResources;
   errors: TelemetryError[];
   receivedDate: Date;
+}
+
+export interface IMeasuredInstance {
+  instanceKey: string;
+  gpus: string[];
+}
+
+export interface IMeasuredUsage {
+  vramBytes: number | null;
+  ramBytes: number | null;
 }
 
 /** Readings live for the life of the process. */
@@ -73,6 +90,58 @@ export class TelemetryService {
     }
 
     return total;
+  }
+
+  measuredUsage(nodeId: number, instances: IMeasuredInstance[]): IMeasuredUsage {
+    const telemetry = this.getTelemetry(nodeId);
+
+    if (telemetry === null) {
+      return { vramBytes: null, ramBytes: null };
+    }
+
+    return {
+      vramBytes: this.sumOf(instances.map(instance => this.heldOnCards(telemetry.devices, instance))),
+      ramBytes: this.sumOf(instances.map(instance => this.residentBytesOf(telemetry.host, instance.instanceKey))),
+    };
+  }
+
+  private sumOf(readings: (number | null)[]): number | null {
+    let total = 0;
+
+    for (const reading of readings) {
+      if (reading === null) {
+        return null;
+      }
+
+      total += reading;
+    }
+
+    return total;
+  }
+
+  /** A backend need not use every card it is pinned to, so a card with none of its processes holds none of it. */
+  private heldOnCards(devices: GpuDeviceMetrics[], instance: IMeasuredInstance): number | null {
+    let total: number | null = null;
+
+    for (const deviceKey of instance.gpus) {
+      const device = devices.find(candidate => candidate.deviceKey === deviceKey);
+
+      if (device === undefined || device.processAttribution !== ProcessAttribution.EXACT) {
+        return null;
+      }
+
+      const held = this.heldBy(device, instance.instanceKey);
+
+      if (held !== null) {
+        total = (total ?? 0) + held;
+      }
+    }
+
+    return total;
+  }
+
+  private residentBytesOf(host: HostResources, instanceKey: string): number | null {
+    return host.instanceMemory?.find(reading => reading.instanceKey === instanceKey)?.residentBytes ?? null;
   }
 
   /** Emits the node whose readings changed, on both a new reading and a dropped session. */

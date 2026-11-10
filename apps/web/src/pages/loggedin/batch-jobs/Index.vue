@@ -62,7 +62,7 @@ import { JOB_RESULT_LABELS, JOB_RESULT_TAG_TYPES, jobResult } from '@/utils/jobR
 
 import { useLogService } from '@/services/LogService';
 import { useBatchJobAdminService } from '@/services/api/admin/BatchJobAdminService';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import {
   UiCard,
@@ -89,7 +89,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/batch-jobs/Index');
 
 const batchJobAdminService = useBatchJobAdminService();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 
 const pendingId = ref<number | null>(null);
 
@@ -112,9 +112,9 @@ const doSetEnabled = (batchJob: BatchJobDto, enabled: boolean) => {
         listed === batchJob ? { ...listed, enabled } : listed
       );
 
-      notificationStore.addToast(
+      toastStore.addToast(
         enabled ? 'Job enabled' : 'Job disabled',
-        enabled ? `${batchJob.name} runs on its schedule.` : `${batchJob.name} won't run until you enable it.`
+        enabled ? `${batchJob.name} will run as scheduled.` : `${batchJob.name} won't run until you enable it.`
       );
     })
     .finally(() => {

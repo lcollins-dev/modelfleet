@@ -44,6 +44,26 @@ describe('DownloadLocationService', () => {
     expect(location.filePath).toBe('/b/gguf/qwen/model.gguf');
   });
 
+  it('writes under the model directory the download names, matched as the node has it configured', () => {
+    const location = serviceWith(['/b', '/a']).fileLocation(
+      { ...DOWNLOAD, modelDirectory: '/a' },
+      fileOf('model.gguf')
+    );
+
+    expect(location.modelDirectory).toBe('/a');
+    expect(location.filePath).toBe('/a/huggingface/owner/repo/model.gguf');
+  });
+
+  it.each([
+    ['a directory the node does not have', '/c'],
+    ['a directory beneath one it has', '/a/sub'],
+    ['one it has, spelled otherwise', '/a/'],
+  ])('refuses %s, naming it', (_case, modelDirectory) => {
+    expect(() => serviceWith(['/b', '/a']).fileLocation({ ...DOWNLOAD, modelDirectory }, fileOf('model.gguf'))).toThrow(
+      `Model directory ${modelDirectory} is not configured on this node.`
+    );
+  });
+
   it('refuses a path that would land outside the model directory', () => {
     expect(() => serviceWith(['/b']).fileLocation(DOWNLOAD, fileOf('../../../../escape.gguf'))).toThrow(
       'huggingface/owner/repo/../../../../escape.gguf would land outside /b'
@@ -63,6 +83,23 @@ describe('DownloadLocationService', () => {
       await expect(service.checkContained(service.fileLocation(DOWNLOAD, fileOf('model.gguf')))).rejects.toThrow(
         'leads outside'
       );
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a file that a symlink carries out of the chosen model directory into another configured one', async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'modelfleet-location-')));
+
+    try {
+      await mkdir(join(base, 'fast'));
+      await mkdir(join(base, 'bulk'));
+      await symlink(join(base, 'bulk'), join(base, 'fast', 'huggingface'));
+
+      const service = serviceWith([join(base, 'bulk'), join(base, 'fast')]);
+      const location = service.fileLocation({ ...DOWNLOAD, modelDirectory: join(base, 'fast') }, fileOf('model.gguf'));
+
+      await expect(service.checkContained(location)).rejects.toThrow(`leads outside ${join(base, 'fast')}`);
     } finally {
       await rm(base, { recursive: true, force: true });
     }

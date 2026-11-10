@@ -32,14 +32,14 @@ import { PresetService } from '@/core/preset/preset.service';
 
 import { ModelUsageRegistry } from '@/core/model/model-usage.registry';
 import { PresetReferenceRegistry } from '@/core/preset/preset-reference.registry';
-import { buildDeployment, TEST_DEPLOYMENT_ID as DEPLOYMENT_ID, TEST_REVISION } from '@/test/deployment.factory';
+import { buildDeployment, TEST_DEPLOYMENT_ID as DEPLOYMENT_ID } from '@/test/deployment.factory';
 import { buildModel, TEST_MODEL_ID as MODEL_ID } from '@/test/model.factory';
 import { buildPreset, TEST_PRESET_ID as PRESET_ID } from '@/test/preset.factory';
 import { issuePathsFrom } from '@/test/validation';
 
 vi.mock('typeorm-transactional', () => {
   const transactionalDecorator = () => () => undefined;
-  return { Transactional: transactionalDecorator };
+  return { Transactional: transactionalDecorator, runOnTransactionCommit: (callback: () => void) => callback() };
 });
 
 const ACTOR_ID = 7;
@@ -54,7 +54,6 @@ const documentEntries = (resolved: IEffectiveConfiguration): IEffectiveConfigura
 
 interface IWrittenRevisions {
   configurationRevision: string;
-  appliedRevision?: string;
 }
 
 const definition = (overrides: Partial<IDeploymentDefinition> = {}): IDeploymentDefinition => ({
@@ -90,12 +89,10 @@ describe('DeploymentService', () => {
   let deploymentService: DeploymentService;
   let nameTaken: boolean;
   let rawPresetCounts: { presetId: number; deployments: number }[];
-  let outOfDate: Deployment[];
 
   beforeEach(async () => {
     nameTaken = false;
     rawPresetCounts = [];
-    outOfDate = [];
 
     deploymentRepository = {
       findOne: vi.fn().mockResolvedValue(null),
@@ -110,8 +107,6 @@ describe('DeploymentService', () => {
         groupBy: vi.fn().mockReturnThis(),
         getExists: vi.fn(() => Promise.resolve(nameTaken)),
         getRawMany: vi.fn(() => Promise.resolve(rawPresetCounts)),
-        getMany: vi.fn(() => Promise.resolve(outOfDate)),
-        getCount: vi.fn(() => Promise.resolve(outOfDate.length)),
       })),
     };
 
@@ -266,7 +261,7 @@ describe('DeploymentService', () => {
       modelService.findByFingerprints.mockResolvedValue(new Map([[PROJECTOR_FINGERPRINT, model]]));
 
       await expect(deploymentService.create(definition({ document }), ACTOR_ID)).rejects.toThrow(
-        'is a LoRA adapter, and Projector takes a multimodal projector'
+        'Projector requires a multimodal projector'
       );
       expect(deploymentRepository.insert).not.toHaveBeenCalled();
     });
@@ -345,7 +340,7 @@ describe('DeploymentService', () => {
       modelService.findWithThrow.mockResolvedValue(buildModel({ name: 'whisper', format: ModelFormat.SAFETENSORS }));
 
       await expect(deploymentService.create(definition(), ACTOR_ID)).rejects.toThrow(
-        'whisper is a safetensors model, and llama.cpp loads GGUF alone'
+        'whisper uses safetensors format. llama.cpp only supports GGUF'
       );
       expect(deploymentRepository.insert).not.toHaveBeenCalled();
     });
@@ -442,7 +437,7 @@ describe('DeploymentService', () => {
           definition({ presetId: null, backend: BackendId.VLLM, document: '' }),
           ACTOR_ID
         )
-      ).rejects.toThrow('llama-3-8b is a GGUF model, and vllm loads safetensors alone');
+      ).rejects.toThrow('llama-3-8b uses GGUF format. vllm only supports safetensors');
       expect(deploymentRepository.update).not.toHaveBeenCalled();
     });
 
@@ -701,8 +696,6 @@ describe('DeploymentService', () => {
       const deployment = await deploymentService.create(definition(), ACTOR_ID);
 
       expect(deployment.configurationRevision).toHaveLength(64);
-      expect(deployment.appliedRevision).toBe(deployment.configurationRevision);
-      expect(deploymentService.isOutOfDate(deployment)).toBe(false);
     });
 
     it('moves the revision when an edit changes a relaunch-required field', async () => {
@@ -737,14 +730,6 @@ describe('DeploymentService', () => {
       );
 
       expect(revisionPassedTo('update').configurationRevision).toBe(before);
-    });
-
-    it('leaves the applied revision alone on an edit, so the deployment reads as out of date', async () => {
-      deploymentRepository.findOne.mockResolvedValue(buildDeployment());
-
-      await deploymentService.update(DEPLOYMENT_ID, definition({ document: 'threads: 4\n' }), ACTOR_ID);
-
-      expect(revisionPassedTo('update').appliedRevision).toBeUndefined();
     });
   });
 
@@ -794,7 +779,19 @@ describe('DeploymentService', () => {
       expect(written.configurationRevision).toHaveLength(64);
     });
 
-    it('leaves a deployment overriding the changed field where it stands', async () => {
+    it('emits changes only for updated revisions after the transaction commits', async () => {
+      const deployments = await settle();
+      const announced: number[] = [];
+
+      deploymentService.deploymentChanged().subscribe(id => announced.push(id));
+      changePresetTo(deployments, { image: 'llama:latest', threads: 16, flashAttn: 'off' });
+
+      await deploymentService.onPresetConfigurationChanged(PRESET_ID);
+
+      expect(announced).toEqual([INHERITING_ID]);
+    });
+
+    it('keeps the revision unchanged when the deployment overrides the edited field', async () => {
       const deployments = await settle();
       changePresetTo(deployments, { image: 'llama:latest', threads: 16, flashAttn: 'off' });
 
@@ -803,79 +800,13 @@ describe('DeploymentService', () => {
       expect(deploymentRepository.update).not.toHaveBeenCalledWith({ id: OVERRIDING_ID }, expect.anything());
     });
 
-    it('leaves every deployment where it stands when the preset moves a hot field alone', async () => {
+    it('keeps deployment revisions unchanged after hot-field preset edits', async () => {
       const deployments = await settle();
       changePresetTo(deployments, { image: 'llama:latest', threads: 16, replicas: 4 });
 
       await deploymentService.onPresetConfigurationChanged(PRESET_ID);
 
       expect(deploymentRepository.update).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('apply', () => {
-    it('brings the applied revision up to the current one', async () => {
-      deploymentRepository.findOne.mockResolvedValue(
-        buildDeployment({ configurationRevision: 'b'.repeat(64), appliedRevision: TEST_REVISION })
-      );
-
-      await deploymentService.apply(DEPLOYMENT_ID, ACTOR_ID);
-
-      expect(deploymentRepository.update).toHaveBeenCalledWith(
-        { id: DEPLOYMENT_ID },
-        { appliedRevision: 'b'.repeat(64) }
-      );
-    });
-
-    it('records the apply against the actor', async () => {
-      deploymentRepository.findOne.mockResolvedValue(
-        buildDeployment({ configurationRevision: 'b'.repeat(64), appliedRevision: TEST_REVISION })
-      );
-
-      await deploymentService.apply(DEPLOYMENT_ID, ACTOR_ID);
-
-      expect(eventService.recordEvent).toHaveBeenCalledWith(
-        EventType.DEPLOYMENT_APPLIED,
-        expect.anything(),
-        expect.objectContaining({ actorType: EventPartyType.USER, subjectType: EventPartyType.DEPLOYMENT })
-      );
-    });
-
-    it('writes nothing for a deployment already up to date', async () => {
-      deploymentRepository.findOne.mockResolvedValue(buildDeployment());
-
-      await deploymentService.apply(DEPLOYMENT_ID, ACTOR_ID);
-
-      expect(deploymentRepository.update).not.toHaveBeenCalled();
-      expect(eventService.recordEvent).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('applyAll', () => {
-    it('applies every out-of-date deployment and answers with how many moved', async () => {
-      outOfDate = [
-        buildDeployment({ id: 1, configurationRevision: 'b'.repeat(64) }),
-        buildDeployment({ id: 2, configurationRevision: 'c'.repeat(64) }),
-      ];
-
-      await expect(deploymentService.applyAll(ACTOR_ID)).resolves.toBe(2);
-
-      expect(deploymentRepository.update).toHaveBeenCalledWith({ id: 1 }, { appliedRevision: 'b'.repeat(64) });
-      expect(deploymentRepository.update).toHaveBeenCalledWith({ id: 2 }, { appliedRevision: 'c'.repeat(64) });
-    });
-
-    it('applies nothing where the fleet is up to date', async () => {
-      await expect(deploymentService.applyAll(ACTOR_ID)).resolves.toBe(0);
-
-      expect(deploymentRepository.update).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('countOutOfDate', () => {
-    it('counts the deployments whose configuration has moved ahead of what was applied', async () => {
-      outOfDate = [buildDeployment()];
-
-      await expect(deploymentService.countOutOfDate()).resolves.toBe(1);
     });
   });
 
@@ -947,7 +878,6 @@ describe('DeploymentService', () => {
         document: '',
         configuration: {},
         configurationRevision: '',
-        appliedRevision: '',
       });
       deployment.preset = buildPreset();
 

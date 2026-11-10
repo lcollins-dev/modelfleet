@@ -14,6 +14,7 @@ import {
   tap,
 } from 'rxjs';
 
+import { InstanceState } from '@libs/agent-protocol';
 import { LaunchMode } from '@libs/backends';
 import {
   ActivationPolicy,
@@ -27,6 +28,7 @@ import {
   NodeInstancesResponseDto,
   PlacementCapacityDto,
   PlacementEvictionDto,
+  PlacementMeasuredDto,
   PlacementNodeDto,
   PlacementPreviewRequestDto,
   PlacementPreviewResponseDto,
@@ -79,7 +81,8 @@ export class InstanceAdminService {
       instances: await this.getIListInstances(instances),
       placement: await this.getIInstancePlacement(
         await this.instanceService.previewPlacements(deploymentId, this.evictionPreviewer),
-        instances
+        instances,
+        true
       ),
       residency: this.getIDeploymentResidency(deployment, instances),
     };
@@ -100,7 +103,7 @@ export class InstanceAdminService {
     );
     const instances = deploymentId === null ? [] : await this.instanceService.findByDeploymentId(deploymentId);
 
-    return { placement: await this.getIInstancePlacement(preview, instances) };
+    return { placement: await this.getIInstancePlacement(preview, instances, false) };
   }
 
   /**
@@ -109,19 +112,19 @@ export class InstanceAdminService {
    * an opening read that rejects. A failed read otherwise leaves the stream open for the next.
    *
    * Reads again on any instance write, on an edit, enable or disable of this deployment, and on telemetry from a node
-   * its placement refuses or would evict on. A stop drops its row while the container still holds its memory, so only a later reading
-   * shows it freed.
+   * its placement refuses, would evict on or shows measured figures for. A stop drops its row while the container still
+   * holds its memory, so only a later reading shows it freed.
    */
   async watchDeploymentInstances(deploymentId: number): Promise<Observable<DeploymentInstancesResponseDto>> {
-    const refusingNodeIds = (response: DeploymentInstancesResponseDto) =>
+    const telemetryNodeIds = (response: DeploymentInstancesResponseDto) =>
       new Set(
         response.placement.nodes
-          .filter(node => node.problem !== null || node.evictions.length > 0)
+          .filter(node => node.problem !== null || node.evictions.length > 0 || node.measured !== null)
           .map(node => node.nodeId)
       );
 
     const opening = await this.getDeploymentInstances(deploymentId);
-    let watchedNodeIds = refusingNodeIds(opening);
+    let watchedNodeIds = telemetryNodeIds(opening);
 
     const readings = this.telemetryService.telemetryChanged().pipe(
       filter(nodeId => watchedNodeIds.has(nodeId)),
@@ -143,7 +146,7 @@ export class InstanceAdminService {
           )
         ),
         tap(response => {
-          watchedNodeIds = refusingNodeIds(response);
+          watchedNodeIds = telemetryNodeIds(response);
         }),
         takeUntil(removed)
       )
@@ -162,7 +165,7 @@ export class InstanceAdminService {
 
     return concat(
       of(opening),
-      this.instanceService.instancesChanged().pipe(
+      merge(this.instanceService.instancesChanged(), this.deploymentService.deploymentChanged()).pipe(
         concatMap(() => this.getNodeInstances(nodeId)),
         catchError(() => EMPTY)
       )
@@ -178,7 +181,7 @@ export class InstanceAdminService {
 
     return concat(
       of(opening),
-      this.instanceService.instancesChanged().pipe(
+      merge(this.instanceService.instancesChanged(), this.deploymentService.deploymentChanged()).pipe(
         concatMap(() =>
           from(this.getInstances()).pipe(
             catchError((error: unknown) => {
@@ -234,16 +237,21 @@ export class InstanceAdminService {
       idleSince: onDemand ? (facts.idleSince ?? null) : null,
       inFlight: facts.inFlight,
       launchFailures: deployment.launchFailures,
-      retryDate: !facts.givenUp && this.supervisorPolicyService.backingOff(facts) ? (facts.backoffUntil ?? null) : null,
+      retryDate:
+        facts.enabled && !facts.givenUp && this.supervisorPolicyService.backingOff(facts)
+          ? (facts.backoffUntil ?? null)
+          : null,
       givenUp: facts.enabled && facts.givenUp,
       lastLaunchFailure: deployment.lastLaunchFailure,
-      makingRoomNodeIds: facts.makingRoomNodeIds,
+      makingRoomNodeIds: facts.restarting ? [] : facts.makingRoomNodeIds,
+      restarting: facts.restarting,
     };
   }
 
   private async getIInstancePlacement(
     preview: IPlacementPreview,
-    instances: Instance[]
+    instances: Instance[],
+    measure: boolean
   ): Promise<InstancePlacementDto> {
     const nodes: PlacementNodeDto[] = [];
 
@@ -260,6 +268,7 @@ export class InstanceAdminService {
         problem: placement.problem,
         problemReason: this.getIProblemReason(placement),
         expectedUsage: this.getIExpectedUsage(placement.expected),
+        measured: measure ? this.getIPlacementMeasured(placement.nodeId, preview.replicas, instances) : null,
         capacity: await this.getIPlacementCapacity(placement.nodeId, placement.capacity),
         evictions: await this.getIPlacementEvictions(placement.evictions ?? []),
       });
@@ -303,6 +312,22 @@ export class InstanceAdminService {
     }
 
     return evictions;
+  }
+
+  /** Null short of the node's full share, a failed instance holding none of it. */
+  private getIPlacementMeasured(nodeId: number, replicas: number, instances: Instance[]): PlacementMeasuredDto | null {
+    const held = instances.filter(
+      instance => instance.nodeId === nodeId && instance.instanceState !== InstanceState.FAILED
+    );
+
+    if (held.length < replicas) {
+      return null;
+    }
+
+    return this.telemetryService.measuredUsage(
+      nodeId,
+      held.map(instance => ({ instanceKey: instance.instanceKey, gpus: instance.pins.gpus }))
+    );
   }
 
   private getIExpectedUsage(expected: IKnownUsage | undefined): ExpectedUsageDto | null {
@@ -390,6 +415,8 @@ export class InstanceAdminService {
       nodeState: this.nodeService.getState(node),
       devices: await this.getIInstanceDevices(node.id, instance.pins.gpus),
       state: INSTANCE_STATES[instance.instanceState],
+      onOlderSettings: this.instanceService.isOnOlderSettings(instance),
+      restartRequested: instance.restartRequestedDate !== null,
       message: instance.message,
       exitCode: instance.exitCode,
       startedDate: this.getStartedDate(instance),

@@ -7,8 +7,17 @@ import { DownloadState, DownloadDto, DownloadProgressDto } from './download';
 export const DOWNLOAD_MAX_FILES = 64;
 export const DOWNLOAD_MAX_PATH_LENGTH = 512;
 export const DOWNLOAD_MAX_DIRECTORY_LENGTH = 256;
+export const DOWNLOAD_MAX_MODEL_DIRECTORY_LENGTH = 1024;
 
 const DOWNLOAD_MAX_NODES = 64;
+
+export const DownloadModelDirectoryRequestDto = requestBody({
+  nodeId: id(),
+
+  /** One of the node's model directories, exactly as its telemetry reports it. */
+  path: text(1, DOWNLOAD_MAX_MODEL_DIRECTORY_LENGTH),
+});
+export type DownloadModelDirectoryRequestDto = z.infer<typeof DownloadModelDirectoryRequestDto>;
 
 export const CreateDownloadRequestDto = requestBody({
   /** `owner/name` on the source. */
@@ -17,11 +26,14 @@ export const CreateDownloadRequestDto = requestBody({
   /** Absent or empty reads as `main`. Pinned to its commit when the download is created. */
   revision: optionalText(256),
 
-  /** Relative to each node's first model directory. */
+  /** Relative to the model directory each node lands the files in. */
   directory: text(1, DOWNLOAD_MAX_DIRECTORY_LENGTH, { trim: true }),
 
   files: selection(text(0, DOWNLOAD_MAX_PATH_LENGTH, { trim: true }), 1, DOWNLOAD_MAX_FILES),
   nodeIds: selection(id(), 1, DOWNLOAD_MAX_NODES),
+
+  /** A node left out lands the files in its first model directory. */
+  modelDirectories: selection(DownloadModelDirectoryRequestDto, 0, DOWNLOAD_MAX_NODES).optional(),
 });
 export type CreateDownloadRequestDto = z.infer<typeof CreateDownloadRequestDto>;
 

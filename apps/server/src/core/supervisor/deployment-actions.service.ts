@@ -11,7 +11,7 @@ import { ILaunchFailureCount } from '../deployment/deployment.service';
 import { EventService } from '../event/event.service';
 import { InstanceAdmissionService } from '../instance/instance-admission.service';
 import { INodePlacement } from '../instance/instance-launch.service';
-import { IRoomOutcome, InstanceService, RoomMaker } from '../instance/instance.service';
+import { IInstanceChange, IRoomOutcome, InstanceService, RoomMaker } from '../instance/instance.service';
 import { NodeService } from '../node/node.service';
 
 import { AcquireRefusal, IStartRefusal } from './supervisor.types';
@@ -20,6 +20,8 @@ const KEEPING_RESIDENT_NOTE = ' to keep it resident';
 const SERVE_REQUEST_NOTE = ' to serve a request';
 const REPLACING_FAILED_NOTE = ' because its container failed';
 const DISABLED_NOTE = ' because the deployment is disabled';
+const RESTARTING_NOTE = ' to restart it on the latest settings';
+const RESTARTED_NOTE = ' with the latest settings';
 
 /**
  * What the deployment supervisor does once it has decided: the rows it writes to start and stop a deployment, and the
@@ -47,7 +49,8 @@ export class DeploymentActionsService {
     deployment: Deployment,
     instances: Instance[],
     live: number,
-    makeRoom: RoomMaker = this.leaveRefused
+    makeRoom: RoomMaker = this.leaveRefused,
+    restarting = false
   ): Promise<IStartRefusal | null> {
     const always = deployment.activationPolicy === ActivationPolicy.ALWAYS;
     const failed = instances.filter(instance => instance.instanceState === InstanceState.FAILED);
@@ -59,11 +62,7 @@ export class DeploymentActionsService {
     });
 
     try {
-      const outcome = await this.instanceService.bringUp(deployment.id, {
-        actorId: null,
-        reason: always ? InstanceChangeReason.ALWAYS_POLICY : InstanceChangeReason.ON_REQUEST,
-        note: always ? KEEPING_RESIDENT_NOTE : SERVE_REQUEST_NOTE,
-      });
+      const outcome = await this.instanceService.bringUp(deployment.id, this.startChange(always, restarting));
 
       const room = await makeRoom(deployment, outcome.refused, outcome.started);
 
@@ -82,6 +81,18 @@ export class DeploymentActionsService {
 
       return { refusal: AcquireRefusal.CANNOT_START, problem: error.message };
     }
+  }
+
+  private startChange(always: boolean, restarting: boolean): IInstanceChange {
+    if (restarting) {
+      return { actorId: null, reason: InstanceChangeReason.SETTINGS_CHANGED, note: RESTARTED_NOTE };
+    }
+
+    return {
+      actorId: null,
+      reason: always ? InstanceChangeReason.ALWAYS_POLICY : InstanceChangeReason.ON_REQUEST,
+      note: always ? KEEPING_RESIDENT_NOTE : SERVE_REQUEST_NOTE,
+    };
   }
 
   private readonly leaveRefused: RoomMaker = (_deployment, refused): Promise<IRoomOutcome> =>
@@ -115,7 +126,29 @@ export class DeploymentActionsService {
     });
   }
 
-  /** The event is the log's account of giving up, so failing to write it costs the account and not the reconcile. */
+  async stopForRestart(instance: Instance): Promise<void> {
+    await this.instanceService.takeDown([instance], {
+      actorId: null,
+      reason: InstanceChangeReason.SETTINGS_CHANGED,
+      note: RESTARTING_NOTE,
+    });
+  }
+
+  /** Logs event-write failures and allows reconciliation to continue. */
+  async sayRestartRefused(deployment: Deployment, problem: string): Promise<void> {
+    try {
+      await this.eventService.recordEvent(EventType.INSTANCE_START_REFUSED, EventSeverity.WARNING, {
+        subjectType: EventPartyType.DEPLOYMENT,
+        subjectId: `${deployment.id}`,
+        message: `Restart refused for an instance of **${deployment.name}**: the latest settings would not fit`,
+        detail: { name: deployment.name, problem },
+      });
+    } catch (error: unknown) {
+      this.logger.error({ error, deploymentId: deployment.id }, 'sayRestartRefused(): Recording a refusal failed');
+    }
+  }
+
+  /** Logs event-write failures and allows reconciliation to continue. */
   async sayGivenUp(count: ILaunchFailureCount): Promise<void> {
     try {
       await this.eventService.recordEvent(EventType.DEPLOYMENT_GIVEN_UP, EventSeverity.ERROR, {

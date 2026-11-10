@@ -1,13 +1,13 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 
 import {
-  ApplyDeploymentsResponseDto,
   CreateDeploymentResponseDto,
   DeploymentDto,
   DeploymentConfigurationDto,
   DeploymentListResponseDto,
   OutOfDateDeploymentsResponseDto,
   PresetSwapResponseDto,
+  RestartDeploymentsResponseDto,
   UserRoleId,
   CreateDeploymentRequestDto,
   DeploymentListRequestDto,
@@ -52,9 +52,9 @@ export class DeploymentAdminController {
     return this.deploymentAdminService.getOutOfDateDeployments();
   }
 
-  @Post('apply')
-  applyDeployments(@GetUser() user: User): Promise<ApplyDeploymentsResponseDto> {
-    return this.deploymentAdminService.applyDeployments(user.id);
+  @Post('restart')
+  restartDeployments(@GetUser() user: User): Promise<RestartDeploymentsResponseDto> {
+    return this.deploymentAdminService.restartDeployments(user.id);
   }
 
   @Get(':deploymentId')
@@ -69,12 +69,12 @@ export class DeploymentAdminController {
     return this.deploymentAdminService.getDeploymentConfiguration(deploymentId);
   }
 
-  @Post(':deploymentId/apply')
-  applyDeployment(
+  @Post(':deploymentId/restart')
+  restartDeployment(
     @GetUser() user: User,
     @Param('deploymentId', new ZodPipe(IdParamDto)) deploymentId: number
   ): Promise<void> {
-    return this.deploymentAdminService.applyDeployment(deploymentId, user.id);
+    return this.deploymentAdminService.restartDeployment(deploymentId, user.id);
   }
 
   @Patch(':deploymentId/preset-swap')

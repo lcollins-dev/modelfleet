@@ -108,7 +108,13 @@ export const instanceMemorySchema = z.object({
   /** File-backed pages only, the part `MemAvailable` still counts as free. Null where the processes could not be read. */
   heldBytes: z.number().int().nonnegative().nullable(),
 
-  /** File-backed plus anonymous, null together with `heldBytes`. Absent from an agent that predates it. */
+  /**
+   * Shared pages, where CUDA pinned host buffers show. Already out of `MemAvailable`, unlike `heldBytes`. Null together
+   * with `heldBytes`. Absent from an agent that predates it.
+   */
+  sharedBytes: z.number().int().nonnegative().nullable().optional(),
+
+  /** File-backed, anonymous and shared, null together with `heldBytes`. Absent from an agent that predates it. */
   residentBytes: z.number().int().nonnegative().nullable().optional(),
 });
 export type InstanceMemory = z.infer<typeof instanceMemorySchema>;

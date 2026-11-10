@@ -8,7 +8,7 @@ import type { DeploymentConfigurationDto, DeploymentDto } from '@libs/dto';
 import { ActivationPolicy, ConfigurationSource } from '@libs/dto';
 
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Configuration from './Configuration.vue';
 
@@ -71,7 +71,6 @@ const deployment = (extra: Partial<DeploymentDto> = {}): DeploymentDto => ({
   backend: BackendId.LLAMA_CPP,
   activationPolicy: ActivationPolicy.ALWAYS,
   enabled: true,
-  outOfDate: false,
   createdDate: new Date(),
   description: null,
   schemaVersion: 1,
@@ -142,6 +141,7 @@ describe('Deployment settings page', () => {
             running: 0,
             problem: null,
             expectedUsage: null,
+            measured: null,
             capacity: null,
             evictions: [],
           },
@@ -164,15 +164,12 @@ describe('Deployment settings page', () => {
     wrapper.unmount();
   });
 
-  it('heads the editor with the deployment, and flags changes waiting to be applied', async () => {
-    getDeployment.mockResolvedValue(deployment({ outOfDate: true }));
-
+  it('shows the deployment name in the editor heading', async () => {
     const { wrapper } = await mountConfiguration();
 
     expect(wrapper.get('h1').text()).toBe('Edit settings');
     expect(wrapper.text()).toContain("Configure this deployment's model, backend and runtime settings.");
     expect(wrapper.text()).not.toContain('holds its own settings');
-    expect(wrapper.text()).toContain('Changes waiting to be applied');
     expect(wrapper.get<HTMLInputElement>('input[placeholder="llama-70b-chat"]').element.value).toBe('llama-70b-chat');
 
     wrapper.unmount();
@@ -193,7 +190,7 @@ describe('Deployment settings page', () => {
       description: '',
       document: 'replicas: 2\n',
     });
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Settings saved');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Settings saved');
     expect(router.currentRoute.value.path).toBe('/deployments/5');
 
     wrapper.unmount();

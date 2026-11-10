@@ -27,10 +27,10 @@ import { InstanceService } from '@/core/instance/instance.service';
 import { InstanceOutputReader } from './instance-output-reader';
 
 const INSTANCE_MISSING_MESSAGE = 'This instance does not exist';
-const NODE_NOT_CONNECTED_MESSAGE = "This instance's node is not connected, so its output cannot be read";
+const NODE_NOT_CONNECTED_MESSAGE = 'Cannot load output because the node is disconnected';
 const NO_CONTAINER_MESSAGE =
-  'The node holds no container for this instance. It may still be pulling its image, or it has been removed';
-const RELAY_FAILED_MESSAGE = "The instance's node could not be asked for its output";
+  'The container for this instance was not found. Its image may still be downloading, or the container may have been removed';
+const RELAY_FAILED_MESSAGE = 'Could not retrieve output from the node. Try again in a moment';
 
 const LOGGED_BODY_CHARACTERS = 500;
 

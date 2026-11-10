@@ -14,7 +14,7 @@
         <ui-tag
           v-if="fit !== null"
           :type="placementFitTone(fit)"
-          :title="fitReason ?? undefined"
+          :hint="fitReason ?? undefined"
           data-testid="placement-node-status"
         >
           {{ formatPlacementFit(fit) }}
@@ -36,10 +36,9 @@
         v-for="line of fitLines"
         :key="line.label"
         :class="{ 'text-error': line.short }"
-        :title="line.title ?? undefined"
         data-testid="placement-node-memory"
       >
-        {{ line.label }} {{ line.text }}
+        <ui-hint :text="line.title ?? undefined">{{ line.label }} {{ line.text }}</ui-hint>
       </span>
     </div>
 
@@ -97,7 +96,7 @@ import {
 import { formatBytes, formatCount } from '@/utils/format/number';
 import { capacityShares, cardFigures } from '@/utils/gpu';
 
-import { UiIconButton, UiPickerRow, UiTag } from '@/components/ui';
+import { UiHint, UiIconButton, UiPickerRow, UiTag } from '@/components/ui';
 
 const props = defineProps<{
   node: IPinnableNode;

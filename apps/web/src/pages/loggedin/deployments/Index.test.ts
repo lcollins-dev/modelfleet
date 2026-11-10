@@ -41,7 +41,6 @@ const listDeployment = (id: number, name: string, extra: Partial<ListDeploymentD
   backend: BackendId.LLAMA_CPP,
   activationPolicy: ActivationPolicy.ALWAYS,
   enabled: true,
-  outOfDate: false,
   createdDate: new Date(),
   ...extra,
 });
@@ -56,6 +55,8 @@ const instance = (deploymentId: number, state: InstanceState): ListInstanceDto =
   devices: [],
   state,
   message: null,
+  onOlderSettings: false,
+  restartRequested: false,
   exitCode: null,
   startedDate: null,
   reportedDate: null,
@@ -90,7 +91,6 @@ beforeEach(() => {
   getDeploymentList.mockResolvedValue({
     deploymentList: [
       listDeployment(1, 'llama-70b-chat', {
-        outOfDate: true,
         modelLicence: { id: 'cc-by-nc-4.0', name: null, link: null, terms: LicenceTerms.NON_COMMERCIAL },
       }),
       listDeployment(2, 'embed', { enabled: false, presetName: null, activationPolicy: ActivationPolicy.ON_DEMAND }),
@@ -110,7 +110,10 @@ describe('Deployments page', () => {
   it('lists each deployment with its model, state, activation and instances, linking through to it', async () => {
     const wrapper = await mountIndex();
 
-    await pushInstances([instance(1, InstanceState.READY), instance(1, InstanceState.STARTING)]);
+    await pushInstances([
+      { ...instance(1, InstanceState.READY), onOlderSettings: true },
+      instance(1, InstanceState.STARTING),
+    ]);
 
     const rows = wrapper.findAll('[data-testid="deployment-row"]');
 
@@ -118,7 +121,8 @@ describe('Deployments page', () => {
     expect(rows[0].text()).toContain('Llama-3.1-70B · llama.cpp · llama.cpp standard');
     expect(rows[0].text()).toContain('Non-commercial');
     expect(rows[0].text()).toContain('Starting');
-    expect(rows[0].text()).toContain('Out of date');
+    expect(rows[0].text()).toContain('Older settings');
+    expect(rows[1].text()).not.toContain('Older settings');
     expect(rows[0].text()).toContain('Always on');
     expect(rows[0].text()).toContain('2');
     expect(rows[0].get('[data-testid="table-row-link"]').attributes('href')).toBe('/deployments/1');

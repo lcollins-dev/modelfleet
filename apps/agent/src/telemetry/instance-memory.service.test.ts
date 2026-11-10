@@ -12,8 +12,8 @@ vi.mock('node:fs/promises', async importOriginal => ({
 const KEY_A = '0199a3b2-7c4d-7e8f-9a0b-1c2d3e4f5a6b';
 const KEY_B = '22222222-2222-4222-8222-222222222222';
 
-const statusWith = (rssFileKib: number, rssAnonKib = 0): string =>
-  `Name:\tllama-server\nVmRSS:\t  1048576 kB\nRssAnon:\t  ${rssAnonKib} kB\nRssFile:\t ${rssFileKib} kB\nRssShmem:\t 0 kB\nThreads:\t8\n`;
+const statusWith = (rssFileKib: number, rssAnonKib = 0, rssShmemKib = 0): string =>
+  `Name:\tllama-server\nVmRSS:\t  1048576 kB\nRssAnon:\t  ${rssAnonKib} kB\nRssFile:\t ${rssFileKib} kB\nRssShmem:\t ${rssShmemKib} kB\nThreads:\t8\n`;
 
 function errno(code: string): NodeJS.ErrnoException {
   return Object.assign(new Error(code), { code });
@@ -52,8 +52,8 @@ describe('InstanceMemoryService', () => {
 
     await expect(service.read()).resolves.toEqual({
       instanceMemory: [
-        { instanceKey: KEY_A, heldBytes: 1024 * 1024, residentBytes: 1024 * 1024 },
-        { instanceKey: KEY_B, heldBytes: 2048 * 1024, residentBytes: 2048 * 1024 },
+        { instanceKey: KEY_A, heldBytes: 1024 * 1024, sharedBytes: 0, residentBytes: 1024 * 1024 },
+        { instanceKey: KEY_B, heldBytes: 2048 * 1024, sharedBytes: 0, residentBytes: 2048 * 1024 },
       ],
       heldMemory: { bytes: 3072 * 1024, anyUnknown: false },
     });
@@ -82,7 +82,7 @@ describe('InstanceMemoryService', () => {
     answer({ 10: statusWith(1024, 2048), 11: statusWith(512, 4096) });
 
     await expect(service.read()).resolves.toEqual({
-      instanceMemory: [{ instanceKey: KEY_A, heldBytes: 1536 * 1024, residentBytes: 7680 * 1024 }],
+      instanceMemory: [{ instanceKey: KEY_A, heldBytes: 1536 * 1024, sharedBytes: 0, residentBytes: 7680 * 1024 }],
       heldMemory: { bytes: 1536 * 1024, anyUnknown: false },
     });
   });
@@ -94,6 +94,32 @@ describe('InstanceMemoryService', () => {
     const { instanceMemory } = await service.read();
 
     expect(instanceMemory[0]).toMatchObject({ heldBytes: 4 * 1024, residentBytes: (4 + 104_857_600) * 1024 });
+  });
+
+  it('counts driver-held shared pages as resident and keeps them out of held, summed across processes', async () => {
+    processesByInstance.mockResolvedValue(new Map([[KEY_A, [10, 11]]]));
+    answer({ 10: statusWith(1459584, 899144, 212793076), 11: statusWith(0, 0, 1024) });
+
+    await expect(service.read()).resolves.toEqual({
+      instanceMemory: [
+        {
+          instanceKey: KEY_A,
+          heldBytes: 1459584 * 1024,
+          sharedBytes: 212794100 * 1024,
+          residentBytes: (1459584 + 899144 + 212794100) * 1024,
+        },
+      ],
+      heldMemory: { bytes: 1459584 * 1024, anyUnknown: false },
+    });
+  });
+
+  it('reads every figure as unknown for a process with VmRSS and no shared figure', async () => {
+    processesByInstance.mockResolvedValue(new Map([[KEY_A, [10]]]));
+    answer({ 10: 'Name:\tllama-server\nVmRSS:\t2048 kB\nRssAnon:\t512 kB\nRssFile:\t1024 kB\n' });
+
+    const { instanceMemory } = await service.read();
+
+    expect(instanceMemory[0]).toMatchObject({ heldBytes: null, sharedBytes: null, residentBytes: null });
   });
 
   it('reads both figures as unknown for a process with VmRSS and no anonymous figure', async () => {
@@ -126,8 +152,8 @@ describe('InstanceMemoryService', () => {
 
     await expect(service.read()).resolves.toEqual({
       instanceMemory: [
-        { instanceKey: KEY_A, heldBytes: 1024 * 1024, residentBytes: 1024 * 1024 },
-        { instanceKey: KEY_B, heldBytes: null, residentBytes: null },
+        { instanceKey: KEY_A, heldBytes: 1024 * 1024, sharedBytes: 0, residentBytes: 1024 * 1024 },
+        { instanceKey: KEY_B, heldBytes: null, sharedBytes: null, residentBytes: null },
       ],
       heldMemory: { bytes: 1024 * 1024, anyUnknown: true },
     });
@@ -174,7 +200,7 @@ describe('InstanceMemoryService', () => {
 
     const { instanceMemory } = await service.read();
 
-    expect(instanceMemory[0]).toMatchObject({ heldBytes: 1024 * 1024, residentBytes: 1024 * 1024 });
+    expect(instanceMemory[0]).toMatchObject({ heldBytes: 1024 * 1024, sharedBytes: 0, residentBytes: 1024 * 1024 });
   });
 
   it('reads as unknown a kernel that reports no file-backed figure', async () => {

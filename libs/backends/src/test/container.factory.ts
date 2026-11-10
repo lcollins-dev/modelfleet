@@ -16,6 +16,7 @@ export const buildModelMetadata = (overrides: Partial<IModelMetadata> = {}): IMo
 export const buildEstimatedModel = (overrides: Partial<IEstimatedModel> = {}): IEstimatedModel => ({
   ...buildModelMetadata(),
   tensors: null,
+  attention: null,
 
   ...overrides,
 });

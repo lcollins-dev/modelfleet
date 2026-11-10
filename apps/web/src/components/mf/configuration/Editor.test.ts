@@ -158,7 +158,7 @@ describe('MfConfigurationEditor', () => {
 
       const deployment = wrapper.get('nav').findAll('button')[0];
 
-      expect(deployment.get('[title]').attributes('title')).toBe('5 set, 3 from the preset');
+      expect(deployment.findAll('.rounded-full > span').map(count => count.text())).toEqual(['3', '2']);
     });
 
     it('omits inherited keys from the document it saves', async () => {

@@ -15,7 +15,7 @@ import {
 } from '@libs/dto';
 
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import { UiPageContainer } from '@/components/ui';
 
@@ -50,6 +50,7 @@ const target = (overrides: Partial<DownloadTargetDto> = {}): DownloadTargetDto =
   nodeId: 1,
   nodeName: 'rig-01',
   nodeState: NodeState.ONLINE,
+  modelDirectory: '/models',
   state: DownloadTargetState.ACTIVE,
   progress: null,
   message: null,
@@ -146,6 +147,20 @@ describe('Download page', () => {
     expect(rows[1].text()).toContain('100 MiB / 300 MiB (33%)');
   });
 
+  it('names the model directory each node lands the download in, or its first where the download named none', async () => {
+    getDownload.mockResolvedValue(
+      download(DownloadState.ACTIVE, [
+        target({ modelDirectory: '/bulk' }),
+        target({ nodeId: 2, nodeName: 'rig-02', modelDirectory: null }),
+      ])
+    );
+
+    const { wrapper } = await mountDownload();
+    const directories = wrapper.findAll('[data-testid="download-target-model-directory"]');
+
+    expect(directories.map(directory => directory.text())).toEqual(['/bulk', 'First model directory']);
+  });
+
   it('leaves the files and the repository the title names out of the details', async () => {
     getDownload.mockResolvedValue(download(DownloadState.ACTIVE, [target()]));
 
@@ -180,7 +195,7 @@ describe('Download page', () => {
     expect(rows).toHaveLength(64);
     expect(rows[4].text()).toBe('Q4/model-00005-of-00064.gguf2 MiB');
     expect(card.text()).toContain('64 files · 128 MiB');
-    expect(card.get('[role="region"]').classes()).toContain('max-h-72');
+    expect(card.get('[role="region"]').classes()).toContain('max-h-96');
     expect(card.get('[data-testid="table-head"]').classes()).toContain('sticky');
 
     const html = wrapper.html();
@@ -240,9 +255,7 @@ describe('Download page', () => {
     await flushPromises();
 
     expect(retryDownload).toHaveBeenCalledWith(7);
-    expect(useNotificationStore().notifications.map(notification => notification.title)).toEqual([
-      'Download restarted',
-    ]);
+    expect(useToastStore().toasts.map(toast => toast.title)).toEqual(['Download restarted']);
   });
 
   it('opens a node to show how far each file has got', async () => {

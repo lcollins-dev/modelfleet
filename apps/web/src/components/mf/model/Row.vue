@@ -14,7 +14,9 @@
       <ui-tag :type="modelStateTone(props.model.state)">{{ formatModelState(props.model.state) }}</ui-tag>
     </div>
 
-    <span class="font-mono text-xs" :title="nodeNames">{{ props.model.availability.length }}</span>
+    <span class="font-mono text-xs">
+      <ui-hint :text="nodeNames">{{ props.model.availability.length }}</ui-hint>
+    </span>
 
     <span class="font-mono text-xs">{{ formatBytes(props.model.sizeBytes) }}</span>
 
@@ -38,7 +40,7 @@ import {
   modelStateTone,
 } from '@/utils/model';
 
-import { UiTableRow, UiTag } from '@/components/ui';
+import { UiHint, UiTableRow, UiTag } from '@/components/ui';
 
 import MfLicenceTag from './LicenceTag.vue';
 
@@ -57,5 +59,7 @@ const kindLabel = computed(() => companionLabel(props.model.type) ?? formatModel
 
 const description = computed(() => `${kindLabel.value} · ${formatModelKind(props.model)}`);
 
-const nodeNames = computed(() => props.model.availability.map(entry => entry.nodeName).join(', '));
+const nodeNames = computed(() =>
+  props.model.availability.length === 0 ? undefined : props.model.availability.map(entry => entry.nodeName).join(', ')
+);
 </script>

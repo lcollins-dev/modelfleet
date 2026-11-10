@@ -15,7 +15,12 @@
     <slot />
   </div>
 
-  <div v-else-if="$slots.expand" class="border-b border-divider last:border-b-0" data-testid="table-row-expandable">
+  <div
+    v-else-if="$slots.expand"
+    ref="expandableRow"
+    class="border-b border-divider last:border-b-0"
+    data-testid="table-row-expandable"
+  >
     <div :class="[rowClass, 'cursor-pointer hover:bg-inset']" @click="expanded = !expanded">
       <slot />
 
@@ -42,7 +47,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, useId } from 'vue';
+import { computed, useId, useTemplateRef, watch } from 'vue';
 import IconExpandLess from '~icons/material-symbols/expand-less-rounded';
 import IconExpandMore from '~icons/material-symbols/expand-more-rounded';
 
@@ -69,4 +74,19 @@ const props = defineProps({
 const rowClass = computed(() => [ROW_CLASS, props.dense ? 'py-1.5 text-xs' : 'py-3']);
 
 const rowId = useId();
+
+const expandableRow = useTemplateRef<HTMLElement>('expandableRow');
+
+// Inside a capped region the panel can open below the last visible row, where nothing shows it happened.
+watch(
+  expanded,
+  isExpanded => {
+    const row = expandableRow.value;
+
+    if (isExpanded && row !== null && row.closest('[role="region"]') !== null) {
+      row.scrollIntoView({ block: 'nearest' });
+    }
+  },
+  { flush: 'post' }
+);
 </script>

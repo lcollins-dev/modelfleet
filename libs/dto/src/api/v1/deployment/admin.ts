@@ -78,13 +78,21 @@ export const PresetSwapResponseDto = z.object({
 export type PresetSwapResponseDto = z.infer<typeof PresetSwapResponseDto>;
 
 export const OutOfDateDeploymentsResponseDto = z.object({
-  /** Deployments whose effective configuration has moved ahead of the revision their instances are being brought to. */
+  /** Deployments with a running instance on older settings. */
   outOfDate: z.number(),
 });
 export type OutOfDateDeploymentsResponseDto = z.infer<typeof OutOfDateDeploymentsResponseDto>;
 
-export const ApplyDeploymentsResponseDto = z.object({
-  /** Deployments this apply moved onto their current revision. */
-  applied: z.number(),
+export const RestartRefusalDto = z.object({
+  deploymentId: z.number(),
+  deploymentName: z.string(),
+  problem: z.string(),
 });
-export type ApplyDeploymentsResponseDto = z.infer<typeof ApplyDeploymentsResponseDto>;
+export type RestartRefusalDto = z.infer<typeof RestartRefusalDto>;
+
+export const RestartDeploymentsResponseDto = z.object({
+  restarting: z.number(),
+
+  refused: z.array(RestartRefusalDto),
+});
+export type RestartDeploymentsResponseDto = z.infer<typeof RestartDeploymentsResponseDto>;

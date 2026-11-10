@@ -24,12 +24,12 @@
     </ui-card>
 
     <template v-else>
-      <ui-notice v-if="node.state === NodeState.REGISTERED" type="info" title="Awaiting first contact">
-        The agent has not connected yet. Start it with the credentials issued during registration.
+      <ui-notice v-if="node.state === NodeState.REGISTERED" type="info" title="Waiting for agent">
+        The agent has not connected yet. Start it using the credentials from node registration.
       </ui-notice>
 
       <ui-notice v-if="!node.enabled" type="warning" title="Disabled">
-        The scheduler places nothing on this node until you enable it again.
+        Enable this node to allow new instances.
 
         <template #action>
           <ui-button type="primary" :loading="pending === 'state'" :disabled="pending !== null" @click="doEnable">
@@ -38,8 +38,8 @@
         </template>
       </ui-notice>
 
-      <ui-notice v-if="telemetryErrors.length > 0" type="warning" title="Telemetry is degraded">
-        <ul class="m-0 flex flex-col gap-1 pl-5">
+      <ui-notice v-if="telemetryErrors.length > 0" type="warning" title="Some resource readings are unavailable">
+        <ul class="m-0 flex flex-col gap-1">
           <li v-for="(error, index) of telemetryErrors" :key="index">{{ error.message }}</li>
         </ul>
       </ui-notice>
@@ -135,15 +135,16 @@
           </ui-button>
         </template>
 
-        <ui-table :columns="MODEL_COLUMNS" :min-width="480">
-          <ui-table-head>
+        <!-- Keyed by page so changing page returns the rows to the top rather than keeping the last page's offset. -->
+        <ui-table :key="modelPage" :columns="MODEL_COLUMNS" :min-width="480" scroll-label="Models">
+          <ui-table-head sticky>
             <span>Model</span>
             <span>Size</span>
             <span></span>
           </ui-table-head>
 
           <ui-table-row
-            v-for="nodeModel of nodeModels"
+            v-for="nodeModel of pagedNodeModels"
             :key="nodeModel.id"
             :to="`/models/${nodeModel.id}`"
             data-testid="model-row"
@@ -167,13 +168,20 @@
             No models are stored on this node yet.
           </template>
         </ui-table>
+
+        <template v-if="modelPages > 1" #footer>
+          <ui-pagination v-model:page="modelPage" :page-count="modelPages" />
+        </template>
       </ui-card>
 
       <ui-card title="Event log" subtitle="Events for this node." flush data-testid="event-log-card">
+        <!-- Keyed by page so changing page returns the rows to the top rather than keeping the last page's offset. -->
         <mf-event-table
+          :key="historyPage"
           :events="history"
           :columns="HISTORY_COLUMNS"
           :loading="loadingHistory"
+          scroll-label="Event log"
           empty-description="No events have been recorded for this node yet."
         />
 
@@ -238,7 +246,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watchEffect } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch, watchEffect } from 'vue';
 import { useRoute } from 'vue-router';
 import IconChevronRight from '~icons/material-symbols/chevron-right-rounded';
 import IconDeveloperBoard from '~icons/material-symbols/developer-board-outline-rounded';
@@ -275,8 +283,8 @@ import { useModelAdminService } from '@/services/api/admin/ModelAdminService';
 import { useNodeAdminService } from '@/services/api/admin/NodeAdminService';
 import { useTelemetryAdminService } from '@/services/api/admin/TelemetryAdminService';
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
 import { useTelemetryStore } from '@/stores/telemetry';
+import { useToastStore } from '@/stores/toast';
 
 import {
   EventTableColumn,
@@ -346,9 +354,11 @@ const HISTORY_COLUMNS: EventTableColumn[] = ['when', 'event', 'summary', 'actor'
 
 const MODEL_COLUMNS = 'minmax(0, 1fr) 6rem 1rem';
 
+const MODEL_PAGE_SIZE = 20;
+
 const EDIT_FORM = 'update-node';
 
-const DELETE_HELP = 'Its credentials are removed. Register the node again before its agent can reconnect.';
+const DELETE_HELP = 'The node and its credentials will be deleted. Register it again to reconnect its agent.';
 
 const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/nodes/Node');
@@ -357,7 +367,7 @@ const route = useRoute();
 const { goBack } = useGoBack();
 
 const dialogStore = useDialogStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const telemetryStore = useTelemetryStore();
 
 const nodeAdminService = useNodeAdminService();
@@ -377,6 +387,7 @@ const descriptionField = ref('');
 const showEditModal = ref(false);
 const telemetryStatus = ref<NodeTelemetryStatusDto | null>(null);
 const nodeModels = ref<NodeModelDto[]>([]);
+const modelPage = ref(1);
 const instances = ref<ListInstanceDto[]>([]);
 
 const loadingNode = ref(false);
@@ -564,20 +575,20 @@ const memoryMeter = computed(() => {
 
   const { owners, unknown, unmatchedMappedBytes } = memoryOwners(host);
   const mappedBytes = owners.reduce((total, owner) => total + owner.mappedBytes, unmatchedMappedBytes);
-  const anonymousBytes = owners.reduce((total, owner) => total + owner.residentBytes - owner.mappedBytes, 0);
+  const unmappedBytes = owners.reduce((total, owner) => total + owner.residentBytes - owner.mappedBytes, 0);
   const mappedShare = mappedBytes > heldBytes ? heldBytes / mappedBytes : 1;
 
-  // Processes are read a moment after the kernel's figure, so anonymous memory can briefly pass used.
-  const anonymousShare = anonymousBytes > usedBytes ? usedBytes / anonymousBytes : 1;
+  // Processes are read a moment after the kernel's figure, so anonymous and shared memory can briefly pass used.
+  const unmappedShare = unmappedBytes > usedBytes ? usedBytes / unmappedBytes : 1;
 
-  const otherUsedBytes = Math.max(usedBytes - anonymousBytes, 0);
+  const otherUsedBytes = Math.max(usedBytes - unmappedBytes, 0);
 
   const bands: IMeterBand[] = [
     ...owners.map(owner => ({
       label: owner.label,
       tone: owner.tone,
       value: formatBytes(owner.residentBytes),
-      percent: barPercent((owner.residentBytes - owner.mappedBytes) * anonymousShare + owner.mappedBytes * mappedShare),
+      percent: barPercent((owner.residentBytes - owner.mappedBytes) * unmappedShare + owner.mappedBytes * mappedShare),
     })),
     ...unknown.map((label): IMeterBand => ({ label, tone: 'muted', value: 'Unknown', percent: 0 })),
     {
@@ -632,6 +643,17 @@ const doGetNode = () => {
       logger.error({ error }, 'doGetNode(): Failed to get node');
     });
 };
+
+const modelPages = computed(() => Math.max(1, Math.ceil(nodeModels.value.length / MODEL_PAGE_SIZE)));
+
+const pagedNodeModels = computed(() =>
+  nodeModels.value.slice((modelPage.value - 1) * MODEL_PAGE_SIZE, modelPage.value * MODEL_PAGE_SIZE)
+);
+
+// A rescan can leave fewer models than the page being read.
+watch(modelPages, pages => {
+  modelPage.value = Math.min(modelPage.value, pages);
+});
 
 const historyRequest = computed<EventFilterRequestDto | null>(() =>
   nodeId.value === null ? null : { subjectType: EventPartyType.NODE, subjectId: `${nodeId.value}` }
@@ -729,7 +751,7 @@ const doScanModels = () => {
   modelAdminService
     .scanNodeModels(target.id)
     .then(() => {
-      notificationStore.addToast('Rescan started', `${target.name} is checking its weights folders.`);
+      toastStore.addToast('Model scan started');
     })
     .finally(() => {
       pending.value = null;
@@ -757,7 +779,7 @@ const doUpdateNode = () => {
     .then(() => {
       showEditModal.value = false;
 
-      notificationStore.addToast('Node updated', `${nameField.value.trim()} is saved.`);
+      toastStore.addToast('Node updated');
 
       doGetNode();
     })
@@ -781,9 +803,9 @@ const doUpdateState = (enabled: boolean): Promise<void> => {
   return nodeAdminService
     .updateState({ enabled }, target.id)
     .then(() => {
-      notificationStore.addToast(
+      toastStore.addToast(
         enabled ? 'Node enabled' : 'Node disabled',
-        enabled ? `${target.name} can receive new instances.` : `${target.name} won't receive new instances.`
+        enabled ? 'New instances can now start here.' : 'No new instances will start here.'
       );
 
       doGetNode();
@@ -807,7 +829,7 @@ const confirmDisable = () => {
   void dialogStore.confirm({
     type: DialogType.WARNING,
     title: `Disable ${node.value?.name ?? 'this node'}?`,
-    message: 'The scheduler stops placing instances on it until you enable it again.',
+    message: 'No new instances will start on this node until you enable it again.',
     confirmLabel: 'Disable Node',
     action: () => doUpdateState(false),
   });
@@ -835,7 +857,7 @@ const doDeleteNode = (target: NodeDto): Promise<void> => {
   return nodeAdminService
     .deleteNode(target.id)
     .then(() => {
-      notificationStore.addToast('Node deleted', `${target.name} is removed from the fleet.`);
+      toastStore.addToast('Node deleted');
 
       goBack({ replace: true });
     })

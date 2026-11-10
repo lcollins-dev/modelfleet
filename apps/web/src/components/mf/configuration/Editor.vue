@@ -92,7 +92,7 @@
           <ui-form-field
             path="vramGib"
             label="Declared VRAM (GiB)"
-            help="Set what this deployment takes across its GPUs. It is used in place of a measured figure or an estimate."
+            help="Set what this deployment takes across its GPUs. It is used in place of an estimate."
           >
             <template #label>
               <mf-configuration-field-label label="Declared VRAM (GiB)" :from-preset="fromPreset(DECLARED_VRAM_KEY)" />

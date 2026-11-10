@@ -6,7 +6,7 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 import { BackendId } from '@libs/backends';
 import { ActivationPolicy } from '@libs/dto';
 
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Create from './Create.vue';
 
@@ -82,7 +82,7 @@ describe('New deployment page', () => {
       description: '',
       document: '',
     });
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Deployment created');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Deployment created');
     expect(router.currentRoute.value.path).toBe('/deployments/7');
 
     wrapper.unmount();

@@ -35,7 +35,6 @@ import Dashboard from './Dashboard.vue';
 const GIB = 1024 ** 3;
 
 const getDeploymentList = vi.fn();
-const getModelList = vi.fn();
 const getEventList = vi.fn();
 const getFleetTelemetry = vi.fn();
 const streamFleetTelemetry = vi.fn();
@@ -44,10 +43,6 @@ const streamEvents = vi.fn();
 
 vi.mock('@/services/api/admin/DeploymentAdminService', () => ({
   useDeploymentAdminService: () => ({ getDeploymentList }),
-}));
-
-vi.mock('@/services/api/admin/ModelAdminService', () => ({
-  useModelAdminService: () => ({ getModelList }),
 }));
 
 vi.mock('@/services/api/admin/EventAdminService', () => ({
@@ -129,7 +124,6 @@ const deployment = (id: number, name: string): ListDeploymentDto => ({
   backend: BackendId.LLAMA_CPP,
   activationPolicy: ActivationPolicy.ALWAYS,
   enabled: true,
-  outOfDate: false,
   createdDate: new Date('2026-09-22T12:00:00.000Z'),
 });
 
@@ -143,6 +137,8 @@ const instance = (deploymentId: number, state: InstanceState): ListInstanceDto =
   devices: [],
   state,
   message: null,
+  onOlderSettings: false,
+  restartRequested: false,
   exitCode: null,
   startedDate: null,
   reportedDate: null,
@@ -196,7 +192,6 @@ beforeEach(() => {
   vi.clearAllMocks();
 
   getDeploymentList.mockResolvedValue({ deploymentList: [], pages: 0, total: 0 });
-  getModelList.mockResolvedValue({ modelList: [], pages: 0 });
   getEventList.mockResolvedValue({ eventList: [], pages: 0 });
   streamFleetTelemetry.mockImplementation(subscription);
   streamInstances.mockImplementation(subscription);
@@ -314,29 +309,18 @@ describe('Overview page', () => {
     expect(wrapper.text()).toContain('7 idle');
   });
 
-  it('asks for a node and a model while the fleet is empty, then for a deployment once a model is there', async () => {
-    const empty = await mountDashboard();
+  it("shows the list pages' empty text, with no button, while the fleet is empty", async () => {
+    const wrapper = await mountDashboard();
 
     await sendFleet([]);
 
-    expect(empty.get('[data-testid="nodes-card"]').text()).toContain('Register Node');
-    expect(empty.get('[data-testid="nodes-card"] [data-testid="table-empty"] a').attributes('href')).toBe(
-      '/nodes/register'
-    );
-    expect(empty.get('[data-testid="deployments-card"]').text()).toContain('No models yet');
-    expect(empty.get('[data-testid="deployments-card"] [data-testid="table-empty"] a').attributes('href')).toBe(
-      '/models'
-    );
+    const nodesEmpty = wrapper.get('[data-testid="nodes-card"] [data-testid="table-empty"]');
+    const deploymentsEmpty = wrapper.get('[data-testid="deployments-card"] [data-testid="table-empty"]');
 
-    empty.unmount();
-    getModelList.mockResolvedValue({ modelList: [{ id: 1 }], pages: 1 });
-
-    const withModel = await mountDashboard();
-
-    expect(withModel.get('[data-testid="deployments-card"]').text()).toContain('Create Deployment');
-    expect(withModel.get('[data-testid="deployments-card"] [data-testid="table-empty"] a').attributes('href')).toBe(
-      '/deployments/create'
-    );
+    expect(nodesEmpty.text()).toBe('No nodes yet. Register a machine to start serving models.');
+    expect(deploymentsEmpty.text()).toBe('No deployments yet. Create one to start serving a model.');
+    expect(nodesEmpty.find('a').exists()).toBe(false);
+    expect(deploymentsEmpty.find('a').exists()).toBe(false);
   });
 
   it('puts a live event at the top of recent activity and rereads the list its subject belongs to', async () => {

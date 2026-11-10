@@ -49,6 +49,7 @@ describe('DownloadAdmissionService', () => {
     query: ReturnType<typeof vi.fn>;
   };
   let downloadFileRepository: { insert: ReturnType<typeof vi.fn>; createQueryBuilder: ReturnType<typeof vi.fn> };
+  let busyQuery: ReturnType<typeof emptyQuery>;
   let downloadService: { findWithThrow: ReturnType<typeof vi.fn>; announce: ReturnType<typeof vi.fn> };
   let hubReaderService: { read: ReturnType<typeof vi.fn<HubReaderService['read']>> };
   let eventService: { recordEvent: ReturnType<typeof vi.fn> };
@@ -63,7 +64,7 @@ describe('DownloadAdmissionService', () => {
       query: vi.fn().mockResolvedValue([]),
     };
 
-    const busyQuery = emptyQuery();
+    busyQuery = emptyQuery();
 
     downloadFileRepository = { insert: vi.fn(), createQueryBuilder: vi.fn().mockReturnValue(busyQuery) };
     downloadService = { findWithThrow: vi.fn().mockResolvedValue(buildDownload([])), announce: vi.fn() };
@@ -99,14 +100,45 @@ describe('DownloadAdmissionService', () => {
       revision: 'main',
       files: ['model.gguf'],
       nodeIds: [1],
+      modelDirectories: [],
     };
 
     it.each([
-      ['a repository not named owner/name', { repository: 'gpt2' }, 'A repository is named as owner/name'],
+      ['a repository not named owner/name', { repository: 'gpt2' }, 'Enter the repository as owner/name'],
       ['a path that climbs out of the repository', { files: ['../escape.gguf'] }, 'cannot be downloaded to a node'],
       ['a path ending in the partial suffix', { files: ['model.gguf.part'] }, 'cannot be downloaded to a node'],
-      ['no files', { files: [' '] }, 'A download names between 1 and 64 files'],
-      ['no nodes', { nodeIds: [] }, 'A download names at least one node'],
+      ['no files', { files: [' '] }, 'Select between 1 and 64 files per download'],
+      ['no nodes', { nodeIds: [] }, 'Select at least one node'],
+      [
+        'a model directory for a node it does not name',
+        { modelDirectories: [{ nodeId: 2, path: '/models' }] },
+        'Select a model directory only for nodes included in this download.',
+      ],
+      [
+        'two model directories for one node',
+        {
+          modelDirectories: [
+            { nodeId: 1, path: '/models' },
+            { nodeId: 1, path: '/bulk' },
+          ],
+        },
+        'Select only one model directory per node.',
+      ],
+      [
+        'a model directory holding a NUL',
+        { modelDirectories: [{ nodeId: 1, path: '/models\0' }] },
+        'Model directory paths must be non-empty, at most 1024 characters long, and contain no null characters.',
+      ],
+      [
+        'a model directory of whitespace alone',
+        { modelDirectories: [{ nodeId: 1, path: '   ' }] },
+        'Model directory paths must be non-empty, at most 1024 characters long, and contain no null characters.',
+      ],
+      [
+        'a model directory longer in UTF-16 than the desired set carries',
+        { modelDirectories: [{ nodeId: 1, path: `/${'😀'.repeat(600)}` }] },
+        'Model directory paths must be non-empty, at most 1024 characters long, and contain no null characters.',
+      ],
     ])('refuses %s without asking the Hub', async (_case, change, message) => {
       await expect(downloadAdmissionService.create({ ...definition, ...change }, ACTOR_ID)).rejects.toThrow(message);
       expect(hubReaderService.read).not.toHaveBeenCalled();
@@ -144,6 +176,49 @@ describe('DownloadAdmissionService', () => {
         expect(downloadTargetRepository.insert.mock.calls[0][0]).toHaveLength(1);
       });
 
+      it('keeps the model directory chosen for each node, and none for a node left out', async () => {
+        await downloadAdmissionService.create(
+          { ...definition, nodeIds: [1, 2], modelDirectories: [{ nodeId: 2, path: '/bulk' }] },
+          ACTOR_ID
+        );
+
+        const targets = downloadTargetRepository.insert.mock.calls[0][0] as DownloadTarget[];
+
+        expect(targets.map(target => [target.nodeId, target.modelDirectory])).toEqual([
+          [1, null],
+          [2, '/bulk'],
+        ]);
+      });
+
+      it.each([
+        ['the same model directory', '/models', '/models'],
+        ['no model directory on the active download, which may be the same', null, '/models'],
+        ['no model directory on the new download, which may be the same', '/models', null],
+      ])('refuses a file another active download lands at the same path in %s', async (_case, active, chosen) => {
+        busyQuery.getRawMany.mockResolvedValue([
+          { path: 'huggingface/owner/repo/model.gguf', nodeId: 1, modelDirectory: active },
+        ]);
+
+        const modelDirectories = chosen === null ? [] : [{ nodeId: 1, path: chosen }];
+
+        await expect(downloadAdmissionService.create({ ...definition, modelDirectories }, ACTOR_ID)).rejects.toThrow(
+          'Another download is already writing huggingface/owner/repo/model.gguf on gpu-01'
+        );
+      });
+
+      it('admits a file another active download lands at the same path in another model directory', async () => {
+        busyQuery.getRawMany.mockResolvedValue([
+          { path: 'huggingface/owner/repo/model.gguf', nodeId: 1, modelDirectory: '/models' },
+        ]);
+
+        await downloadAdmissionService.create(
+          { ...definition, modelDirectories: [{ nodeId: 1, path: '/bulk' }] },
+          ACTOR_ID
+        );
+
+        expect(downloadTargetRepository.insert).toHaveBeenCalled();
+      });
+
       it('lands the files where the operator named', async () => {
         await downloadAdmissionService.create({ ...definition, directory: 'gguf/qwen' }, ACTOR_ID);
 
@@ -154,26 +229,52 @@ describe('DownloadAdmissionService', () => {
     it('refuses a destination that would leave the model directory', async () => {
       await expect(
         downloadAdmissionService.create({ ...definition, directory: '../elsewhere' }, ACTOR_ID)
-      ).rejects.toThrow('A destination is a path inside the model directory');
+      ).rejects.toThrow('Enter a path within the model directory');
       expect(hubReaderService.read).not.toHaveBeenCalled();
     });
 
     it('writes nothing when the Hub refuses the repository', async () => {
-      hubReaderService.read.mockRejectedValue(new BadRequestException('owner/repo is gated'));
+      hubReaderService.read.mockRejectedValue(new BadRequestException('This repository is gated'));
 
-      await expect(downloadAdmissionService.create(definition, ACTOR_ID)).rejects.toThrow('owner/repo is gated');
+      await expect(downloadAdmissionService.create(definition, ACTOR_ID)).rejects.toThrow('This repository is gated');
       expect(downloadRepository.insert).not.toHaveBeenCalled();
     });
   });
 
   describe('retry', () => {
+    it.each([
+      ['refuses', '/bulk', true],
+      ['admits', '/models', false],
+    ])(
+      '%s a retry against a download active in the model directory %s, checking the one its target keeps',
+      async (_verb, active, refused) => {
+        const target = buildDownloadTarget(1, DownloadTargetState.FAILED);
+
+        target.modelDirectory = '/bulk';
+        downloadService.findWithThrow.mockResolvedValue(buildDownload([target]));
+        busyQuery.getRawMany.mockResolvedValue([
+          { path: 'huggingface/owner/repo/model.gguf', nodeId: 1, modelDirectory: active },
+        ]);
+
+        const retried = downloadAdmissionService.retry(TEST_DOWNLOAD_ID, ACTOR_ID);
+
+        if (refused) {
+          await expect(retried).rejects.toThrow('Another download is already writing');
+        } else {
+          await retried;
+        }
+
+        expect(downloadTargetRepository.update).toHaveBeenCalledTimes(refused ? 0 : 1);
+      }
+    );
+
     it('refuses a download that neither failed nor was stopped on any node', async () => {
       downloadService.findWithThrow.mockResolvedValue(
         buildDownload([buildDownloadTarget(1, DownloadTargetState.SUCCEEDED)])
       );
 
       await expect(downloadAdmissionService.retry(TEST_DOWNLOAD_ID, ACTOR_ID)).rejects.toThrow(
-        'This download has not failed or been stopped on any node'
+        'Only failed or cancelled downloads can be retried'
       );
     });
 

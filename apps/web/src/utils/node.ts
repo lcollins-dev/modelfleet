@@ -9,7 +9,7 @@ export type NodeStateTone = 'success' | 'warning' | 'error' | 'default';
 const STATE_ORDER: NodeState[] = [NodeState.ONLINE, NodeState.OFFLINE, NodeState.REGISTERED, NodeState.DISABLED];
 
 const LABELS: Record<NodeState, string> = {
-  [NodeState.REGISTERED]: 'Awaiting first contact',
+  [NodeState.REGISTERED]: 'Waiting for agent',
   [NodeState.ONLINE]: 'Online',
   [NodeState.OFFLINE]: 'Offline',
   [NodeState.DISABLED]: 'Disabled',

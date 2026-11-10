@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ref } from 'vue';
+import { nextTick, ref, watchEffect } from 'vue';
 
 import { Config } from '@/Config';
 
@@ -21,6 +21,25 @@ describe('useTelemetryStore', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('leaves two effects that each open a stream independent of one another', async () => {
+    const telemetryStore = useTelemetryStore();
+    const runs = [0, 0];
+
+    const stops = runs.map((_, index) =>
+      watchEffect(onCleanup => {
+        runs[index] += 1;
+
+        onCleanup(telemetryStore.register(stream(true, new Date())));
+      })
+    );
+
+    await nextTick();
+
+    expect(runs).toEqual([1, 1]);
+
+    stops.forEach(stop => stop());
   });
 
   it('reads as idle where the console holds no stream open', () => {

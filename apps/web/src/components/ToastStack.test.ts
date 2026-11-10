@@ -1,11 +1,9 @@
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { h, nextTick } from 'vue';
+import { nextTick } from 'vue';
 
-import { Notification, NotificationType } from '@/types/notification';
-
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import ToastStack from './ToastStack.vue';
 
@@ -14,43 +12,29 @@ describe('ToastStack', () => {
     setActivePinia(createPinia());
   });
 
-  const mountStack = () => mount(ToastStack, { global: { stubs: { teleport: true, transition: false } } });
+  const mountStack = () => mount(ToastStack, { global: { stubs: { transition: false } } });
 
-  it('shows each notification with its title and text, oldest first', async () => {
+  it('shows titles with optional detail, oldest first', async () => {
     const wrapper = mountStack();
-    const notificationStore = useNotificationStore();
+    const toastStore = useToastStore();
 
-    notificationStore.addToast('Profile updated', 'Your changes have been saved.');
-    notificationStore.addNotification(new Notification('Something went wrong', NotificationType.ERROR));
+    toastStore.addToast('Key created');
+    toastStore.addToast('Key revoked', 'It no longer works.');
     await nextTick();
 
-    const items = wrapper.findAll('[data-testid^="notification-"]');
+    const toasts = wrapper.findAll('[data-testid="toast"]').map(toast => toast.text());
 
-    expect(items.map(item => item.attributes('data-testid'))).toEqual(['notification-success', 'notification-error']);
-    expect(items[0].text()).toContain('Profile updated');
-    expect(items[0].text()).toContain('Your changes have been saved.');
-    expect(items[1].text()).toContain('Something went wrong');
+    expect(toasts).toEqual(['Key created.', 'Key revoked. It no longer works.']);
   });
 
-  it('renders a notification whose content is a render function', async () => {
+  it('dismisses a toast when it is clicked', async () => {
     const wrapper = mountStack();
+    const toastStore = useToastStore();
 
-    useNotificationStore().addNotification(
-      new Notification(() => h('ul', [h('li', 'Email: Enter a valid email address.')]), NotificationType.ERROR)
-    );
+    toastStore.addToast('Profile updated', 'Your changes have been saved.');
     await nextTick();
+    await wrapper.get('[data-testid="toast"]').trigger('click');
 
-    expect(wrapper.get('li').text()).toBe('Email: Enter a valid email address.');
-  });
-
-  it('clears a notification from the store when its close button is pressed', async () => {
-    const wrapper = mountStack();
-    const notificationStore = useNotificationStore();
-
-    notificationStore.addToast('Invite revoked', 'The link no longer works.');
-    await nextTick();
-    await wrapper.get('button[aria-label="Close"]').trigger('click');
-
-    expect(notificationStore.notifications).toHaveLength(0);
+    expect(toastStore.toasts).toHaveLength(0);
   });
 });

@@ -346,7 +346,14 @@ describe('describeMemory', () => {
   });
 
   it('shows only the RAM used where nothing says what is free', () => {
-    const figures = { vramUsedBytes: 20 * GIB, vramFreeBytes: null, ramUsedBytes: 4 * GIB, ramFreeBytes: null };
+    const figures = {
+      vramUsedBytes: 20 * GIB,
+      vramFreeBytes: null,
+      ramUsedBytes: 4 * GIB,
+      ramFreeBytes: null,
+      ramOverflowBytes: 0,
+      ramCacheBytes: 0,
+    };
 
     expect(describeMemory(figures)).toEqual(['VRAM 20 GiB / -', 'RAM 4 GiB / -']);
   });

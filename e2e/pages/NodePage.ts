@@ -10,7 +10,7 @@ export class NodePage {
   }
 
   get awaitingFirstContactNotice(): Locator {
-    return this.page.getByText('Awaiting first contact', { exact: true });
+    return this.page.getByText('Waiting for agent', { exact: true });
   }
 
   get eventLogCard(): Locator {

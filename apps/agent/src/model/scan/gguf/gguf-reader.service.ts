@@ -15,6 +15,10 @@ import { IFormatRead, IModelFormatReader, IModelGap, IModelGrouping, IModelSet }
 import { IModelFile } from '../types/model-file';
 import { GgufHeaderParserService, GgufHeaderResult, IGgufHeader, IGgufTensor } from './gguf-header-parser.service';
 
+interface IShardTensor extends IGgufTensor {
+  shard: number;
+}
+
 export const GGUF_SUFFIX = '.gguf';
 
 /** `general.architecture` on a multimodal projector, whatever model the file is named after. */
@@ -142,18 +146,23 @@ export class GgufReaderService implements IModelFormatReader {
       .filter(tensor => tensor.name.length > 0 && tensor.name.length <= MAX_GGUF_TENSOR_NAME_LENGTH)
       .sort((left, right) => right.sizeBytes - left.sizeBytes)
       .slice(0, MAX_GGUF_TENSORS)
-      .map(tensor => ({ name: tensor.name, sizeBytes: tensor.sizeBytes }));
+      .map(tensor => ({
+        name: tensor.name,
+        sizeBytes: tensor.sizeBytes,
+        offsetBytes: tensor.offsetBytes,
+        shard: tensor.shard,
+      }));
   }
 
-  private allTensors(results: readonly GgufHeaderResult[]): IGgufTensor[] | null {
-    const tensors: IGgufTensor[] = [];
+  private allTensors(results: readonly GgufHeaderResult[]): IShardTensor[] | null {
+    const tensors: IShardTensor[] = [];
 
-    for (const result of results) {
+    for (const [shard, result] of results.entries()) {
       if (!result.ok || result.header.tensors === null) {
         return null;
       }
 
-      tensors.push(...result.header.tensors);
+      tensors.push(...result.header.tensors.map(tensor => ({ ...tensor, shard })));
     }
 
     return tensors;

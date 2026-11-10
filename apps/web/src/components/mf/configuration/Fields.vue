@@ -11,15 +11,26 @@
         :label="section.label"
         :icon="section.icon"
         :active="section.group === active.group"
+        :error="section.errors > 0"
         @click="activeGroup = section.group"
       >
-        <template v-if="section.errors > 0 || section.set > 0" #count>
-          <span class="inline-flex gap-2">
-            <span v-if="section.errors > 0" class="text-error" :title="errorSummary(section.errors)">
-              {{ section.errors }}
+        <template v-if="section.own > 0 || section.fromPreset > 0" #count>
+          <span class="inline-flex h-4 overflow-hidden rounded-full font-mono text-xs leading-none">
+            <span
+              v-if="section.fromPreset > 0"
+              class="flex min-w-4 items-center justify-center px-1.5"
+              :class="TAG_TYPE_CLASSES.default"
+            >
+              {{ section.fromPreset }}
             </span>
 
-            <span v-if="section.set > 0" :title="setLabel(section)">{{ section.set }}</span>
+            <span
+              v-if="section.own > 0"
+              class="flex min-w-4 items-center justify-center px-1.5"
+              :class="TAG_TYPE_CLASSES.primary"
+            >
+              {{ section.own }}
+            </span>
           </span>
         </template>
       </ui-nav-item>
@@ -70,11 +81,11 @@ import type { ConfigurationDocument, ConfigurationValue } from '@libs/dto';
 
 import { ConfigurationFormValue, ConfigurationFormValues, holdsKey } from '@/utils/configuration/fields';
 import { configurationGroupDescription, configurationGroupIcon } from '@/utils/configuration/groups';
-import { formatCount } from '@/utils/format/number';
 
 import { useErrorStore } from '@/stores/error';
 
 import { UiForm, UiNavItem } from '@/components/ui';
+import { TAG_TYPE_CLASSES } from '@/components/ui/display/tag';
 import { FORM_CONTEXT_KEY } from '@/components/ui/form/formContext';
 
 import MfConfigurationField from './Field.vue';
@@ -97,7 +108,7 @@ interface ISection {
   description: string;
   icon: Component;
   fields: BackendField[];
-  set: number;
+  own: number;
   fromPreset: number;
   errors: number;
 }
@@ -136,11 +147,10 @@ const errorCount = (keys: string[]): number =>
 
 const setsKey = (key: string): boolean => (values.value[key] ?? props.own[key] ?? null) !== null;
 
-const countSet = (keys: string[]): Pick<ISection, 'set' | 'fromPreset'> => {
-  const fromPreset = keys.filter(key => holdsKey(props.inherited, key) && !setsKey(key)).length;
-
-  return { set: keys.filter(setsKey).length + fromPreset, fromPreset };
-};
+const countSet = (keys: string[]): Pick<ISection, 'own' | 'fromPreset'> => ({
+  own: keys.filter(setsKey).length,
+  fromPreset: keys.filter(key => holdsKey(props.inherited, key) && !setsKey(key)).length,
+});
 
 const declaredSections = computed<ISection[]>(() => {
   const declaration = props.declaration;
@@ -191,21 +201,11 @@ const sections = computed<ISection[]>(() => {
 
 const railed = computed(() => sections.value.length > 1);
 
-const errorSummary = (errors: number): string => formatCount(errors, 'invalid field');
-
 const activeGroup = ref<string | null>(null);
 
 const active = computed<ISection>(
   () => sections.value.find(section => section.group === activeGroup.value) ?? sections.value[0]
 );
-
-const setLabel = ({ set, fromPreset }: ISection): string => {
-  if (fromPreset > 0) {
-    return `${set} set, ${fromPreset} from the preset`;
-  }
-
-  return `${set} ${props.inheriting ? 'overridden' : 'set'}`;
-};
 
 const leadCounted = computed(() => {
   const fields = props.lead?.fields ?? [];

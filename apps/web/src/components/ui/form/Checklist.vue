@@ -21,21 +21,23 @@
       <span class="whitespace-nowrap" data-testid="picker-summary"><slot name="summary" /></span>
     </template>
 
-    <ui-picker-row
-      v-for="item of props.items"
-      :key="item.value"
-      :label="item.label"
-      :checked="selected.includes(item.value)"
-      :disabled="item.disabled"
-      :mono="props.mono"
-      @update:checked="checked => toggle(item.value, checked)"
-    >
-      <template #aside>
-        <slot name="aside" :item="item">
-          <span v-if="item.meta" class="whitespace-nowrap font-mono text-xs text-muted">{{ item.meta }}</span>
-        </slot>
-      </template>
-    </ui-picker-row>
+    <template v-for="item of props.items" :key="item.value">
+      <ui-picker-row
+        :label="item.label"
+        :checked="selected.includes(item.value)"
+        :disabled="item.disabled"
+        :mono="props.mono"
+        @update:checked="checked => toggle(item.value, checked)"
+      >
+        <template #aside>
+          <slot name="aside" :item="item">
+            <span v-if="item.meta" class="whitespace-nowrap font-mono text-xs text-muted">{{ item.meta }}</span>
+          </slot>
+        </template>
+      </ui-picker-row>
+
+      <slot name="nested" :item="item" />
+    </template>
   </ui-picker-frame>
 </template>
 

@@ -156,7 +156,7 @@ placement:
     const outcome = await instanceService.start(placed.deploymentId, admin.id);
 
     expect(outcome.started).toEqual([]);
-    expect(outcome.refused[0].problem).toMatch(/does not hold/);
+    expect(outcome.refused[0].problem).toMatch(/is not stored on this node/);
 
     const rows = await dbQuery(app, 'SELECT id FROM "instance" WHERE "deploymentId" = $1', [placed.deploymentId]);
 

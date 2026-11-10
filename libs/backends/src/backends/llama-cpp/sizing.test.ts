@@ -169,3 +169,145 @@ describe('llamaCppSizeVram', () => {
     expect(handed.kvCacheBytes).toBeLessThan(own.kvCacheBytes);
   });
 });
+
+describe('llamaCppSizeVram with weights mirrored in tensor mode', () => {
+  it("gives each card a whole copy of HRM's weights, even with the cache in RAM", () => {
+    const model = buildEstimatedModel({ architecture: 'hrm_text' });
+    const input = { ...placementInput({ splitMode: 'tensor', tensorSplit: [3, 1], noKvOffload: true }), model };
+    const shares = llamaCppSizeVram(input, llamaCppDeclaration).cardShares;
+
+    expect(shares?.[0]).toBe(shares?.[1]);
+  });
+});
+
+describe('llamaCppSizeVram with a fit target', () => {
+  const MIB = 1024 * 1024;
+  const FIT_TARGET = { fitTarget: 512 };
+
+  const headroomOf = (configuration: BackendConfiguration, cardCount = 2): number | undefined =>
+    llamaCppSizeVram(placementInput(configuration, cardCount), llamaCppDeclaration).headroomBytes;
+
+  it("replaces the node's headroom with the target, in bytes", () => {
+    expect(headroomOf(FIT_TARGET)).toBe(512 * MIB);
+  });
+
+  it('honours a target of zero', () => {
+    expect(headroomOf({ fitTarget: 0 })).toBe(0);
+  });
+
+  it("leaves the node's headroom alone where no target is set", () => {
+    expect(headroomOf({})).toBeUndefined();
+  });
+
+  it.each([
+    ['tensor mode', { splitMode: 'tensor' }],
+    ['a tensor split', { tensorSplit: [3, 1] }],
+    ['a tensor override', { tensorOverrides: ['token_embd.weight=CUDA0'] }],
+    ['all experts on the CPU', { cpuMoe: true }],
+    ['expert layers on the CPU', { cpuMoeLayers: 4 }],
+  ])("keeps the node's headroom under %s, where fit does not run", (_name, configuration) => {
+    expect(headroomOf({ ...FIT_TARGET, ...configuration })).toBeUndefined();
+  });
+
+  it('applies where llama.cpp ignores the split, on a single card or with nothing in it', () => {
+    expect(headroomOf({ ...FIT_TARGET, tensorSplit: [3, 1] }, 1)).toBe(512 * MIB);
+    expect(headroomOf({ ...FIT_TARGET, tensorSplit: [0, 0] })).toBe(512 * MIB);
+  });
+
+  it('applies when the model is not split, since fit still runs', () => {
+    expect(headroomOf({ ...FIT_TARGET, splitMode: 'none' })).toBe(512 * MIB);
+  });
+
+  it('applies under no split mode with a split set, since llama.cpp then holds one device and ignores it', () => {
+    expect(headroomOf({ ...FIT_TARGET, splitMode: 'none', tensorSplit: [3, 1] })).toBe(512 * MIB);
+  });
+});
+
+describe('llamaCppSizeVram with automatic fitting disabled', () => {
+  const OVERRIDE = { tensorOverrides: ['token_embd.weight=CUDA0'] };
+
+  const sizingOf = (values: BackendConfiguration, deviceCount = 2) =>
+    llamaCppSizeVram(
+      {
+        model: buildEstimatedModel(),
+        companions: [],
+        configuration: { ...BASE, ...values },
+        deviceCount,
+        cpuPinned: true,
+        devices: Array.from({ length: deviceCount }, (_, card) => ({ deviceKey: `GPU-${card}`, totalBytes: null })),
+      },
+      llamaCppDeclaration
+    );
+
+  it('keeps RAM offload under no split mode with a split set, since llama.cpp then holds one device', () => {
+    expect(sizingOf({ splitMode: 'none', tensorSplit: [3, 1] }).cardsOnlyReason).toBeUndefined();
+  });
+
+  it('disables RAM offload with a tensor split', () => {
+    expect(sizingOf({ tensorSplit: [1, 1] }).cardsOnlyReason).toMatch(/automatic fitting/);
+  });
+
+  it('disables RAM offload with a tensor override', () => {
+    expect(sizingOf(OVERRIDE).cardsOnlyReason).toMatch(/automatic fitting/);
+  });
+
+  it('disables automatic RAM offload with CPU-pinned experts', () => {
+    expect(sizingOf({ cpuMoe: true }).cardsOnlyReason).toMatch(/automatic fitting/);
+  });
+
+  it('keeps fit enabled for an explicit split on a single GPU', () => {
+    expect(sizingOf({ tensorSplit: [1] }, 1).cardsOnlyReason).toBeUndefined();
+  });
+
+  it('states no RAM restriction on a launch with no CPU pin, which could not spill anyway', () => {
+    const sizing = llamaCppSizeVram(
+      {
+        model: buildEstimatedModel(),
+        companions: [],
+        configuration: { ...BASE, tensorSplit: [1, 1] },
+        deviceCount: 2,
+        devices: [
+          { deviceKey: 'GPU-0', totalBytes: null },
+          { deviceKey: 'GPU-1', totalBytes: null },
+        ],
+      },
+      llamaCppDeclaration
+    );
+
+    expect(sizing.cardsOnlyReason).toBeUndefined();
+  });
+
+  it('allows RAM offload when no split or override is set', () => {
+    expect(sizingOf({}).cardsOnlyReason).toBeUndefined();
+  });
+
+  it('marks a launch without a split as using live free memory', () => {
+    expect(sizingOf({}).balancedOnFreeMemory).toBe(true);
+  });
+
+  it('disables RAM offload with a CPU pin, splitMode none and a tensor override', () => {
+    expect(sizingOf({ splitMode: 'none', ...OVERRIDE }).cardsOnlyReason).toMatch(/automatic fitting/);
+  });
+
+  it('disables automatic RAM offload with --n-cpu-moe', () => {
+    expect(sizingOf({ cpuMoeLayers: 2 }).cardsOnlyReason).toMatch(/automatic fitting/);
+  });
+
+  it('disables RAM offload for an override even when estimation is unavailable', () => {
+    expect(sizingOf({ ...OVERRIDE, tensorSplit: [1, 1], contextSize: undefined }).cardsOnlyReason).toMatch(
+      /automatic fitting/
+    );
+  });
+
+  it('marks CPU-pinned splitMode none as using live free memory for offload', () => {
+    expect(sizingOf({ splitMode: 'none' }).balancedOnFreeMemory).toBe(true);
+  });
+
+  it('marks a CPU-pinned split on one card, which leaves fit running', () => {
+    expect(sizingOf({ tensorSplit: [1] }, 1).balancedOnFreeMemory).toBe(true);
+  });
+
+  it('leaves a placed split unmarked, since it does not read free memory', () => {
+    expect(sizingOf({ tensorSplit: [1, 1] }).balancedOnFreeMemory).toBeUndefined();
+  });
+});

@@ -4,14 +4,13 @@ import {
   DEFINITION_FORMAT_VERSION,
   DevicePresentation,
   GIB,
+  MIB,
   BackendDefinition,
   ProbeMethod,
   StreamDialect,
   VramSource,
 } from '../../definition';
 import { KOKORO_IMAGES, kokoroDeclaration } from './declaration';
-
-const MIB = 1024 * 1024;
 
 const SHARED_MEMORY_BYTES = 64 * MIB;
 

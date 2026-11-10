@@ -8,15 +8,25 @@ describe('AppLogo', () => {
     const wrapper = mount(AppLogo);
 
     expect(wrapper.text()).toBe('Modelfleet');
-    expect(wrapper.find('img').exists()).toBe(true);
+    expect(wrapper.find('svg').exists()).toBe(true);
   });
 
   it('draws the logo larger at the large size', () => {
-    expect(mount(AppLogo).get('img').attributes('width')).toBe('26');
+    expect(mount(AppLogo).get('svg').attributes('width')).toBe('26');
     expect(
       mount(AppLogo, { props: { size: 'lg' } })
-        .get('img')
+        .get('svg')
         .attributes('width')
     ).toBe('36');
+  });
+
+  it('draws the hull and containers in the header token and only the top container in the primary token', () => {
+    const shapes = mount(AppLogo).findAll('path, rect');
+
+    const accented = shapes.filter(shape => shape.attributes('style')?.includes('var(--primary'));
+    const inked = shapes.filter(shape => shape.attributes('style')?.includes('var(--fg-header'));
+
+    expect(accented.map(shape => shape.attributes('y'))).toEqual(['4']);
+    expect(inked).toHaveLength(shapes.length - 1);
   });
 });

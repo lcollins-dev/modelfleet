@@ -68,6 +68,9 @@ describe('DeploymentSupervisorService', () => {
     findByDeploymentId: Mock<InstanceService['findByDeploymentId']>;
     takeDown: Mock<InstanceService['takeDown']>;
     bringUp: ReturnType<typeof vi.fn>;
+    isOnOlderSettings: Mock<InstanceService['isOnOlderSettings']>;
+    restartProblem: Mock<InstanceService['restartProblem']>;
+    clearRestartRequest: Mock<InstanceService['clearRestartRequest']>;
   };
   let deploymentActionsService: DeploymentActionsService;
   let deploymentSupervisorService: DeploymentSupervisorService;
@@ -137,6 +140,13 @@ describe('DeploymentSupervisorService', () => {
 
         return Promise.resolve({ started: [started], refused: [] });
       }),
+      isOnOlderSettings: vi.fn<InstanceService['isOnOlderSettings']>(
+        instance =>
+          instance.instanceState !== InstanceState.FAILED &&
+          instance.configurationRevision !== deployment.configurationRevision
+      ),
+      restartProblem: vi.fn<InstanceService['restartProblem']>().mockResolvedValue(null),
+      clearRestartRequest: vi.fn<InstanceService['clearRestartRequest']>().mockResolvedValue(undefined),
     };
 
     deploymentActionsService = new DeploymentActionsService(
@@ -264,6 +274,19 @@ describe('DeploymentSupervisorService', () => {
       await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
 
       expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([]);
+    });
+
+    describe('a load in progress on the cards', () => {
+      const LOADING = { ...REFUSED, capacity: { refusal: FitRefusal.LOAD_IN_PROGRESS } as IFitReport };
+
+      it('marks the node and retries, leaving the planner out of it', async () => {
+        instanceService.bringUp.mockResolvedValue({ started: [], refused: [LOADING] });
+
+        await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+        expect(planner.plan).not.toHaveBeenCalled();
+        expect(deploymentSupervisorService.factsFor(deployment, []).makingRoomNodeIds).toEqual([LOADING.nodeId]);
+      });
     });
 
     it('names the nodes the mark is waiting on, for the screen to read', async () => {
@@ -446,6 +469,219 @@ describe('DeploymentSupervisorService', () => {
       await deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
 
       expect(instanceService.bringUp).toHaveBeenCalled();
+    });
+  });
+
+  describe('restarting onto the latest settings', () => {
+    const OLDER_REVISION = 'b'.repeat(64);
+
+    const older = (id: number, overrides: Partial<Instance> = {}): Instance =>
+      instanceOf(id, InstanceState.READY, {
+        configurationRevision: OLDER_REVISION,
+        restartRequestedDate: new Date(),
+        ...overrides,
+      });
+
+    const reconcile = () => deploymentSupervisorService.reconcile(DEPLOYMENT_ID);
+
+    /** Starting a replacement calls `takeDown` to remove failed instance rows. */
+    const stops = () => instanceService.takeDown.mock.calls.filter(([instances]) => instances.length > 0);
+
+    it('restarts idle instances immediately and records matching stop and start reasons', async () => {
+      const instance = older(1);
+
+      rows = [instance];
+
+      await reconcile();
+
+      expect(instanceService.takeDown).toHaveBeenCalledWith(
+        [instance],
+        expect.objectContaining({ reason: InstanceChangeReason.SETTINGS_CHANGED })
+      );
+
+      await reconcile();
+
+      expect(instanceService.bringUp).toHaveBeenCalledWith(
+        DEPLOYMENT_ID,
+        expect.objectContaining({ reason: InstanceChangeReason.SETTINGS_CHANGED })
+      );
+    });
+
+    it('waits for the last active request before restarting', async () => {
+      const instance = older(1);
+
+      rows = [instance];
+
+      const { lease } = await acquire();
+
+      await reconcile();
+
+      expect(instanceService.takeDown).not.toHaveBeenCalled();
+
+      lease?.release();
+
+      await vi.waitFor(() => expect(instanceService.takeDown).toHaveBeenCalled());
+    });
+
+    it('restarts an idle replica while another serves', async () => {
+      const busy = older(1);
+      const idle = older(2);
+
+      rows = [busy, idle];
+
+      await acquire();
+      await reconcile();
+
+      expect(instanceService.takeDown).toHaveBeenCalledExactlyOnceWith([idle], expect.anything());
+    });
+
+    it('restarts one instance at a time, waiting on the replacement', async () => {
+      rows = [older(1), older(2)];
+
+      await reconcile();
+      await reconcile();
+      await reconcile();
+
+      expect(stops()).toHaveLength(1);
+
+      report(rows.map(row => Object.assign(row, { instanceState: InstanceState.READY })));
+
+      await vi.waitFor(() => expect(stops()).toHaveLength(2));
+    });
+
+    it('skips instances without restart requests', async () => {
+      rows = [older(1, { restartRequestedDate: null })];
+
+      await reconcile();
+
+      expect(instanceService.takeDown).not.toHaveBeenCalled();
+    });
+
+    it('clears the restart request when saved settings match the launch revision', async () => {
+      const instance = older(1, { configurationRevision: deployment.configurationRevision });
+
+      rows = [instance];
+
+      await reconcile();
+
+      expect(instanceService.takeDown).not.toHaveBeenCalled();
+      expect(instanceService.clearRestartRequest).toHaveBeenCalledWith([instance]);
+    });
+
+    it('cancels the restart and records a refusal when the latest settings no longer fit', async () => {
+      const instance = older(1);
+
+      rows = [instance];
+      instanceService.restartProblem.mockResolvedValue({
+        message: 'rig: Not enough GPU memory for 20.0 GiB',
+        outOfRoom: true,
+      });
+
+      await reconcile();
+
+      expect(stops()).toHaveLength(0);
+      expect(instanceService.clearRestartRequest).toHaveBeenCalledWith([instance]);
+      expect(eventService.recordEvent).toHaveBeenCalledWith(
+        EventType.INSTANCE_START_REFUSED,
+        expect.anything(),
+        expect.objectContaining({
+          detail: expect.objectContaining({ problem: expect.stringContaining('rig') as string }) as object,
+        })
+      );
+    });
+
+    it('keeps the restart request pending after a temporary refusal', async () => {
+      rows = [older(1)];
+      instanceService.restartProblem.mockResolvedValue({ message: 'rig: No readings', outOfRoom: false });
+
+      await reconcile();
+
+      expect(stops()).toHaveLength(0);
+      expect(instanceService.clearRestartRequest).not.toHaveBeenCalledWith(rows);
+      expect(eventService.recordEvent).not.toHaveBeenCalled();
+
+      instanceService.restartProblem.mockResolvedValue(null);
+
+      await reconcile();
+
+      expect(stops()).toHaveLength(1);
+    });
+
+    it('defers restarts when the same reconcile launches a replica', async () => {
+      deployment.activationPolicy = ActivationPolicy.ALWAYS;
+      rows = [older(1)];
+
+      await reconcile();
+
+      expect(instanceService.bringUp).toHaveBeenCalled();
+      expect(stops()).toHaveLength(0);
+    });
+
+    it('leaves an instance serving a request that arrived during the fit check', async () => {
+      rows = [older(1)];
+      instanceService.restartProblem.mockImplementation(async () => {
+        await acquire();
+
+        return null;
+      });
+
+      await reconcile();
+
+      expect(stops()).toHaveLength(0);
+      expect(deploymentSupervisorService.factsFor(deployment, rows).restarting).toBe(false);
+    });
+
+    it('skips replacement when the instance is manually stopped during the capacity check', async () => {
+      rows = [older(1)];
+      instanceService.restartProblem.mockImplementation(() => {
+        rows = [];
+
+        return Promise.resolve(null);
+      });
+
+      await reconcile();
+
+      expect(stops()).toHaveLength(0);
+      expect(deploymentSupervisorService.factsFor(deployment, rows).restarting).toBe(false);
+    });
+
+    it('allows restarts despite a failed replica on older settings', async () => {
+      const failed = instanceOf(2, InstanceState.FAILED, { configurationRevision: OLDER_REVISION });
+
+      rows = [older(1), failed];
+
+      await reconcile();
+
+      expect(stops()).toHaveLength(1);
+    });
+
+    it('blocks further restarts after a replacement fails on the latest settings', async () => {
+      rows = [older(1), instanceOf(2, InstanceState.FAILED)];
+
+      await reconcile();
+
+      expect(stops()).toHaveLength(0);
+    });
+
+    it('skips instances on disconnected nodes', async () => {
+      rows = [older(1)];
+      agentConnectionService.relayFor.mockReturnValue(null);
+
+      await reconcile();
+
+      expect(instanceService.takeDown).not.toHaveBeenCalled();
+    });
+
+    it('reports a restart in progress until the replacement starts', async () => {
+      rows = [older(1)];
+
+      await reconcile();
+
+      expect(deploymentSupervisorService.factsFor(deployment, rows).restarting).toBe(true);
+
+      await reconcile();
+
+      expect(deploymentSupervisorService.factsFor(deployment, rows).restarting).toBe(false);
     });
   });
 

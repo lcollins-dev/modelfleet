@@ -1,4 +1,3 @@
-export { default as MfLogo } from './Logo.vue';
 export { default as MfWordmark } from './Wordmark.vue';
 
 export { default as MfDangerCard } from './DangerCard.vue';

@@ -10,6 +10,7 @@ const STRING = 8;
 const UINT32 = 4;
 const ARRAY = 9;
 const BOOL = 7;
+const UINT64 = 10;
 
 const F32 = 0;
 const Q5_0 = 6;
@@ -73,6 +74,25 @@ function headerOf(bytes: Buffer): IGgufHeader {
   return result.header;
 }
 
+const NOTHING_FOR_THE_ESTIMATE = {
+  keyLength: null,
+  valueLength: null,
+  keyLengthSwa: null,
+  valueLengthSwa: null,
+  keyLengthMla: null,
+  valueLengthMla: null,
+  indexerKeyLength: null,
+  headCountByLayer: null,
+  headCountKvByLayer: null,
+  recurrentLayers: null,
+  fullAttentionInterval: null,
+  slidingWindow: null,
+  slidingWindowPattern: null,
+  nextnLayerCount: null,
+  compressRatios: null,
+  decisionType: null,
+};
+
 const LLAMA = [
   pair('general.architecture', STRING, text('llama')),
   pair('general.name', STRING, text('Llama 3 8B Instruct')),
@@ -107,8 +127,9 @@ describe('GgufHeaderParserService', () => {
           headCount: 32,
           headCountKv: 8,
           contextLength: 8192,
+          ...NOTHING_FOR_THE_ESTIMATE,
         },
-        tensors: [{ name: 'output.weight', type: 'Q6_K', parameters: 4096, sizeBytes: 3360 }],
+        tensors: [{ name: 'output.weight', type: 'Q6_K', parameters: 4096, sizeBytes: 3360, offsetBytes: 0 }],
       },
     });
   });
@@ -134,6 +155,131 @@ describe('GgufHeaderParserService', () => {
     expect(result.ok && result.header.metadata.layerCount).toBe(32);
   });
 
+  describe('what the memory estimate reads', () => {
+    const uints = (...values: number[]): Buffer => Buffer.concat([u32(UINT32), u64(values.length), ...values.map(u32)]);
+
+    it('reads a per-layer head count as its largest, keeping the list', () => {
+      const { metadata } = headerOf(
+        gguf([
+          pair('general.architecture', STRING, text('jamba')),
+          pair('jamba.attention.head_count', ARRAY, uints(0, 8, 0)),
+          pair('jamba.attention.head_count_kv', ARRAY, uints(0, 4, 0)),
+        ])
+      );
+
+      expect(metadata).toMatchObject({
+        headCount: 8,
+        headCountKv: 4,
+        headCountByLayer: [0, 8, 0],
+        headCountKvByLayer: [0, 4, 0],
+      });
+    });
+
+    it('reads a sliding-window pattern as a list or an interval', () => {
+      const listed = headerOf(
+        gguf([
+          pair('general.architecture', STRING, text('gemma3')),
+          pair('gemma3.attention.sliding_window_pattern', ARRAY, uints(1, 0)),
+        ])
+      );
+      const interval = headerOf(
+        gguf([
+          pair('general.architecture', STRING, text('gemma3')),
+          pair('gemma3.attention.sliding_window_pattern', UINT32, u32(4)),
+        ])
+      );
+
+      expect(listed.metadata.slidingWindowPattern).toEqual([1, 0]);
+      expect(interval.metadata.slidingWindowPattern).toBe(4);
+    });
+
+    it('reads the lengths, the window and the decision type under the architecture', () => {
+      const { metadata } = headerOf(
+        gguf([
+          pair('general.architecture', STRING, text('deepseek2')),
+          pair('deepseek2.attention.key_length', UINT32, u32(512)),
+          pair('deepseek2.attention.key_length_mla', UINT32, u32(64)),
+          pair('deepseek2.attention.value_length_mla', UINT32, u32(64)),
+          pair('deepseek2.attention.sliding_window', UINT32, u32(1024)),
+          pair('deepseek2.nextn_predict_layers', UINT32, u32(1)),
+          pair('deepseek2.decision.type', STRING, text('classify')),
+        ])
+      );
+
+      expect(metadata).toMatchObject({
+        keyLength: 512,
+        keyLengthMla: 64,
+        valueLengthMla: 64,
+        slidingWindow: 1024,
+        nextnLayerCount: 1,
+        decisionType: 'classify',
+      });
+    });
+
+    it("keeps a tensor's offset in its shard", () => {
+      const offset = Buffer.concat([text('token_embd.weight'), u32(1), u64(32), u32(F32), u64(4096)]);
+
+      expect(headerOf(gguf([], [offset])).tensors?.[0].offsetBytes).toBe(4096);
+    });
+
+    it('reads a pattern written as a list of booleans', () => {
+      const flags = Buffer.concat([u32(BOOL), u64(2), Buffer.from([1, 0])]);
+      const { metadata } = headerOf(
+        gguf([
+          pair('general.architecture', STRING, text('gemma3')),
+          pair('gemma3.attention.sliding_window_pattern', ARRAY, flags),
+        ])
+      );
+
+      expect(metadata.slidingWindowPattern).toEqual([1, 0]);
+    });
+
+    it('reads the remaining lengths and layer fields under the architecture', () => {
+      const { metadata } = headerOf(
+        gguf([
+          pair('general.architecture', STRING, text('qwen3next')),
+          pair('qwen3next.attention.value_length', UINT32, u32(128)),
+          pair('qwen3next.attention.key_length_swa', UINT32, u32(64)),
+          pair('qwen3next.attention.value_length_swa', UINT32, u32(32)),
+          pair('qwen3next.attention.indexer.key_length', UINT32, u32(16)),
+          pair('qwen3next.attention.recurrent_layers', ARRAY, uints(1, 0)),
+          pair('qwen3next.full_attention_interval', UINT32, u32(4)),
+          pair('qwen3next.attention.compress_ratios', ARRAY, uints(4, 128)),
+        ])
+      );
+
+      expect(metadata).toMatchObject({
+        valueLength: 128,
+        keyLengthSwa: 64,
+        valueLengthSwa: 32,
+        indexerKeyLength: 16,
+        recurrentLayers: [1, 0],
+        fullAttentionInterval: 4,
+        compressRatios: [4, 128],
+      });
+    });
+
+    it('walks past a short array of oversized values on a key it does not read', () => {
+      const hashes = Buffer.concat([u32(UINT64), u64(1), u64(2 ** 60)]);
+
+      expect(
+        headerOf(gguf([pair('custom.hashes', ARRAY, hashes), pair('general.name', STRING, text('Kept'))])).name
+      ).toBe('Kept');
+    });
+
+    it('still discards an array longer than any layer list', () => {
+      const long = Array.from({ length: 1000 }, () => 1);
+      const { metadata } = headerOf(
+        gguf([
+          pair('general.architecture', STRING, text('gemma3')),
+          pair('gemma3.attention.compress_ratios', ARRAY, uints(...long)),
+        ])
+      );
+
+      expect(metadata.compressRatios).toBeNull();
+    });
+  });
+
   it('leaves a field the file does not carry null', () => {
     const result = parser.parse(gguf([pair('general.architecture', STRING, text('llama'))]));
 
@@ -152,6 +298,7 @@ describe('GgufHeaderParserService', () => {
         headCount: null,
         headCountKv: null,
         contextLength: null,
+        ...NOTHING_FOR_THE_ESTIMATE,
       },
       tensors: [],
     });
@@ -273,7 +420,13 @@ describe('GgufHeaderParserService', () => {
       const tensors = [tensor('per_layer_token_embd.weight', 160 * 320_001_536, Q5_0)];
 
       expect(headerOf(gguf(LLAMA, tensors)).tensors).toEqual([
-        { name: 'per_layer_token_embd.weight', type: 'Q5_0', parameters: 51_200_245_760, sizeBytes: 35_200_168_960 },
+        {
+          name: 'per_layer_token_embd.weight',
+          type: 'Q5_0',
+          parameters: 51_200_245_760,
+          sizeBytes: 35_200_168_960,
+          offsetBytes: 0,
+        },
       ]);
     });
 
@@ -293,6 +446,7 @@ describe('GgufHeaderParserService', () => {
         type: 'Q8_0',
         parameters: 1024 * 151_936,
         sizeBytes: 165_306_368,
+        offsetBytes: expect.any(Number) as number,
       });
     });
 

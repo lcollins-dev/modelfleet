@@ -70,6 +70,14 @@ const host = (freeBytes: number): NodeHostTelemetryDto => ({
   ],
 });
 
+const twoDirectoryHost = (): NodeHostTelemetryDto => ({
+  ...host(10 * GIB),
+  modelDirectories: [
+    { path: '/models', freeBytes: 10 * GIB, totalBytes: 100 * GIB, writeAccess: ModelDirectoryWriteAccess.WRITABLE },
+    { path: '/bulk', freeBytes: 4 * GIB, totalBytes: 100 * GIB, writeAccess: ModelDirectoryWriteAccess.READ_ONLY },
+  ],
+});
+
 const fleet = (hosts: [number, NodeHostTelemetryDto | null][]): FleetTelemetryResponseDto => ({
   nodes: hosts.map(([nodeId, nodeHost]) => ({
     nodeId,
@@ -213,13 +221,15 @@ describe('Create download', () => {
   });
 
   it('says why a repo could not be listed in place of its files', async () => {
-    getRepositoryListing.mockRejectedValue(new Error('owner/nope does not exist, or is private'));
+    getRepositoryListing.mockRejectedValue(new Error('This repository does not exist, or is private'));
 
     const wrapper = await render();
 
     await list(wrapper, 'owner/nope');
 
-    expect(wrapper.get('[data-testid="download-files"]').text()).toContain('owner/nope does not exist, or is private');
+    expect(wrapper.get('[data-testid="download-files"]').text()).toContain(
+      'This repository does not exist, or is private'
+    );
     expect(rows(wrapper, 'download-files')).toHaveLength(0);
   });
 
@@ -268,6 +278,7 @@ describe('Create download', () => {
         directory: 'huggingface/unsloth/Qwen3-0.6B-GGUF',
         files: ['Qwen3-0.6B-Q4_K_M.gguf', 'README.md'],
         nodeIds: [1, 2],
+        modelDirectories: [],
       },
       'create-download'
     );
@@ -323,6 +334,52 @@ describe('Create download', () => {
     expect(createDownload).toHaveBeenCalledWith(expect.objectContaining({ nodeIds: [2] }), 'create-download');
   });
 
+  it('nests the model directories of a ticked node under it, the first chosen, and lands each node where chosen', async () => {
+    const wrapper = await render();
+    const directories = () => wrapper.findAll('[data-testid="download-model-directory"]');
+    const radios = () => directories().map(directory => directory.get<HTMLInputElement>('input[type="radio"]'));
+
+    onFleet(
+      fleet([
+        [1, twoDirectoryHost()],
+        [2, host(10 * GIB)],
+      ])
+    );
+    await list(wrapper, 'unsloth/Qwen3-0.6B-GGUF');
+    await tick(wrapper, 'download-files', 'Q8_0');
+
+    expect(directories()).toHaveLength(0);
+    expect(row(wrapper, 'download-nodes', 'rig-01').text()).toContain('10 GiB free');
+
+    await tick(wrapper, 'download-nodes', 'rig-01');
+    await tick(wrapper, 'download-nodes', 'rig-02');
+
+    expect(directories().map(directory => directory.text())).toEqual([
+      '/models 10 GiB free',
+      '/bulk Read-only · 4 GiB free · needs 6 GiB',
+    ]);
+    expect(radios().map(radio => radio.element.checked)).toEqual([true, false]);
+    expect(row(wrapper, 'download-nodes', 'rig-01').text()).not.toContain('GiB free');
+
+    await radios()[1].trigger('change');
+
+    expect(radios().map(radio => radio.element.checked)).toEqual([false, true]);
+
+    await start(wrapper);
+    await flushPromises();
+
+    expect(createDownload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nodeIds: [1, 2],
+        modelDirectories: [
+          { nodeId: 1, path: '/bulk' },
+          { nodeId: 2, path: '/models' },
+        ],
+      }),
+      'create-download'
+    );
+  });
+
   it('counts the ticked nodes, and ticks every node from Select all', async () => {
     const wrapper = await render();
     const summary = () => wrapper.get('[data-testid="download-nodes"] [data-testid="picker-summary"]').text();
@@ -363,11 +420,11 @@ describe('Create download', () => {
     await tick(wrapper, 'download-files', 'Q4_K_M');
     await tick(wrapper, 'download-files', 'Q8_0');
 
-    expect(wrapper.text()).not.toContain('A download names at most 2 files');
+    expect(wrapper.text()).not.toContain('Select up to 2 files per download.');
 
     await tick(wrapper, 'download-files', 'README.md');
 
-    expect(wrapper.text()).toContain('A download names at most 2 files');
+    expect(wrapper.text()).toContain('Select up to 2 files per download.');
   });
 
   it('refuses an address that names no model repository without asking the server', async () => {

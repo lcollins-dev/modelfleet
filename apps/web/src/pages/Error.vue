@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-6">
     <ui-result class="mx-auto w-full max-w-sm" :icon="IconError" type="error" title="Something went wrong">
-      We couldn't finish that. Try again in a moment.
+      Try again in a moment.
 
       <template #actions>
         <ui-button type="primary" @click="doRetry">

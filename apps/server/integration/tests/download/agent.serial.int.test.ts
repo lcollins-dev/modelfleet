@@ -218,6 +218,25 @@ describe('Downloads over the agent connection (integration, serial)', () => {
     expect(download.targets[0].state).toBe(DownloadTargetState.ACTIVE);
   });
 
+  it('sends each node the model directory chosen for it, and none where the download named none', async () => {
+    const chosen = await register();
+    const unchosen = await register();
+
+    await createDownload(app, adminToken, {
+      repository: FAKE_HUB_PUBLIC,
+      directory: `huggingface/${FAKE_HUB_PUBLIC}`,
+      files: ['config.json'],
+      nodeIds: [chosen.id, unchosen.id],
+      modelDirectories: [{ nodeId: chosen.id, path: '/bulk' }],
+    }).expect(201);
+
+    const [onChosen] = await (await connect(chosen)).log.until(downloads => downloads.length > 0);
+    const [onUnchosen] = await (await connect(unchosen)).log.until(downloads => downloads.length > 0);
+
+    expect(onChosen).toMatchObject({ modelDirectory: '/bulk', directory: `huggingface/${FAKE_HUB_PUBLIC}` });
+    expect(onUnchosen).not.toHaveProperty('modelDirectory');
+  });
+
   it('shows what the node reports, then records its success and stops asking for it', async () => {
     const node = await register();
     const { socket, log } = await connect(node);

@@ -126,6 +126,7 @@ export class DownloadAdminService {
         directory: this.directoryOf(request),
         files: request.files,
         nodeIds: request.nodeIds,
+        modelDirectories: request.modelDirectories ?? [],
       },
       actorId
     );
@@ -200,6 +201,7 @@ export class DownloadAdminService {
       nodeId: target.nodeId,
       nodeName: target.node.name,
       nodeState: this.nodeService.getState(target.node),
+      modelDirectory: target.modelDirectory,
       state: target.state,
       progress: observed === null ? null : DOWNLOAD_PROGRESS_STATES[observed.state],
       message: target.message,

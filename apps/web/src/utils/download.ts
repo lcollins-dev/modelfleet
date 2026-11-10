@@ -2,6 +2,7 @@ import type {
   DownloadDto,
   DownloadProgressDto,
   DownloadTargetDto,
+  ModelDirectorySpaceDto,
   NodeHostTelemetryDto,
   RepositoryFileDto,
 } from '@libs/dto';
@@ -273,10 +274,20 @@ const describeFreeSpace = (freeBytes: number | null, totalBytes: number): IDownl
   return { warns: false, text: `${formatBytes(freeBytes)} free` };
 };
 
-/** Against the first model directory, which is where a node writes a download. */
-export const describeDownloadSpace = (host: NodeHostTelemetryDto | null, totalBytes: number): IDownloadSpace => {
-  const directory = host?.modelDirectories[0];
+/**
+ * The one chosen where the node still reports it, otherwise the first, which is where a node lands a download that
+ * names none.
+ */
+export const downloadModelDirectory = (
+  host: NodeHostTelemetryDto | null,
+  chosen: string | undefined
+): ModelDirectorySpaceDto | undefined =>
+  host?.modelDirectories.find(directory => directory.path === chosen) ?? host?.modelDirectories[0];
 
+export const describeDownloadSpace = (
+  directory: ModelDirectorySpaceDto | undefined,
+  totalBytes: number
+): IDownloadSpace => {
   if (directory === undefined) {
     return { warns: false, text: 'Free space unknown' };
   }

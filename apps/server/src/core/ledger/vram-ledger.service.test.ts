@@ -217,6 +217,64 @@ describe('VramLedgerService', () => {
       expect(fit).toMatchObject({ refusal: FitRefusal.TOO_LARGE, availableBytes: 20 * GIB });
     });
 
+    describe("a launch keeping its own margin in place of the node's headroom", () => {
+      const NEEDED = 23.5 * GIB;
+      const withMargin = (headroomBytes: number): IAdmittedUsage => ({ ...usage(NEEDED, 0), headroomBytes });
+
+      beforeEach(() => report([{ deviceKey: CARD_A, usedBytes: 0 }]));
+
+      it("fits at its own margin what the node's headroom refuses", async () => {
+        const refused = await ledger.check(TEST_NODE_ID, ON_A, usage(NEEDED, 0));
+        const admitted = await ledger.check(TEST_NODE_ID, ON_A, withMargin(0.5 * GIB));
+
+        expect(refused.refusal).toBe(FitRefusal.TOO_LARGE);
+        expect(admitted).toMatchObject({ refusal: null, availableBytes: NEEDED });
+        expect(admitted.cards[0].headroomBytes).toBe(0.5 * GIB);
+      });
+
+      it("checks a card's own share at the launch's margin", async () => {
+        report([
+          { deviceKey: CARD_A, usedBytes: 0 },
+          { deviceKey: CARD_B, usedBytes: 0 },
+        ]);
+
+        const refused = await ledger.check(TEST_NODE_ID, ON_BOTH, usage(NEEDED, 0, [1, 0]));
+        const admitted = await ledger.check(TEST_NODE_ID, ON_BOTH, {
+          ...usage(NEEDED, 0, [1, 0]),
+          headroomBytes: 0.5 * GIB,
+        });
+
+        expect(refused.refusal).toBe(FitRefusal.CARD_TOO_SMALL);
+        expect(admitted.refusal).toBeNull();
+      });
+
+      it('honours a margin of zero', async () => {
+        const admitted = await ledger.check(TEST_NODE_ID, ON_A, withMargin(0));
+
+        expect(admitted.availableBytes).toBe(24 * GIB);
+      });
+
+      it("raises the margin above the node's headroom too", async () => {
+        const refused = await ledger.check(TEST_NODE_ID, ON_A, { ...usage(21 * GIB, 0), headroomBytes: 4 * GIB });
+
+        expect(refused).toMatchObject({ refusal: FitRefusal.TOO_LARGE, availableBytes: 20 * GIB });
+      });
+
+      it('applies the same margin to a check that assumes instances released', async () => {
+        const admitted = await ledger.checkReleasing(TEST_NODE_ID, ON_A, withMargin(0.5 * GIB), []);
+
+        expect(admitted).toMatchObject({ refusal: null, availableBytes: NEEDED });
+      });
+
+      it('leaves the margin of the next launch on the card as its own', async () => {
+        await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, { ...usage(GIB, 0), headroomBytes: 0 });
+
+        const next = await ledger.check(TEST_NODE_ID, ON_A, usage(GIB, 0));
+
+        expect(next.cards[0].headroomBytes).toBe(GIB);
+      });
+    });
+
     it('takes no system memory into the pool', async () => {
       report([{ deviceKey: CARD_A, usedBytes: 0 }], 32 * GIB);
 
@@ -414,6 +472,33 @@ describe('VramLedgerService', () => {
           hostFreeBytes: 5 * GIB,
           hostWeights: { neededBytes: 20 * GIB, predictedBytes: 0, freeBytes: 5 * GIB },
         });
+      });
+
+      it('leaves shared pages out of what comes off the free figure, since the kernel has already taken them', async () => {
+        report(CARDS, 60 * GIB, [
+          { instanceKey: KEY_2, heldBytes: 2 * GIB, sharedBytes: 48 * GIB, residentBytes: 50 * GIB },
+        ]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, 20 * GIB));
+
+        expect(fit.hostFreeBytes).toBe(58 * GIB);
+      });
+
+      it('counts only what a loading prediction exceeds its shared and mapped pages by', async () => {
+        report(CARDS, 100 * GIB);
+        await ledger.admit(
+          KEY_1,
+          TEST_DEPLOYMENT_ID,
+          TEST_NODE_ID,
+          { cpu: true, gpus: [CARD_A] },
+          usage(GIB, 40 * GIB)
+        );
+
+        report(CARDS, 70 * GIB, [{ instanceKey: KEY_1, heldBytes: 5 * GIB, sharedBytes: 30 * GIB }]);
+
+        const fit = await ledger.check(TEST_NODE_ID, SECOND, usage(GIB, 20 * GIB));
+
+        expect(fit.hostWeights).toMatchObject({ predictedBytes: 5 * GIB, freeBytes: 60 * GIB });
       });
 
       it('takes only file-backed pages off the free figure, since anonymous memory is already out of it', async () => {
@@ -701,6 +786,52 @@ describe('VramLedgerService', () => {
       expect(ledger.attributedBytes(TEST_NODE_ID, KEY_2)).toBe(0);
     });
 
+    it('frees the shared pages a victim reports, beyond what its estimate named', async () => {
+      const READING = [{ instanceKey: KEY_1, heldBytes: GIB, sharedBytes: 100 * GIB }];
+
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], 2 * GIB);
+
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, GIB));
+
+      for (const state of [InstanceState.READY, InstanceState.READY]) {
+        observe([{ instanceKey: KEY_1, instanceState: state }]);
+        report([{ deviceKey: CARD_A, usedBytes: 0 }], 2 * GIB, READING);
+      }
+
+      await expect(ledger.checkReleasing(TEST_NODE_ID, ON_A, usage(GIB, 100 * GIB), [KEY_1])).resolves.toMatchObject({
+        refusal: null,
+        hostWeights: { freeBytes: 102 * GIB },
+      });
+    });
+
+    it("counts a measured victim's weights and shared pages once, as the larger of the two", async () => {
+      const READING = [{ instanceKey: KEY_1, heldBytes: GIB, sharedBytes: 95 * GIB }];
+
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], 200 * GIB);
+
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(GIB, 100 * GIB));
+
+      for (const state of [InstanceState.READY, InstanceState.READY]) {
+        observe([{ instanceKey: KEY_1, instanceState: state }]);
+        report([{ deviceKey: CARD_A, usedBytes: 0 }], 2 * GIB, READING);
+      }
+
+      await expect(ledger.checkReleasing(TEST_NODE_ID, ON_A, usage(GIB, 200 * GIB), [KEY_1])).resolves.toMatchObject({
+        hostWeights: { freeBytes: 101 * GIB },
+      });
+    });
+
+    it('frees the shared pages of a victim the ledger holds no entry for', async () => {
+      report([{ deviceKey: CARD_A, usedBytes: 0 }], 2 * GIB, [
+        { instanceKey: KEY_1, heldBytes: 0, sharedBytes: 50 * GIB },
+      ]);
+
+      await expect(ledger.checkReleasing(TEST_NODE_ID, ON_A, usage(GIB, 40 * GIB), [KEY_1])).resolves.toMatchObject({
+        refusal: null,
+        hostWeights: { freeBytes: 52 * GIB },
+      });
+    });
+
     it('frees what a measured victim holds in system memory for a host refusal', async () => {
       report([{ deviceKey: CARD_A, usedBytes: 0 }], 2 * GIB);
 
@@ -717,6 +848,127 @@ describe('VramLedgerService', () => {
         refusal: FitRefusal.HOST_MEMORY,
       });
       await expect(ledger.checkReleasing(TEST_NODE_ID, ON_A, needs, [KEY_1])).resolves.toMatchObject({ refusal: null });
+    });
+  });
+
+  describe('a launch that uses live free memory for placement', () => {
+    const CPU_AND_A: IInstancePins = { cpu: true, gpus: [CARD_A] };
+
+    const balanced = (expectedBytes: number): IAdmittedUsage => ({
+      ...usage(expectedBytes, 0),
+      balancedOnFreeMemory: true,
+    });
+
+    const readBoth = (): void =>
+      report(
+        [
+          { deviceKey: CARD_A, usedBytes: 0 },
+          { deviceKey: CARD_B, usedBytes: 0 },
+        ],
+        64 * GIB
+      );
+
+    it('waits for a load still running on its cards', async () => {
+      readBoth();
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_BOTH, usage(4 * GIB, 0));
+
+      const fit = await ledger.admit(KEY_2, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_BOTH, balanced(4 * GIB));
+
+      expect(fit.refusal).toBe(FitRefusal.LOAD_IN_PROGRESS);
+    });
+
+    it('reserves no memory for a refused launch', async () => {
+      readBoth();
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_BOTH, usage(4 * GIB, 0));
+      await ledger.admit(KEY_2, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_BOTH, balanced(4 * GIB));
+
+      expect(ledger.predictionsOn(TEST_NODE_ID, CARD_A).map(held => held.instanceKey)).toEqual([KEY_1]);
+    });
+
+    it('allows concurrent GPU-only loads on a single GPU', async () => {
+      readBoth();
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(4 * GIB, 0));
+
+      const fit = await ledger.check(TEST_NODE_ID, ON_A, balanced(4 * GIB));
+
+      expect(fit.refusal).toBeNull();
+    });
+
+    it('waits on one card where it may also spill to the CPU', async () => {
+      readBoth();
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(4 * GIB, 0));
+
+      const fit = await ledger.check(TEST_NODE_ID, CPU_AND_A, balanced(4 * GIB));
+
+      expect(fit.refusal).toBe(FitRefusal.LOAD_IN_PROGRESS);
+    });
+
+    it('admits beside a load on a card it does not pin', async () => {
+      readBoth();
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_A, usage(4 * GIB, 0));
+
+      const fit = await ledger.check(TEST_NODE_ID, { cpu: true, gpus: [CARD_B] }, balanced(4 * GIB));
+
+      expect(fit.refusal).toBeNull();
+    });
+
+    it('admits after telemetry accounts for the existing load', async () => {
+      readBoth();
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_BOTH, usage(4 * GIB, 0));
+      observe([{ instanceKey: KEY_1, instanceState: InstanceState.READY }]);
+      readBoth();
+      readBoth();
+
+      expect((await ledger.check(TEST_NODE_ID, ON_BOTH, balanced(4 * GIB))).refusal).toBeNull();
+    });
+
+    it('reports insufficient capacity before a loading conflict', async () => {
+      readBoth();
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_BOTH, usage(4 * GIB, 0));
+
+      const fit = await ledger.check(TEST_NODE_ID, ON_BOTH, balanced(64 * GIB));
+
+      expect(fit.refusal).toBe(FitRefusal.TOO_LARGE);
+    });
+
+    it('admits a launch with its own split beside a load', async () => {
+      readBoth();
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_BOTH, usage(4 * GIB, 0));
+
+      expect((await ledger.check(TEST_NODE_ID, ON_BOTH, usage(4 * GIB, 0))).refusal).toBeNull();
+    });
+  });
+
+  describe('CPU offload held to the main card', () => {
+    const CPU_AND_BOTH: IInstancePins = { cpu: true, gpus: [CARD_A, CARD_B] };
+
+    it('pools only the card its split uses', async () => {
+      report(
+        [
+          { deviceKey: CARD_A, usedBytes: 0 },
+          { deviceKey: CARD_B, usedBytes: 0 },
+        ],
+        16 * GIB
+      );
+
+      const fit = await ledger.check(TEST_NODE_ID, CPU_AND_BOTH, usage(GIB, 0, [1, 0]));
+
+      expect(fit.availableBytes).toBe(39 * GIB);
+      expect(fit.cards.map(card => card.deviceKey)).toEqual([CARD_A]);
+    });
+
+    it('holds nothing on the card llama.cpp dropped', async () => {
+      report(
+        [
+          { deviceKey: CARD_A, usedBytes: 0 },
+          { deviceKey: CARD_B, usedBytes: 0 },
+        ],
+        16 * GIB
+      );
+
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, CPU_AND_BOTH, usage(GIB, 0, [1, 0]));
+
+      expect(ledger.predictionsOn(TEST_NODE_ID, CARD_B)).toEqual([]);
     });
   });
 
@@ -1114,7 +1366,7 @@ describe('VramLedgerService', () => {
 
     it('takes the cards of an offloading start whole, whatever its shares', async () => {
       const offloaded = { cpu: true, gpus: [CARD_A, CARD_B] };
-      const fit = await ledger.check(TEST_NODE_ID, offloaded, usage(2 * GIB, 0, [1, 0]));
+      const fit = await ledger.check(TEST_NODE_ID, offloaded, usage(2 * GIB, 0, [2, 1]));
 
       expect(fit.cards.map(card => card.neededBytes)).toEqual([null, null]);
     });
@@ -1259,6 +1511,19 @@ describe('VramLedgerService', () => {
 
       expect(held()).toEqual([GIB, 10 * GIB, 10 * GIB, 14 * GIB]);
       expect(total(held())).toBeGreaterThanOrEqual(4 * SHARE - total(onEach));
+    });
+
+    it('covers a card that has outrun its share as far as the margin the load was admitted with', async () => {
+      ledger.release(KEY_1);
+
+      await ledger.admit(KEY_1, TEST_DEPLOYMENT_ID, TEST_NODE_ID, ON_ALL, {
+        ...usage(4 * SHARE, 0),
+        headroomBytes: 0.5 * GIB,
+      });
+
+      loaded([22 * GIB, 10 * GIB, 10 * GIB, 6 * GIB]);
+
+      expect(held()[0]).toBe(1.5 * GIB);
     });
 
     it('holds nothing on a card that has taken exactly its share, and all that is left once it passes it', () => {

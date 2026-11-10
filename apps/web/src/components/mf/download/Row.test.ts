@@ -25,6 +25,7 @@ describe('MfDownloadRow', () => {
               nodeId: 1,
               nodeName: 'gpu-01',
               nodeState: NodeState.ONLINE,
+              modelDirectory: '/models',
               state: DownloadTargetState.ACTIVE,
               progress: null,
               message: null,

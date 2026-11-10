@@ -1,6 +1,13 @@
 import { Injectable } from '@nestjs/common';
 
-import { GgufMetadata, ModelLicence, ModelTask, ProjectorModality } from '@libs/agent-protocol';
+import {
+  GgufMetadata,
+  MAX_DECISION_TYPE_LENGTH,
+  MAX_GGUF_LAYERS,
+  ModelLicence,
+  ModelTask,
+  ProjectorModality,
+} from '@libs/agent-protocol';
 import { GGUF_ARCHITECTURE_TASKS, GGUF_CHAT_TEMPLATE_TASKS, GGUF_POOLING_TYPE_TASKS } from '@libs/backends';
 
 import { GgufCursor, RanOut } from './gguf-cursor';
@@ -43,6 +50,9 @@ export interface IGgufTensor {
   type: string;
   parameters: number;
   sizeBytes: number;
+
+  /** From the start of the file's tensor data. */
+  offsetBytes: number;
 }
 
 export interface IGgufHeaderRead {
@@ -59,7 +69,17 @@ export interface IGgufHeaderRefused {
 
 export type GgufHeaderResult = IGgufHeaderRead | IGgufHeaderRefused;
 
-type ScalarValues = Map<string, number | string>;
+type HeaderValue = number | string | number[];
+
+const LAYER_LIST_KEYS = [
+  '.attention.head_count',
+  '.attention.head_count_kv',
+  '.attention.recurrent_layers',
+  '.attention.sliding_window_pattern',
+  '.attention.compress_ratios',
+];
+
+type HeaderValues = Map<string, HeaderValue>;
 
 interface IQuantisation {
   quantisation: string | null;
@@ -98,14 +118,18 @@ export class GgufHeaderParserService {
     }
   }
 
-  private readKeyValues(cursor: GgufCursor): ScalarValues {
+  private readKeyValues(cursor: GgufCursor): HeaderValues {
     const count = cursor.uint64();
-    const values: ScalarValues = new Map<string, number | string>();
+    const values: HeaderValues = new Map<string, HeaderValue>();
 
     for (let index = 0; index < count; index += 1) {
       const key = cursor.string();
       const type: GgufValueType = cursor.uint32();
-      const value = this.readValue(cursor, type);
+      const value = this.readValue(
+        cursor,
+        type,
+        LAYER_LIST_KEYS.some(suffix => key.endsWith(suffix))
+      );
 
       if (value !== null) {
         values.set(key, value);
@@ -115,8 +139,8 @@ export class GgufHeaderParserService {
     return values;
   }
 
-  /** Discards an array, having walked it, and returns null in its place. */
-  private readValue(cursor: GgufCursor, type: GgufValueType): number | string | null {
+  /** Decoding a discarded array would refuse the whole file over a value too large to read, such as a 64-bit hash. */
+  private readValue(cursor: GgufCursor, type: GgufValueType, keepsList = false): HeaderValue | null {
     const fixed = cursor.fixed(type);
 
     if (fixed !== null) {
@@ -136,9 +160,9 @@ export class GgufHeaderParserService {
     const width = FIXED_WIDTHS.get(elementType);
 
     if (width !== undefined) {
-      cursor.skip(width * count);
-
-      return null;
+      return keepsList && count <= MAX_GGUF_LAYERS
+        ? this.readNumbers(cursor, elementType, count)
+        : this.skipNumbers(cursor, width, count);
     }
 
     if (elementType === GgufValueType.STRING) {
@@ -152,6 +176,22 @@ export class GgufHeaderParserService {
     for (let index = 0; index < count; index += 1) {
       this.readValue(cursor, elementType);
     }
+
+    return null;
+  }
+
+  private readNumbers(cursor: GgufCursor, elementType: GgufValueType, count: number): number[] {
+    const numbers: number[] = [];
+
+    for (let index = 0; index < count; index += 1) {
+      numbers.push(cursor.fixed(elementType) ?? 0);
+    }
+
+    return numbers;
+  }
+
+  private skipNumbers(cursor: GgufCursor, width: number, count: number): null {
+    cursor.skip(width * count);
 
     return null;
   }
@@ -173,8 +213,7 @@ export class GgufHeaderParserService {
       }
 
       const type = TENSOR_TYPES.get(cursor.uint32());
-
-      cursor.uint64();
+      const offsetBytes = cursor.uint64();
 
       if (type === undefined) {
         named = false;
@@ -187,16 +226,19 @@ export class GgufHeaderParserService {
         type: type.name,
         parameters,
         sizeBytes: Math.ceil(parameters / type.blockSize) * type.blockBytes,
+        offsetBytes,
       });
     }
 
     return named ? tensors : null;
   }
 
-  private headerFrom(values: ScalarValues, tensors: IGgufTensor[] | null): IGgufHeader {
+  private headerFrom(values: HeaderValues, tensors: IGgufTensor[] | null): IGgufHeader {
     const architecture = this.textAt(values, 'general.architecture');
     const prefixed = (suffix: string): number | null =>
       architecture === null ? null : this.countAt(values, `${architecture}.${suffix}`);
+    const layered = (suffix: string): number[] | null =>
+      architecture === null ? null : this.layerListAt(values, `${architecture}.${suffix}`);
 
     return {
       name: this.textAt(values, 'general.name'),
@@ -209,15 +251,43 @@ export class GgufHeaderParserService {
         ...this.quantisationFrom(tensors),
         layerCount: prefixed('block_count'),
         embeddingLength: prefixed('embedding_length'),
-        headCount: prefixed('attention.head_count'),
-        headCountKv: prefixed('attention.head_count_kv'),
+        headCount: this.largestOf(prefixed('attention.head_count'), layered('attention.head_count')),
+        headCountKv: this.largestOf(prefixed('attention.head_count_kv'), layered('attention.head_count_kv')),
         contextLength: prefixed('context_length'),
+        keyLength: prefixed('attention.key_length'),
+        valueLength: prefixed('attention.value_length'),
+        keyLengthSwa: prefixed('attention.key_length_swa'),
+        valueLengthSwa: prefixed('attention.value_length_swa'),
+        keyLengthMla: prefixed('attention.key_length_mla'),
+        valueLengthMla: prefixed('attention.value_length_mla'),
+        indexerKeyLength: prefixed('attention.indexer.key_length'),
+        headCountByLayer: layered('attention.head_count'),
+        headCountKvByLayer: layered('attention.head_count_kv'),
+        recurrentLayers: layered('attention.recurrent_layers'),
+        fullAttentionInterval: prefixed('full_attention_interval'),
+        slidingWindow: prefixed('attention.sliding_window'),
+        slidingWindowPattern:
+          layered('attention.sliding_window_pattern') ?? prefixed('attention.sliding_window_pattern'),
+        nextnLayerCount: prefixed('nextn_predict_layers'),
+        compressRatios: layered('attention.compress_ratios'),
+        decisionType: this.decisionTypeOf(values, architecture),
       },
       tensors,
     };
   }
 
-  private licenceFrom(values: ScalarValues): ModelLicence | null {
+  /** A head count stated once per layer reads as its largest. */
+  private largestOf(scalar: number | null, layers: number[] | null): number | null {
+    return layers === null || layers.length === 0 ? scalar : Math.max(...layers);
+  }
+
+  private decisionTypeOf(values: HeaderValues, architecture: string | null): string | null {
+    const stated = architecture === null ? null : this.textAt(values, `${architecture}.decision.type`);
+
+    return stated === null ? null : stated.slice(0, MAX_DECISION_TYPE_LENGTH);
+  }
+
+  private licenceFrom(values: HeaderValues): ModelLicence | null {
     const id = this.textAt(values, 'general.license');
 
     if (id === null) {
@@ -227,7 +297,7 @@ export class GgufHeaderParserService {
     return { id, name: this.textAt(values, 'general.license.name'), link: this.textAt(values, 'general.license.link') };
   }
 
-  private modalitiesFrom(values: ScalarValues): ProjectorModality[] {
+  private modalitiesFrom(values: HeaderValues): ProjectorModality[] {
     const modalities: ProjectorModality[] = [];
 
     if (values.get('clip.has_vision_encoder') === 1) {
@@ -242,7 +312,7 @@ export class GgufHeaderParserService {
   }
 
   /** The order `task-detection.ts` in `@libs/backends` sets. */
-  private tasksFrom(values: ScalarValues, architecture: string | null): ModelTask[] {
+  private tasksFrom(values: HeaderValues, architecture: string | null): ModelTask[] {
     const poolingType = architecture === null ? null : this.countAt(values, `${architecture}.pooling_type`);
     const pooled = poolingType === null ? undefined : GGUF_POOLING_TYPE_TASKS.get(poolingType);
 
@@ -284,15 +354,21 @@ export class GgufHeaderParserService {
     return { quantisation: ranked[0][0], quantisationMixed: shares.length > 1 };
   }
 
-  private textAt(values: ScalarValues, key: string): string | null {
+  private textAt(values: HeaderValues, key: string): string | null {
     const value = values.get(key);
 
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
   }
 
-  private countAt(values: ScalarValues, key: string): number | null {
+  private countAt(values: HeaderValues, key: string): number | null {
     const value = values.get(key);
 
     return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+  }
+
+  private layerListAt(values: HeaderValues, key: string): number[] | null {
+    const value = values.get(key);
+
+    return Array.isArray(value) && value.every(entry => Number.isInteger(entry) && entry >= 0) ? value : null;
   }
 }

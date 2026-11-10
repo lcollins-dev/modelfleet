@@ -45,7 +45,7 @@ import { ActivationPolicy } from '@libs/dto';
 import { useLogService } from '@/services/LogService';
 import { useDeploymentAdminService } from '@/services/api/admin/DeploymentAdminService';
 import { usePresetAdminService } from '@/services/api/admin/PresetAdminService';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import { MfConfigurationEditor, MfDeploymentIdentity } from '@/components/mf';
 import { UiButton, UiPageContainer, UiPageHeading } from '@/components/ui';
@@ -76,7 +76,7 @@ const logger = logService.createLogger('pages/loggedin/deployments/Create');
 const router = useRouter();
 const { goBack } = useGoBack();
 
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const deploymentAdminService = useDeploymentAdminService();
 const presetAdminService = usePresetAdminService();
 
@@ -128,11 +128,9 @@ const doCreateDeployment = () => {
   deploymentAdminService
     .createDeployment(createRequest())
     .then(created => {
-      notificationStore.addToast(
+      toastStore.addToast(
         'Deployment created',
-        form.activationPolicy === ActivationPolicy.ALWAYS
-          ? `The scheduler starts ${form.name} on its next pass.`
-          : `The first request to ${form.name} starts it.`
+        form.activationPolicy === ActivationPolicy.ALWAYS ? 'Starting automatically.' : 'Starts on the first request.'
       );
 
       router.push(`/deployments/${created.id}`).catch((error: unknown) => {

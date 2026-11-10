@@ -146,7 +146,7 @@ export class EvictionPlannerService {
         return null;
       }
 
-      if (report.refusal === null) {
+      if (report.refusal === null || report.refusal === FitRefusal.LOAD_IN_PROGRESS) {
         return [...chosen, candidate];
       }
 

@@ -1,8 +1,8 @@
 import { BadRequestException, Injectable, InternalServerErrorException, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Observable, Subject } from 'rxjs';
-import { Brackets, In, MoreThan, Repository, SelectQueryBuilder } from 'typeorm';
-import { Transactional } from 'typeorm-transactional';
+import { Brackets, In, MoreThan, Repository } from 'typeorm';
+import { runOnTransactionCommit, Transactional } from 'typeorm-transactional';
 import { z } from 'zod';
 
 import { BackendId, declarationFor, BackendDeclaration, referencesModel } from '@libs/backends';
@@ -159,7 +159,7 @@ export class DeploymentService implements OnModuleInit, IModelUsageSource, IPres
     return this.findReferences({ presetId });
   }
 
-  /** Runs inside the write that changed the preset, so a deployment inheriting a key it moved reads as out of date. */
+  /** Runs within the transaction that updates the preset. */
   async onPresetConfigurationChanged(presetId: number): Promise<void> {
     const deployments = await this.deploymentRepository.find({ where: { presetId }, relations: { preset: true } });
 
@@ -168,6 +168,8 @@ export class DeploymentService implements OnModuleInit, IModelUsageSource, IPres
 
       if (revision !== deployment.configurationRevision) {
         await this.deploymentRepository.update({ id: deployment.id }, { configurationRevision: revision });
+
+        runOnTransactionCommit(() => this.changed.next(deployment.id));
       }
     }
   }
@@ -485,36 +487,6 @@ export class DeploymentService implements OnModuleInit, IModelUsageSource, IPres
     );
   }
 
-  isOutOfDate(deployment: Deployment): boolean {
-    return deployment.appliedRevision !== deployment.configurationRevision;
-  }
-
-  countOutOfDate(): Promise<number> {
-    return this.outOfDateQuery().getCount();
-  }
-
-  /** Records the intent alone. Nothing yet relaunches an instance onto a revision it was not started at. */
-  @Transactional()
-  async apply(deploymentId: number, actorId: number): Promise<void> {
-    const deployment = await this.findWithThrow(deploymentId);
-
-    if (!this.isOutOfDate(deployment)) {
-      return;
-    }
-
-    await this.applyRevisions([deployment], actorId);
-  }
-
-  /** Answers with how many deployments moved onto their current revision. */
-  @Transactional()
-  async applyAll(actorId: number): Promise<number> {
-    const deployments = await this.outOfDateQuery().getMany();
-
-    await this.applyRevisions(deployments, actorId);
-
-    return deployments.length;
-  }
-
   /** Drops the document keys the new backend has no field for, and announces the change once it is committed. */
   async update(deploymentId: number, definition: IDeploymentDefinition, actorId: number): Promise<void> {
     await this.writeUpdate(deploymentId, definition, actorId);
@@ -606,7 +578,7 @@ export class DeploymentService implements OnModuleInit, IModelUsageSource, IPres
     return this.counted.asObservable();
   }
 
-  /** A deployment edited, enabled or disabled, once the change is committed. */
+  /** Emits deployment IDs after edits, state changes or inherited preset changes commit. */
   deploymentChanged(): Observable<number> {
     return this.changed.asObservable();
   }
@@ -660,32 +632,7 @@ export class DeploymentService implements OnModuleInit, IModelUsageSource, IPres
       description: fields.description,
       ...stored,
       configurationRevision: revision,
-      appliedRevision: revision,
     });
-  }
-
-  private async applyRevisions(deployments: Deployment[], actorId: number): Promise<void> {
-    for (const deployment of deployments) {
-      await this.deploymentRepository.update(
-        { id: deployment.id },
-        { appliedRevision: deployment.configurationRevision }
-      );
-
-      await this.eventService.recordEvent(EventType.DEPLOYMENT_APPLIED, EventSeverity.INFO, {
-        actorType: EventPartyType.USER,
-        actorId: `${actorId}`,
-        subjectType: EventPartyType.DEPLOYMENT,
-        subjectId: `${deployment.id}`,
-        message: `Applied deployment **${deployment.name}**`,
-        detail: { name: deployment.name, revision: deployment.configurationRevision },
-      });
-    }
-  }
-
-  private outOfDateQuery(): SelectQueryBuilder<Deployment> {
-    return this.deploymentRepository
-      .createQueryBuilder('deployment')
-      .where('deployment."appliedRevision" <> deployment."configurationRevision"');
   }
 
   /** Needs the preset relation loaded where the deployment names one. */

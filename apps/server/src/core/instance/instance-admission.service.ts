@@ -13,6 +13,8 @@ const NO_TELEMETRY_MESSAGE = 'No GPU memory readings received from this node';
 const UNMEASURED_CARD_MESSAGE = 'Memory readings are missing for a selected GPU';
 const UNKNOWN_USAGE_MESSAGE = 'Cannot estimate memory use. Missing:';
 const DECLARE_VRAM_HINT = 'Set `vramGib` to specify GPU memory use';
+const LOAD_IN_PROGRESS_MESSAGE =
+  'Waiting for another model to finish loading on these GPUs. llama.cpp needs stable memory readings to start';
 
 export interface IAdmission {
   problem: string | null;
@@ -40,7 +42,27 @@ export class InstanceAdmissionService {
     private readonly vramLedgerService: VramLedgerService
   ) {}
 
-  async preview(deployment: Deployment, placement: INodePlacement): Promise<IAdmission> {
+  preview(deployment: Deployment, placement: INodePlacement): Promise<IAdmission> {
+    return this.previewAgainst(deployment, placement, usage =>
+      this.vramLedgerService.check(placement.nodeId, placement.pins, usage)
+    );
+  }
+
+  previewReleasing(
+    deployment: Deployment,
+    placement: INodePlacement,
+    releasing: readonly string[]
+  ): Promise<IAdmission> {
+    return this.previewAgainst(deployment, placement, usage =>
+      this.vramLedgerService.checkReleasing(placement.nodeId, placement.pins, usage, releasing)
+    );
+  }
+
+  private async previewAgainst(
+    deployment: Deployment,
+    placement: INodePlacement,
+    check: (usage: IAdmittedUsage) => Promise<IFitReport>
+  ): Promise<IAdmission> {
     const usage = await this.usageOf(deployment, placement);
 
     if (usage === null) {
@@ -51,7 +73,7 @@ export class InstanceAdmissionService {
       return { problem: this.unknownUsageMessage(usage.missing) };
     }
 
-    const report = await this.vramLedgerService.check(placement.nodeId, placement.pins, this.admittedOf(usage));
+    const report = await check(this.admittedOf(usage));
 
     return { ...this.admissionOf(report), capacity: report, expected: usage };
   }
@@ -106,6 +128,8 @@ export class InstanceAdmissionService {
       hostCacheBytes: usage.hostCacheBytes,
       cardShares: usage.cardShares,
       cardsOnlyReason: usage.cardsOnlyReason,
+      balancedOnFreeMemory: usage.balancedOnFreeMemory,
+      headroomBytes: usage.headroomBytes,
     };
   }
 
@@ -165,6 +189,9 @@ export class InstanceAdmissionService {
 
       case FitRefusal.CARD_OUTGROWN:
         return { problem: this.withCardsOnlyReason(report, this.cardOutgrownMessage(report)), capacity: report };
+
+      case FitRefusal.LOAD_IN_PROGRESS:
+        return { problem: LOAD_IN_PROGRESS_MESSAGE, capacity: report };
     }
   }
 
@@ -199,7 +226,7 @@ export class InstanceAdmissionService {
     const weightsBytes = (report.hostWeights?.neededBytes ?? 0) - cacheBytes;
     const parts = [
       ...(weightsBytes > 0 ? [`${this.gib(weightsBytes)} of model weights`] : []),
-      ...(cacheBytes > 0 ? [`up to ${this.gib(cacheBytes)} of prompt cache`] : []),
+      ...(cacheBytes > 0 ? [`up to ${this.gib(cacheBytes)} of prompt cache and checkpoints`] : []),
     ];
 
     return `Not enough RAM for ${parts.join(' and ')}`;

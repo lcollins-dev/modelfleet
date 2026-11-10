@@ -23,6 +23,8 @@ const instance = (
   devices: [{ deviceKey: 'GPU-4f2c', name: 'NVIDIA A100-SXM4-80GB' }],
   state,
   message: null,
+  onOlderSettings: false,
+  restartRequested: false,
   exitCode: null,
   startedDate: null,
   reportedDate: null,
@@ -57,6 +59,21 @@ describe('MfInstanceTable', () => {
     vi.useRealTimers();
   });
 
+  it('tags only instances on older settings', () => {
+    const wrapper = mountTable({
+      party: 'node',
+      instances: [
+        instance('9f0e1d2c3b4a5968', InstanceState.READY, { onOlderSettings: true }),
+        instance('1a2b3c4d5e6f7a8b', InstanceState.READY),
+      ],
+    });
+
+    const rows = wrapper.findAll('[data-testid="instance-row"]');
+
+    expect(rows[0].get('[data-testid="instance-older-settings"]').text()).toBe('Older settings');
+    expect(rows[1].find('[data-testid="instance-older-settings"]').exists()).toBe(false);
+  });
+
   it('leads each row with the instance, naming the deployment on a node screen and linking to it', () => {
     const table = mountTable({
       instances: [
@@ -69,7 +86,6 @@ describe('MfInstanceTable', () => {
     const party = row.get('[data-testid="instance-party-link"]');
 
     expect(table.text()).toContain('Instance');
-    expect(table.text()).toContain('Deployment');
     expect(row.text()).toContain('3b4a5968');
     expect(row.text()).not.toContain('9f0e1d2c');
     expect(party.text()).toBe('llama-70b-chat');
@@ -85,11 +101,21 @@ describe('MfInstanceTable', () => {
     const row = table.get('[data-testid="instance-row"]');
     const party = row.get('[data-testid="instance-party-link"]');
 
-    expect(table.text()).toContain('Node');
     expect(party.text()).toBe('gpu-a-01');
     expect(party.attributes('href')).toBe('/nodes/2');
     expect(row.text()).toContain('CPU');
-    expect(row.text()).toContain('Loading weights');
+    expect(row.text()).not.toContain('Loading weights');
+    expect(row.get('[data-testid="instance-state"]').attributes('title')).toContain('Loading weights');
+  });
+
+  it('gives a starting instance what the node says it is doing on the status hover, in place of loading weights', () => {
+    const message = 'Pulling the backend image registry.example.com/backend:v2';
+    const table = mountTable({ instances: [instance('a', InstanceState.STARTING, { message })], party: 'node' });
+
+    const state = table.get('[data-testid="instance-state"]');
+
+    expect(state.attributes('title')).toBe(message);
+    expect(state.attributes('title')).not.toContain('Loading weights');
   });
 
   it('links every row to its instance page, a failed row too', () => {
@@ -108,7 +134,7 @@ describe('MfInstanceTable', () => {
     }
   });
 
-  it('titles a failed row by its exit code, leaving its output to the instance page', () => {
+  it('gives a failed row its exit code on the status hover, leaving its output to the instance page', () => {
     const table = mountTable({
       instances: [
         instance('a', InstanceState.FAILED, { exitCode: 1, message: 'error: unknown argument --flash' }),
@@ -119,8 +145,9 @@ describe('MfInstanceTable', () => {
 
     const rows = table.findAll('[data-testid="instance-row"]');
 
-    expect(rows[0].text()).toContain('The backend exited 1');
-    expect(rows[1].text()).toContain('The launch failed');
+    expect(rows[0].text()).not.toContain('The backend exited 1');
+    expect(rows[0].get('[data-testid="instance-state"]').attributes('title')).toBe('The backend exited 1');
+    expect(rows[1].get('[data-testid="instance-state"]').attributes('title')).toBe('The launch failed');
     expect(table.text()).not.toContain('unknown argument');
     expect(table.find('[data-testid="table-row-expand"]').exists()).toBe(false);
   });
@@ -160,12 +187,11 @@ describe('MfInstanceTable', () => {
 
     expect(headings.map(heading => heading.text())).toEqual([
       'Instance',
-      'Deployment',
       'State',
       'Device',
-      'Uptime',
       'VRAM',
       'RAM',
+      'Uptime',
       '',
     ]);
   });
@@ -194,5 +220,29 @@ describe('MfInstanceTable', () => {
     const table = mountTable({ instances: [], party: 'deployment' });
 
     expect(table.text()).toContain('Nothing runs here.');
+  });
+
+  it('scrolls its rows in a region under a head that sticks', () => {
+    const table = mountTable({ instances: [instance('a', InstanceState.READY)], party: 'deployment' });
+
+    const region = table.get('[role="region"]');
+
+    expect(region.attributes('aria-label')).toBe('Instances');
+    expect(region.find('[data-testid="instance-row"]').exists()).toBe(true);
+    expect(region.get('[data-testid="table-head"]').classes()).toContain('sticky');
+  });
+
+  it('gives a status with a note the hint cue, and leaves a settled one bare', () => {
+    const table = mountTable({
+      instances: [instance('a', InstanceState.STARTING), instance('b', InstanceState.READY)],
+      party: 'deployment',
+    });
+
+    const states = table.findAll('[data-testid="instance-state"]');
+
+    expect(states[0].attributes('title')).toContain('Loading weights');
+    expect(states[0].classes()).toContain('cursor-help');
+    expect(states[1].attributes('title')).toBeUndefined();
+    expect(states[1].classes()).not.toContain('cursor-help');
   });
 });

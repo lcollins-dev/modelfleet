@@ -102,7 +102,7 @@ import { useLogService } from '@/services/LogService';
 import { ISseSubscription } from '@/services/api/SseService';
 import { useEventAdminService } from '@/services/api/admin/EventAdminService';
 import { useNodeAdminService } from '@/services/api/admin/NodeAdminService';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import {
   UiButton,
@@ -140,7 +140,7 @@ const { goBack } = useGoBack();
 
 const nodeAdminService = useNodeAdminService();
 const eventAdminService = useEventAdminService();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 
 const name = ref('');
 const description = ref('');
@@ -212,9 +212,9 @@ const finish = (path: string) => {
 
   leaving = true;
 
-  notificationStore.addToast(
+  toastStore.addToast(
     'Node registered',
-    connected.value ? `${target.name} is online.` : `${target.name} appears as online once its agent checks in.`
+    connected.value ? 'The agent is connected.' : 'Waiting for the agent to connect.'
   );
 
   router.push(path).catch((error: unknown) => {

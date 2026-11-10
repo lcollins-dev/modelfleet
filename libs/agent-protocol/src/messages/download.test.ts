@@ -14,6 +14,7 @@ import {
   downloadDigestSchema,
   downloadPathSchema,
 } from './download';
+import { MAX_MODEL_PATH_LENGTH } from './model';
 
 const DOWNLOAD_KEY = '6f1f4c1e-3a7b-4c1d-9a55-0d2b3c4d5e6f';
 
@@ -115,6 +116,18 @@ describe('desiredDownloadSchema', () => {
   it('takes a download with a token, and one without', () => {
     expect(desiredDownloadSchema.safeParse({ ...download, token: 'hf_abcDEF123' }).success).toBe(true);
     expect(desiredDownloadSchema.safeParse(download).success).toBe(true);
+  });
+
+  it('takes a download with a model directory, and one without, which reads as the first', () => {
+    expect(desiredDownloadSchema.safeParse({ ...download, modelDirectory: '/models' }).success).toBe(true);
+    expect(desiredDownloadSchema.safeParse(download).success).toBe(true);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['longer than a model path', `/${'a'.repeat(MAX_MODEL_PATH_LENGTH)}`],
+  ])('refuses a model directory that is %s', (_case, modelDirectory) => {
+    expect(desiredDownloadSchema.safeParse({ ...download, modelDirectory }).success).toBe(false);
   });
 
   it('takes a file with a url, and one without', () => {

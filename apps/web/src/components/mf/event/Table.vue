@@ -1,6 +1,6 @@
 <template>
-  <ui-table :columns="gridColumns" :min-width="minWidth">
-    <ui-table-head>
+  <ui-table :columns="gridColumns" :min-width="minWidth" :scroll-label="props.scrollLabel">
+    <ui-table-head :sticky="props.scrollLabel !== undefined">
       <span v-for="column of props.columns" :key="column">{{ COLUMN_LABELS[column] }}</span>
       <span></span>
     </ui-table-head>
@@ -124,6 +124,12 @@ const props = defineProps({
   loading: {
     type: Boolean,
     default: false,
+  },
+
+  /** Given, the rows scroll inside a region of this name under a head that sticks. */
+  scrollLabel: {
+    type: String,
+    default: undefined,
   },
 });
 

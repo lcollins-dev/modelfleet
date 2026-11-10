@@ -56,7 +56,7 @@ import { DocumentEdits, applyToDocument } from '@/utils/yaml';
 import { useLogService } from '@/services/LogService';
 import { usePresetAdminService } from '@/services/api/admin/PresetAdminService';
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import { MfDangerCard, MfPresetForm } from '@/components/mf';
 import { UiButton, UiCard, UiEmpty, UiPageContainer, UiPageHeading, UiSpinner } from '@/components/ui';
@@ -78,7 +78,7 @@ const logger = logService.createLogger('pages/loggedin/presets/Preset');
 const route = useRoute();
 const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const presetAdminService = usePresetAdminService();
 
 const presetId = computed(() =>
@@ -175,7 +175,7 @@ const doUpdatePreset = (document: string): Promise<void> => {
   return presetAdminService
     .updatePreset(preset.value.id, updatePresetRequest)
     .then(() => {
-      notificationStore.addToast('Preset saved', 'Deployments using it pick up the change when applied.');
+      toastStore.addToast('Preset saved', 'Restart affected instances to use the new settings.');
 
       doGetPreset();
     })
@@ -196,7 +196,7 @@ const confirmImpact = (backend: BackendId, document: string, impact: PresetImpac
         h(
           'span',
           {},
-          `This change affects ${describeDeployments(impact.affectedDeployments)} and marks their instances out of date.`
+          `This change affects ${describeDeployments(impact.affectedDeployments)}. Restart their running instances to use the new settings.`
         ),
         h(
           'ul',
@@ -248,7 +248,7 @@ const confirmDelete = () => {
     message:
       target.deployments > 0
         ? `${describeDeployments(target.deployments, 'use')} this preset. Move them to another preset or give them their own configuration before deleting it.`
-        : 'Its configuration is removed.',
+        : 'The preset and its settings will be deleted.',
     confirmLabel: 'Delete Preset',
     action: () => doDeletePreset(target),
   });
@@ -260,7 +260,7 @@ const doDeletePreset = (target: PresetDto): Promise<void> => {
   return presetAdminService
     .deletePreset(target.id)
     .then(() => {
-      notificationStore.addToast('Preset deleted', `${target.name} is removed.`);
+      toastStore.addToast('Preset deleted');
 
       goBack({ replace: true });
     })

@@ -125,7 +125,7 @@ describe('PresetService', () => {
       );
 
       await expect(presetService.create(definition({ document }), ACTOR_ID)).rejects.toThrow(
-        'Gemma LoRA is a LoRA adapter, and Projector takes a multimodal projector'
+        'Projector requires a multimodal projector. Gemma LoRA is a LoRA adapter'
       );
     });
 

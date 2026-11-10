@@ -12,7 +12,7 @@ import { PASSWORD_MISMATCH } from '@/utils/password';
 
 import { useDialogStore } from '@/stores/dialog';
 import { useErrorStore } from '@/stores/error';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import User from './User.vue';
@@ -133,7 +133,7 @@ describe('User page', () => {
       4,
       'user-profile'
     );
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Profile updated');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Profile updated');
     expect(getUser).toHaveBeenCalledTimes(2);
 
     wrapper.unmount();
@@ -206,7 +206,7 @@ describe('User page', () => {
     await flushPromises();
 
     expect(updateState).toHaveBeenLastCalledWith({ enabled: true }, 4);
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Account enabled');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Account enabled');
 
     wrapper.unmount();
   });
@@ -219,7 +219,7 @@ describe('User page', () => {
     await flushPromises();
 
     expect(logoutAllSessions).toHaveBeenCalledWith(4);
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Signed out everywhere');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Signed out everywhere');
 
     wrapper.unmount();
   });

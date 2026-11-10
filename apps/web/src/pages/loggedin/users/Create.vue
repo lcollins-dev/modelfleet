@@ -59,7 +59,7 @@
           <ui-form-field
             v-slot="{ input }"
             label="Roles"
-            help="Each role opens part of the console to them. With none, they only call deployments."
+            help="Roles grant console access. Users without roles can only send requests to deployments."
             path="userRoleIds"
           >
             <role-select v-model:value="roleIds" v-bind="input" name="roles" :disabled="loading" />
@@ -89,7 +89,7 @@ import { PASSWORD_HELP, passwordMismatchError } from '@/utils/password';
 import { useLogService } from '@/services/LogService';
 import { useUserAdminService } from '@/services/api/admin/UserAdminService';
 import { useErrorStore } from '@/stores/error';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import {
   UiButton,
@@ -122,7 +122,7 @@ const router = useRouter();
 const { goBack } = useGoBack();
 
 const errorStore = useErrorStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const adminUserService = useUserAdminService();
 
 const name = ref('');
@@ -154,7 +154,7 @@ const doCreateUser = () => {
   adminUserService
     .createUser(createUserRequest, CREATE_FORM)
     .then(async userId => {
-      notificationStore.addToast('User created', `${createUserRequest.name} can sign in now.`);
+      toastStore.addToast('User created');
 
       await router.push(`/users/${userId}`);
     })

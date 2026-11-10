@@ -189,7 +189,7 @@ placement:
       expect(issues).toEqual([
         expect.objectContaining({
           path: 'placement',
-          message: 'Pins several GPUs on one node, and this backend runs on a single GPU.',
+          message: 'This backend supports only one GPU per node. Select a single GPU.',
         }),
       ]);
     });
@@ -200,7 +200,7 @@ placement:
       );
 
       expect(issues.map(issue => issue.message)).toEqual([
-        "Pins a node's CPU beside its GPUs, and this backend cannot offload to RAM.",
+        'This backend does not support CPU and GPU offloading. Select either the CPU or the GPUs on each node.',
       ]);
     });
 

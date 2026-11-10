@@ -29,6 +29,7 @@ interface ITableProps {
   columns: EventTableColumn[];
   emptyDescription: string;
   loading?: boolean;
+  scrollLabel?: string;
 }
 
 const mountTable = (props: ITableProps, slots: Record<string, string> = {}) => {
@@ -167,5 +168,27 @@ describe('MfEventTable', () => {
 
     expect(table.get('[data-testid="table-toolbar"]').text()).toBe('Filters');
     expect(table.get('[data-testid="table-footer"]').text()).toBe('Showing 1 event');
+  });
+
+  it('scrolls its rows under a head that sticks when given a scroll label', () => {
+    const { table } = mountTable({
+      events: [event()],
+      columns: ['when'],
+      emptyDescription: 'Nothing yet.',
+      scrollLabel: 'Event log',
+    });
+
+    const region = table.get('[role="region"]');
+
+    expect(region.attributes('aria-label')).toBe('Event log');
+    expect(region.find('[data-testid="event-row"]').exists()).toBe(true);
+    expect(region.get('[data-testid="table-head"]').classes()).toContain('sticky');
+  });
+
+  it('stays in the page flow without a scroll label', () => {
+    const { table } = mountTable({ events: [event()], columns: ['when'], emptyDescription: 'Nothing yet.' });
+
+    expect(table.find('[role="region"]').exists()).toBe(false);
+    expect(table.get('[data-testid="table-head"]').classes()).not.toContain('sticky');
   });
 });

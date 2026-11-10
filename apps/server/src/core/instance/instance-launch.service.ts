@@ -30,17 +30,16 @@ import { servableProblem, stagesProblem } from '../model/servable';
 const NO_PLACEMENT_MESSAGE = "Choose one node's CPU or one or more GPUs";
 const NODE_GONE_MESSAGE = 'This deployment is assigned to a node that no longer exists';
 const UNKNOWN_DEVICE_MESSAGE = 'This deployment is assigned to a device that the node has not reported';
-const MODEL_MISSING_MESSAGE = 'This node does not hold the model used by the deployment';
+const MODEL_MISSING_MESSAGE = 'The model used by this deployment is not stored on this node';
 const COMPANION_MISSING_MESSAGE = 'This node does not hold';
-const IMAGE_MISSING_MESSAGE = 'Set a container image, since this backend has no image for';
+const IMAGE_MISSING_MESSAGE = 'Set a container image. This backend has no default image for';
 const PINS_REFUSAL_MESSAGES: Record<PinsRefusal, string> = {
-  [PinsRefusal.SEVERAL_DEVICES]: 'Choose one GPU on this node, since this backend runs on a single GPU',
-  [PinsRefusal.CPU_BESIDE_DEVICES]:
-    "Choose this node's CPU or its GPUs, not both, since this backend cannot offload to RAM",
+  [PinsRefusal.SEVERAL_DEVICES]: 'This backend supports only one GPU. Select one GPU on this node',
+  [PinsRefusal.CPU_BESIDE_DEVICES]: "This backend cannot offload to RAM. Select either this node's CPU or its GPUs",
 };
 
 const NODE_UNAVAILABLE_MESSAGES: Record<Exclude<NodeState, NodeState.ONLINE>, string> = {
-  [NodeState.REGISTERED]: 'This node has never made contact',
+  [NodeState.REGISTERED]: 'The agent on this node has not connected yet',
   [NodeState.OFFLINE]: 'This node is offline',
   [NodeState.DISABLED]: 'This node is disabled',
 };

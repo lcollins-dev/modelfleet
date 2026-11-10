@@ -22,7 +22,6 @@ export const buildDeployment = (overrides: Partial<Deployment> = {}): Deployment
     document: 'threads: 8\n',
     configuration: { threads: 8 },
     configurationRevision: TEST_REVISION,
-    appliedRevision: TEST_REVISION,
   });
 
   deployment.id = TEST_DEPLOYMENT_ID;

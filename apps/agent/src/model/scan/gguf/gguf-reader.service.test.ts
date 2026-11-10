@@ -338,8 +338,8 @@ describe('GgufReaderService', () => {
       ];
 
       await expect(tensorsOf(files)).resolves.toEqual([
-        { name: 'per_layer_token_embd.weight', sizeBytes: 160 * MIB },
-        { name: 'token_embd.weight', sizeBytes: 80 * MIB },
+        { name: 'per_layer_token_embd.weight', sizeBytes: 160 * MIB, offsetBytes: 0, shard: 1 },
+        { name: 'token_embd.weight', sizeBytes: 80 * MIB, offsetBytes: 0, shard: 0 },
       ]);
     });
 
@@ -347,7 +347,9 @@ describe('GgufReaderService', () => {
       const tensors = [tensor('token_embd.weight', 16 * MIB), tensor('blk.0.attn_norm.weight', 16 * MIB - 1)];
       const files = [await shard('model.gguf', ggufBytes([architecture('llama')], tensors))];
 
-      await expect(tensorsOf(files)).resolves.toEqual([{ name: 'token_embd.weight', sizeBytes: 64 * MIB }]);
+      await expect(tensorsOf(files)).resolves.toEqual([
+        { name: 'token_embd.weight', sizeBytes: 64 * MIB, offsetBytes: 0, shard: 0 },
+      ]);
     });
 
     it('lists none where a shard holds a tensor type it does not know', async () => {

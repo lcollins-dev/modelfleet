@@ -10,7 +10,7 @@ import { ApiKeyListStatus, EventPartyType, EventSeverity, EventType, UserRoleId 
 import { Config } from '@/Config';
 
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import Index from './Index.vue';
@@ -186,7 +186,7 @@ describe('API keys page', () => {
     expect(revokeApiKey).toHaveBeenCalledWith(1);
     expect(getApiKeyList).toHaveBeenCalledTimes(2);
     expect(getApiKeyStats).toHaveBeenCalledTimes(2);
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Key revoked');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Key revoked');
   });
 
   it('refreshes the list and the totals on a key event', async () => {

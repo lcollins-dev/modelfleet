@@ -1,5 +1,6 @@
 import Docker from 'dockerode';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PassThrough } from 'node:stream';
+import { afterEach, beforeEach, describe, expect, it, Mock, vi } from 'vitest';
 
 import { INSTANCE_LABEL } from '@libs/backends/runtime';
 
@@ -152,6 +153,203 @@ describe('ContainerService', () => {
       logs.mockRejectedValue(refused(404, 'No such container'));
 
       expect(await containerService.tailLogs(CONTAINER_ID, 30)).toBeNull();
+    });
+  });
+
+  describe('pullImage', () => {
+    const REFERENCE = 'registry.example.com/backend:v2';
+    const STALL_MS = 300_000;
+
+    let progress: PassThrough;
+    let pull: Mock<(reference: string, options: { abortSignal: AbortSignal }) => Promise<PassThrough>>;
+    let service: ContainerService;
+
+    const line = (fields: Record<string, unknown>) => `${JSON.stringify(fields)}\n`;
+    const downloading = (current: number) => line({ id: 'a1b2c3', status: 'Downloading', progressDetail: { current } });
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+
+      progress = new PassThrough();
+      pull = vi.fn<(reference: string, options: { abortSignal: AbortSignal }) => Promise<PassThrough>>();
+      pull.mockResolvedValue(progress);
+
+      const configService = {
+        nodeKey: NODE_KEY,
+        imagePullStallTimeout: '5m',
+        imagePullStallTimeoutMs: STALL_MS,
+      } as unknown as ConfigService;
+
+      service = new ContainerService(configService, { pull } as unknown as Docker);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('raises the failure the daemon wrote into the progress stream', async () => {
+      const pulling = service.pullImage(REFERENCE);
+
+      progress.end(line({ status: 'Downloading' }) + line({ error: 'no space left on device' }));
+
+      await expect(pulling).rejects.toThrow('no space left on device');
+    });
+
+    it('reads a line the daemon sent split across chunks', async () => {
+      const pulling = service.pullImage(REFERENCE);
+      const failure = line({ error: 'manifest unknown' });
+
+      progress.write(failure.slice(0, 10));
+      progress.end(failure.slice(10));
+
+      await expect(pulling).rejects.toThrow('manifest unknown');
+    });
+
+    it('reads a last line the daemon sent without a newline', async () => {
+      const pulling = service.pullImage(REFERENCE);
+
+      progress.end(JSON.stringify({ error: 'no space left on device' }));
+
+      await expect(pulling).rejects.toThrow('no space left on device');
+    });
+
+    it('counts a layer changing status at the same byte count as progress', async () => {
+      const pulling = service.pullImage(REFERENCE);
+
+      await vi.advanceTimersByTimeAsync(0);
+      progress.write(downloading(2048));
+      await vi.advanceTimersByTimeAsync(STALL_MS - 1000);
+      progress.write(line({ id: 'a1b2c3', status: 'Download complete', progressDetail: { current: 2048 } }));
+      await vi.advanceTimersByTimeAsync(STALL_MS - 1000);
+      progress.end(line({ status: 'Status: Downloaded newer image' }));
+
+      await expect(pulling).resolves.toBeUndefined();
+    });
+
+    it('carries on with a pull that keeps progressing, however long it takes in all', async () => {
+      const pulling = service.pullImage(REFERENCE);
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      for (let minute = 1; minute <= 30; minute += 1) {
+        progress.write(downloading(minute * 1024));
+        await vi.advanceTimersByTimeAsync(STALL_MS - 1000);
+      }
+
+      progress.end(line({ status: 'Status: Downloaded newer image' }));
+
+      await expect(pulling).resolves.toBeUndefined();
+    });
+
+    it('fails a pull that repeats its last figures for the stall timeout, naming the timeout', async () => {
+      const pulling = service.pullImage(REFERENCE);
+      const outcome = pulling.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(0);
+      progress.write(downloading(2048));
+
+      for (let second = 0; second < STALL_MS / 1000; second += 1) {
+        progress.write(downloading(2048));
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+
+      expect(await outcome).toEqual(new Error('The image pull made no progress for 5m'));
+    });
+
+    it('fails a pull whose layers take turns repeating their last figures', async () => {
+      const outcome = service.pullImage(REFERENCE).catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      for (let second = 0; second < STALL_MS / 1000; second += 1) {
+        progress.write(line({ id: 'a1b2c3', status: 'Downloading', progressDetail: { current: 100 } }));
+        progress.write(line({ id: 'd4e5f6', status: 'Downloading', progressDetail: { current: 200 } }));
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+
+      expect(await outcome).toEqual(new Error('The image pull made no progress for 5m'));
+    });
+
+    it('raises an error the daemon wrote on a line it cannot fully read', async () => {
+      const pulling = service.pullImage(REFERENCE);
+
+      progress.end(line({ id: 7, progressDetail: null, error: 'no space left on device' }));
+
+      await expect(pulling).rejects.toThrow('no space left on device');
+    });
+
+    it('fails a pull whose stream is cut off without an end', async () => {
+      const outcome = service.pullImage(REFERENCE).catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(0);
+      progress.write(downloading(2048));
+      progress.destroy();
+
+      expect(await outcome).toEqual(new Error('The Docker daemon closed the image pull before it finished'));
+    });
+
+    it('fails a pull whose layers take turns repeating their last figures', async () => {
+      const outcome = service.pullImage(REFERENCE).catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      for (let second = 0; second < STALL_MS / 1000; second += 1) {
+        progress.write(line({ id: 'a1b2c3', status: 'Downloading', progressDetail: { current: 100 } }));
+        progress.write(line({ id: 'd4e5f6', status: 'Downloading', progressDetail: { current: 200 } }));
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+
+      expect(await outcome).toEqual(new Error('The image pull made no progress for 5m'));
+    });
+
+    it('raises an error the daemon wrote on a line it cannot fully read', async () => {
+      const pulling = service.pullImage(REFERENCE);
+
+      progress.end(line({ id: 7, progressDetail: null, error: 'no space left on device' }));
+
+      await expect(pulling).rejects.toThrow('no space left on device');
+    });
+
+    it('fails a pull whose stream is cut off without an end', async () => {
+      const outcome = service.pullImage(REFERENCE).catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(0);
+      progress.write(downloading(2048));
+      progress.destroy();
+
+      expect(await outcome).toEqual(new Error('The Docker daemon closed the image pull before it finished'));
+    });
+
+    it('never abandons a pull where the stall timeout is 0', async () => {
+      const configService = { imagePullStallTimeout: '0', imagePullStallTimeoutMs: 0 } as unknown as ConfigService;
+      const unbounded = new ContainerService(configService, { pull } as unknown as Docker);
+      const pulling = unbounded.pullImage(REFERENCE);
+
+      await vi.advanceTimersByTimeAsync(0);
+      progress.write(downloading(2048));
+      await vi.advanceTimersByTimeAsync(STALL_MS * 10);
+      progress.end(line({ status: 'Status: Downloaded newer image' }));
+
+      await expect(pulling).resolves.toBeUndefined();
+    });
+
+    it('fails a pull the daemon never starts answering, and aborts the request', async () => {
+      let request = new AbortController().signal;
+
+      pull.mockImplementation((_reference, options) => {
+        request = options.abortSignal;
+
+        return new Promise<PassThrough>((_resolve, reject) => {
+          request.addEventListener('abort', () => reject(new Error('The operation was aborted')));
+        });
+      });
+
+      const outcome = service.pullImage(REFERENCE).catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(STALL_MS);
+
+      expect(await outcome).toEqual(new Error('The image pull made no progress for 5m'));
+      expect(request.aborted).toBe(true);
     });
   });
 

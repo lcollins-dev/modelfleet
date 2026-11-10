@@ -30,7 +30,7 @@ export const formatProblem = (model: Model, backend: BackendId): string | null =
 
   const served = definition.declaration.formats.map(format => FORMAT_LABELS[format]).join(' or ');
 
-  return `${model.label} is a ${FORMAT_LABELS[model.format]} model, and ${backend} loads ${served} alone`;
+  return `${model.label} uses ${FORMAT_LABELS[model.format]} format. ${backend} only supports ${served}`;
 };
 
 export const stagesProblem = (model: Model, backend: BackendId): string | null => {

@@ -232,7 +232,7 @@ describe('useApiService', () => {
 
       await expect(useApiService().makeRequest('user/profile', RequestType.GET)).rejects.toMatchObject({
         type: ApiErrorType.UNKNOWN,
-        message: "We couldn't finish that. Try again in a moment.",
+        message: 'Something went wrong. Try again in a moment.',
       });
     });
 
@@ -250,7 +250,7 @@ describe('useApiService', () => {
 
       await expect(useApiService().makeRequest('user/profile', RequestType.GET)).rejects.toMatchObject({
         type: ApiErrorType.UNKNOWN,
-        message: "We couldn't finish that. Try again in a moment.",
+        message: 'Something went wrong. Try again in a moment.',
       });
     });
 

@@ -5,7 +5,7 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 
 import { BackendId } from '@libs/backends';
 
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Create from './Create.vue';
 
@@ -59,7 +59,7 @@ describe('New preset page', () => {
       backend: BackendId.LLAMA_CPP,
       document: 'replicas: 2\n',
     });
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Preset created');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Preset created');
     expect(router.currentRoute.value.path).toBe('/presets/4');
 
     wrapper.unmount();

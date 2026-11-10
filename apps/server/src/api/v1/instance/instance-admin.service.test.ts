@@ -89,6 +89,7 @@ describe('InstanceAdminService', () => {
     findAll: ReturnType<typeof vi.fn>;
     findByDeploymentId: ReturnType<typeof vi.fn>;
     findByNodeId: ReturnType<typeof vi.fn>;
+    isOnOlderSettings: ReturnType<typeof vi.fn>;
     instancesChanged: () => Subject<void>;
     previewPlacements: ReturnType<typeof vi.fn>;
     previewDraft: ReturnType<typeof vi.fn>;
@@ -106,6 +107,7 @@ describe('InstanceAdminService', () => {
     planEvictions: ReturnType<typeof vi.fn>;
   };
   let telemetryChanged: Subject<number>;
+  let measuredUsage: ReturnType<typeof vi.fn>;
   let instanceAdminService: InstanceAdminService;
 
   const resident = (...overrides: Partial<ReturnType<typeof buildInstance>>[]) => {
@@ -118,6 +120,7 @@ describe('InstanceAdminService', () => {
   };
 
   beforeEach(async () => {
+    measuredUsage = vi.fn().mockReturnValue({ vramBytes: 83 * GIB, ramBytes: 213 * GIB });
     deploymentChanged = new Subject<number>();
     deploymentRemoved = new Subject<number>();
 
@@ -137,6 +140,7 @@ describe('InstanceAdminService', () => {
       findAll: vi.fn().mockResolvedValue(resident()),
       findByDeploymentId: vi.fn().mockResolvedValue(resident()),
       findByNodeId: vi.fn().mockResolvedValue(resident()),
+      isOnOlderSettings: vi.fn().mockReturnValue(false),
       previewPlacements: vi.fn().mockResolvedValue({
         placements: [{ nodeId: TEST_NODE_ID, pins: { cpu: false, gpus: [TEST_DEVICE_KEY] }, problem: null }],
         replicas: 1,
@@ -204,11 +208,39 @@ describe('InstanceAdminService', () => {
         { provide: NodeStateService, useValue: nodeStateService },
         { provide: SupervisorPolicyService, useValue: new SupervisorPolicyService() },
         { provide: DeploymentSupervisorService, useValue: deploymentSupervisorService },
-        { provide: TelemetryService, useValue: { telemetryChanged: () => telemetryChanged } },
+        { provide: TelemetryService, useValue: { telemetryChanged: () => telemetryChanged, measuredUsage } },
       ],
     }).compile();
 
     instanceAdminService = moduleRef.get(InstanceAdminService);
+  });
+
+  it('distinguishes restarts from evictions in progress', async () => {
+    deploymentSupervisorService.factsFor.mockReturnValue({
+      activationPolicy: ActivationPolicy.ALWAYS,
+      enabled: true,
+      inFlight: 0,
+      idleTimeoutMs: 900_000,
+      idleSince: null,
+      backoffUntil: null,
+      givenUp: false,
+      now: REPORTED_DATE,
+      makingRoomNodeIds: [TEST_NODE_ID],
+      restarting: true,
+    });
+
+    const { residency } = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+    expect(residency).toMatchObject({ restarting: true, makingRoomNodeIds: [] });
+  });
+
+  it('reports older settings and pending restart requests', async () => {
+    instanceService.isOnOlderSettings.mockReturnValue(true);
+    instanceService.findByDeploymentId.mockResolvedValue(resident({ restartRequestedDate: new Date() }));
+
+    const { instances } = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+    expect(instances[0]).toMatchObject({ onOlderSettings: true, restartRequested: true });
   });
 
   it('names the node, the state and the device the instance is pinned to', async () => {
@@ -381,6 +413,25 @@ describe('InstanceAdminService', () => {
     });
   });
 
+  it('names no retry to wait for on a disabled deployment, since a disabled one is never retried', async () => {
+    deploymentService.findWithThrow.mockResolvedValue(buildDeployment({ enabled: false, launchFailures: 2 }));
+    deploymentSupervisorService.factsFor.mockReturnValue({
+      activationPolicy: ActivationPolicy.ALWAYS,
+      enabled: false,
+      resident: 0,
+      inFlight: 0,
+      idleTimeoutMs: 900_000,
+      idleSince: null,
+      backoffUntil: new Date('2026-08-20T12:00:30Z'),
+      givenUp: false,
+      now: REPORTED_DATE,
+    });
+
+    const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+    expect(response.residency).toMatchObject({ launchFailures: 2, retryDate: null, givenUp: false });
+  });
+
   it('names being disabled as the rule a deployment is held by', async () => {
     deploymentService.findWithThrow.mockResolvedValue(buildDeployment({ enabled: false }));
     deploymentSupervisorService.factsFor.mockReturnValue({
@@ -414,6 +465,7 @@ describe('InstanceAdminService', () => {
           problem: null,
           problemReason: null,
           expectedUsage: null,
+          measured: { vramBytes: 83 * GIB, ramBytes: 213 * GIB },
           capacity: null,
           evictions: [],
         },
@@ -464,7 +516,7 @@ describe('InstanceAdminService', () => {
           expected: {
             known: true,
             bytes: 22 * GIB,
-            source: ExpectedUsageSource.MEASURED,
+            source: ExpectedUsageSource.ESTIMATED,
             hostWeightsBytes: 0,
             hostResidentBytes: 0,
             hostCacheBytes: 0,
@@ -479,7 +531,7 @@ describe('InstanceAdminService', () => {
 
     expect(response.placement.nodes[0].expectedUsage).toEqual({
       bytes: 22 * GIB,
-      source: ExpectedUsageSource.MEASURED,
+      source: ExpectedUsageSource.ESTIMATED,
       hostWeightsBytes: 0,
       hostResidentBytes: 0,
       hostCacheBytes: 0,
@@ -525,6 +577,7 @@ describe('InstanceAdminService', () => {
       [FitRefusal.HOST_MEMORY, PlacementProblemReason.NOT_ENOUGH_RAM],
       [FitRefusal.NO_TELEMETRY, PlacementProblemReason.NO_READINGS],
       [FitRefusal.UNMEASURED_CARD, PlacementProblemReason.GPU_NOT_MEASURED],
+      [FitRefusal.LOAD_IN_PROGRESS, PlacementProblemReason.OTHER],
     ])('gives a %s refusal its reason', async (refusal, reason) => {
       await expect(reasonOf({ problem: 'A sentence', capacity: { ...TOO_LARGE, refusal } })).resolves.toBe(reason);
     });
@@ -626,6 +679,75 @@ describe('InstanceAdminService', () => {
     const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
 
     expect(response.placement).toEqual({ nodes: [], problem: "Choose one node's CPU or one or more GPUs" });
+  });
+
+  describe('measured figures', () => {
+    const placedWith = (replicas: number) => ({
+      placements: [{ nodeId: TEST_NODE_ID, pins: { cpu: false, gpus: [TEST_DEVICE_KEY] }, problem: null }],
+      replicas,
+      problem: null,
+    });
+
+    it('reads a node holding its full share from the instances it holds', async () => {
+      const [instance] = resident();
+
+      instanceService.previewPlacements.mockResolvedValue(placedWith(1));
+      instanceService.findByDeploymentId.mockResolvedValue([instance]);
+
+      const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+      expect(response.placement.nodes[0].measured).toEqual({ vramBytes: 83 * GIB, ramBytes: 213 * GIB });
+      expect(measuredUsage).toHaveBeenCalledWith(TEST_NODE_ID, [
+        { instanceKey: instance.instanceKey, gpus: instance.pins.gpus },
+      ]);
+    });
+
+    it('counts only the instances on the node it reads', async () => {
+      const [here] = resident();
+      const [there] = resident({ nodeId: TEST_NODE_ID + 1, instanceKey: 'instance-elsewhere' });
+
+      instanceService.previewPlacements.mockResolvedValue(placedWith(1));
+      instanceService.findByDeploymentId.mockResolvedValue([here, there]);
+
+      await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+      expect(measuredUsage).toHaveBeenCalledWith(TEST_NODE_ID, [
+        { instanceKey: here.instanceKey, gpus: here.pins.gpus },
+      ]);
+    });
+
+    it('leaves a node whose instance failed on the estimate, since it no longer holds its share', async () => {
+      instanceService.previewPlacements.mockResolvedValue(placedWith(1));
+      instanceService.findByDeploymentId.mockResolvedValue(resident({ instanceState: ProtocolInstanceState.FAILED }));
+
+      const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+      expect(response.placement.nodes[0].measured).toBeNull();
+    });
+
+    it('leaves a node holding fewer than its replicas on the estimate', async () => {
+      instanceService.previewPlacements.mockResolvedValue(placedWith(2));
+
+      const response = await instanceAdminService.getDeploymentInstances(TEST_DEPLOYMENT_ID);
+
+      expect(response.placement.nodes[0].measured).toBeNull();
+      expect(measuredUsage).not.toHaveBeenCalled();
+    });
+
+    it('leaves a draft on the estimate, since a running figure says nothing about an edit', async () => {
+      instanceService.previewDraft.mockResolvedValue(placedWith(1));
+
+      const response = await instanceAdminService.previewPlacement({
+        deploymentId: TEST_DEPLOYMENT_ID,
+        modelId: 1,
+        presetId: null,
+        backend: BackendId.LLAMA_CPP,
+        activationPolicy: ActivationPolicy.ALWAYS,
+        document: 'placement:\n  gpus: []\n',
+      });
+
+      expect(response.placement.nodes[0].measured).toBeNull();
+    });
   });
 
   describe('previewPlacement', () => {
@@ -874,6 +996,21 @@ describe('InstanceAdminService', () => {
     expect(seen.map(response => response.instances.length)).toEqual([1, 0]);
   });
 
+  it('refreshes the fleet stream after deployment settings are saved', async () => {
+    const seen: InstanceListResponseDto[] = [];
+    const instances = await instanceAdminService.watchInstances();
+    const subscription = instances.subscribe(response => seen.push(response));
+
+    instanceService.findAll.mockResolvedValue([]);
+    deploymentChanged.next(TEST_DEPLOYMENT_ID);
+
+    await new Promise(resolve => setImmediate(resolve));
+
+    subscription.unsubscribe();
+
+    expect(seen.map(response => response.instances.length)).toEqual([1, 0]);
+  });
+
   describe('watchDeploymentInstances', () => {
     const OTHER_NODE_ID = TEST_NODE_ID + 1;
 
@@ -997,8 +1134,9 @@ describe('InstanceAdminService', () => {
       expect(seen).toHaveLength(1);
     });
 
-    it('sends nothing on a reading from a node its placement fits', async () => {
+    it('sends nothing on a reading from a node its placement fits and that holds nothing yet', async () => {
       instanceService.previewPlacements.mockResolvedValue(placedOn(TEST_NODE_ID, null));
+      instanceService.findByDeploymentId.mockResolvedValue([]);
 
       await watch();
 
@@ -1008,6 +1146,35 @@ describe('InstanceAdminService', () => {
       await settle();
 
       expect(seen).toHaveLength(1);
+    });
+
+    it('re-reads on a reading from a node holding its full share, carrying the new figures', async () => {
+      instanceService.previewPlacements.mockResolvedValue(placedOn(TEST_NODE_ID, null));
+
+      await watch();
+
+      measuredUsage.mockReturnValue({ vramBytes: 84 * GIB, ramBytes: 214 * GIB });
+      telemetryChanged.next(TEST_NODE_ID);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await settle();
+
+      expect(seen.map(response => response.placement.nodes[0].measured?.vramBytes)).toEqual([83 * GIB, 84 * GIB]);
+    });
+
+    it('follows a held node from no reading to its first', async () => {
+      instanceService.previewPlacements.mockResolvedValue(placedOn(TEST_NODE_ID, null));
+      measuredUsage.mockReturnValue({ vramBytes: null, ramBytes: null });
+
+      await watch();
+
+      measuredUsage.mockReturnValue({ vramBytes: 83 * GIB, ramBytes: 213 * GIB });
+      telemetryChanged.next(TEST_NODE_ID);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await settle();
+
+      expect(seen.map(response => response.placement.nodes[0].measured?.vramBytes)).toEqual([null, 83 * GIB]);
     });
 
     it('watches the nodes the latest read refuses', async () => {

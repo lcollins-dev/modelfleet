@@ -21,6 +21,8 @@ const facts = (overrides: Partial<ISupervisorFacts> = {}): ISupervisorFacts => (
   inFlight: 0,
   waiting: 0,
   makingRoomNodeIds: [],
+  restarting: false,
+  failedOnLatest: false,
   idleTimeoutMs: IDLE_TIMEOUT_MS,
   idleSince: minutesBefore(20),
   backoffUntil: null,
@@ -244,6 +246,41 @@ describe('SupervisorPolicyService', () => {
 
     it('names being disabled ahead of the activation policy', () => {
       expect(supervisorPolicyService.ruleFor(ActivationPolicy.ALWAYS, false)).toBe(ResidencyRule.DISABLED);
+    });
+  });
+
+  describe('mayRestart', () => {
+    it.each([SupervisorAction.NONE, SupervisorAction.START])('allows a restart once %s settles', action => {
+      expect(supervisorPolicyService.mayRestart(action, facts())).toBe(true);
+    });
+
+    it.each([SupervisorAction.BACK_OFF, SupervisorAction.GIVEN_UP, SupervisorAction.STOP_IDLE])(
+      'holds a restart off for %s',
+      action => {
+        expect(supervisorPolicyService.mayRestart(action, facts())).toBe(false);
+      }
+    );
+
+    it('blocks restarts while requests are queued', () => {
+      expect(supervisorPolicyService.mayRestart(SupervisorAction.NONE, facts({ waiting: 1 }))).toBe(false);
+    });
+
+    it('blocks further restarts until the replacement is ready', () => {
+      expect(
+        supervisorPolicyService.mayRestart(SupervisorAction.NONE, facts({ resident: 2, live: 2, starting: 1 }))
+      ).toBe(false);
+    });
+
+    it('blocks restarts after a launch fails on the latest settings', () => {
+      expect(supervisorPolicyService.mayRestart(SupervisorAction.NONE, facts({ failedOnLatest: true }))).toBe(false);
+    });
+
+    it('allows restarts despite failures on older settings', () => {
+      expect(supervisorPolicyService.mayRestart(SupervisorAction.NONE, facts({ resident: 2, live: 1 }))).toBe(true);
+    });
+
+    it('blocks restarts while waiting for memory to be released', () => {
+      expect(supervisorPolicyService.mayRestart(SupervisorAction.START, facts({ makingRoomNodeIds: [1] }))).toBe(false);
     });
   });
 });

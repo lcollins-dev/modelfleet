@@ -53,17 +53,17 @@ session.
 
 ## Screenshots
 
-`npm run -w e2e screenshots` retakes the README screenshots at 1280 by 800 in the dark theme. It needs the seeded
-screenshot data and a connected development node:
+`npm run -w e2e screenshots` retakes the README screenshots at 1280 by 800 in the dark theme. `screenshots/fake-agent.ts`
+stands in for the node agent, so the images show fixed figures rather than the host's. Stop the real agent, whose refused
+reconnects would otherwise fill the event log, and seed the screenshot data:
 
 ```sh
+npm run instance:start
 npm run instance:stop -- agent
 npm run instance:db:clean
 npm run instance:db:sql -- -v ON_ERROR_STOP=1 < e2e/screenshots/seed.sql
-npm run instance:start
 npm run -w e2e screenshots
 npm run instance:db:clean
 ```
 
-The agent reconnects after the database clean so it can report its GPU and models. The screenshot test creates its
-deployment, waits for it to become ready, takes the images and removes it.
+The spec creates its deployment, waits for the fake to report it ready, takes the images and removes it.

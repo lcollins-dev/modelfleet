@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { readdir, rm, statfs } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { basename, join } from 'node:path';
 import { Observable, Subject } from 'rxjs';
 
 import {
@@ -314,7 +314,7 @@ export class DownloadService implements OnModuleDestroy {
       return;
     }
 
-    const modelDirectory = this.downloadLocationService.modelDirectory();
+    const modelDirectory = this.downloadLocationService.modelDirectory(download);
     let freeBytes: number;
 
     try {
@@ -338,13 +338,20 @@ export class DownloadService implements OnModuleDestroy {
     return (bytes / 1024 ** 3).toFixed(1);
   }
 
-  /** Leaves alone a partial a symlink carries out of the model directory, which is not the agent's to remove. */
+  /**
+   * Leaves alone a partial a symlink carries out of the model directory, which is not the agent's to remove. A download
+   * naming a directory this node does not have configured wrote nothing, so it has nothing to remove.
+   */
   private async removePartials(download: DesiredDownload): Promise<void> {
+    if (!this.downloadLocationService.hasModelDirectory(download)) {
+      return;
+    }
+
     for (const file of download.files) {
       try {
-        const { partialPath } = this.downloadLocationService.fileLocation(download, file);
+        const { modelDirectory, partialPath } = this.downloadLocationService.fileLocation(download, file);
 
-        if (await this.downloadLocationService.isContained(partialPath)) {
+        if (await this.downloadLocationService.isContained(modelDirectory, partialPath)) {
           await rm(partialPath, { force: true });
         }
       } catch (error: unknown) {
@@ -354,24 +361,34 @@ export class DownloadService implements OnModuleDestroy {
   }
 
   /**
-   * Clears partials anywhere under the model directory that no wanted file maps to, left by a download the server dropped
-   * while this agent was down. Only a set the server sent reaches here, so a restart out of contact loses nothing.
+   * Clears partials anywhere under every model directory that no wanted file maps to, left by a download the server
+   * dropped while this agent was down, whichever directory it named. Only a set the server sent reaches here, so a
+   * restart out of contact loses nothing.
    */
   private async removeUnwantedPartials(downloads: DesiredDownload[]): Promise<void> {
     const wanted = new Set<string>();
-    let entries;
 
-    // No model directory, or one that cannot be read, leaves nothing to clear.
-    try {
-      for (const download of downloads) {
-        for (const file of download.files) {
+    // A download whose files cannot be placed wrote nothing, so it wants nothing kept.
+    for (const download of downloads) {
+      for (const file of download.files) {
+        try {
           wanted.add(this.downloadLocationService.fileLocation(download, file).partialPath);
+        } catch {
+          continue;
         }
       }
+    }
 
-      // Resolved, since a wanted partial's path is, and a relative one would match none of them.
-      const modelDirectory = resolve(this.downloadLocationService.modelDirectory());
+    for (const modelDirectory of this.downloadLocationService.modelDirectories()) {
+      await this.removePartialsUnder(modelDirectory, wanted);
+    }
+  }
 
+  /** A directory that cannot be read leaves nothing to clear. */
+  private async removePartialsUnder(modelDirectory: string, wanted: Set<string>): Promise<void> {
+    let entries;
+
+    try {
       entries = await readdir(modelDirectory, { recursive: true, withFileTypes: true });
     } catch {
       return;
@@ -385,7 +402,7 @@ export class DownloadService implements OnModuleDestroy {
       }
 
       await rm(path, { force: true }).catch((error: unknown) => {
-        this.logger.error({ error, path }, 'removeUnwantedPartials(): A partial file could not be removed');
+        this.logger.error({ error, path }, 'removePartialsUnder(): A partial file could not be removed');
       });
     }
   }

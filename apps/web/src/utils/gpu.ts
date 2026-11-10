@@ -274,6 +274,12 @@ export interface IMemoryFigures {
   vramFreeBytes: number | null;
   ramUsedBytes: number;
   ramFreeBytes: number | null;
+
+  /** Included in `ramUsedBytes`. */
+  ramOverflowBytes: number;
+
+  /** Included in `ramUsedBytes`. */
+  ramCacheBytes: number;
 }
 
 /**
@@ -283,6 +289,7 @@ export interface IMemoryFigures {
 export const capacityFigures = (capacity: PlacementCapacityDto): IMemoryFigures => {
   const hostBytes = capacity.hostWeights?.neededBytes ?? 0;
   const ramFreeBytes = capacity.hostWeights?.freeBytes ?? capacity.hostFreeBytes;
+  const ramCacheBytes = capacity.hostWeights?.cacheBytes ?? 0;
 
   if (capacity.hostFreeBytes === null) {
     return {
@@ -290,6 +297,8 @@ export const capacityFigures = (capacity: PlacementCapacityDto): IMemoryFigures 
       vramFreeBytes: capacity.availableBytes,
       ramUsedBytes: hostBytes,
       ramFreeBytes,
+      ramOverflowBytes: 0,
+      ramCacheBytes,
     };
   }
 
@@ -301,6 +310,8 @@ export const capacityFigures = (capacity: PlacementCapacityDto): IMemoryFigures 
     vramFreeBytes: gpuFreeBytes,
     ramUsedBytes: hostBytes + spillBytes,
     ramFreeBytes,
+    ramOverflowBytes: spillBytes,
+    ramCacheBytes,
   };
 };
 

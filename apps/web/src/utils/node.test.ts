@@ -7,7 +7,7 @@ import { countNodeStates, describeFleetNode, formatNodeState, nodeStateTone } fr
 
 describe('nodeStatePresentation', () => {
   it('reads a node awaiting its agent as awaiting first contact', () => {
-    expect(formatNodeState(NodeState.REGISTERED)).toBe('Awaiting first contact');
+    expect(formatNodeState(NodeState.REGISTERED)).toBe('Waiting for agent');
   });
 
   it('keeps a node awaiting first contact off the tones that read as broken', () => {

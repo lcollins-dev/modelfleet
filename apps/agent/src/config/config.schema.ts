@@ -34,6 +34,9 @@ export const environment = z.object({
   // Docker
   DOCKER_SOCKET_PATH: text('/var/run/docker.sock'),
 
+  /** A backend image pull that reports nothing new for this long is abandoned, and its launch fails. 0 never does. */
+  IMAGE_PULL_STALL_TIMEOUT: duration('5m'),
+
   // Instances
   /** The Docker network the agent shares with the backends it runs. Nothing outside it reaches one. */
   INSTANCE_NETWORK: text('modelfleet-instances'),
@@ -65,7 +68,7 @@ export const environment = z.object({
   MODEL_DIRS: list([]),
 
   // Downloads
-  /** A body that delivers nothing for this long is dropped and fetched again from where it stopped. */
+  /** A body that delivers nothing for this long is dropped and fetched again from where it stopped. 0 never drops one. */
   DOWNLOAD_STALL_TIMEOUT: duration('60s'),
 
   /** Attempts in a row that fetch nothing before a file, and the download it belongs to, fails. */

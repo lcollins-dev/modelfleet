@@ -42,6 +42,7 @@ function downloadOf(files: DesiredDownloadFile[], downloadKey = DOWNLOAD_KEY, at
 
 describe('DownloadService', () => {
   let modelDirectory: string;
+  let secondDirectory: string;
   let downloadService: DownloadService;
   let fetchMock: ReturnType<typeof vi.fn<FileFetcherService['fetch']>>;
   let isHeldMock: ReturnType<typeof vi.fn<FileFetcherService['isHeld']>>;
@@ -51,7 +52,8 @@ describe('DownloadService', () => {
 
   beforeEach(async () => {
     modelDirectory = await realpath(await mkdtemp(join(tmpdir(), 'modelfleet-downloads-')));
-    modelDirs = [modelDirectory];
+    secondDirectory = await realpath(await mkdtemp(join(tmpdir(), 'modelfleet-downloads-second-')));
+    modelDirs = [modelDirectory, secondDirectory];
 
     fetchMock = vi.fn<FileFetcherService['fetch']>().mockResolvedValue(undefined);
     isHeldMock = vi.fn<FileFetcherService['isHeld']>().mockResolvedValue(false);
@@ -78,6 +80,7 @@ describe('DownloadService', () => {
     downloadService.onModuleDestroy();
 
     await rm(modelDirectory, { recursive: true, force: true });
+    await rm(secondDirectory, { recursive: true, force: true });
   });
 
   function reported(downloadKey = DOWNLOAD_KEY): ObservedDownload | undefined {
@@ -100,6 +103,10 @@ describe('DownloadService', () => {
     return join(modelDirectory, 'huggingface', 'owner', 'repo', ...segments);
   }
 
+  function secondRepositoryPath(...segments: string[]): string {
+    return join(secondDirectory, 'huggingface', 'owner', 'repo', ...segments);
+  }
+
   async function exists(path: string): Promise<boolean> {
     return stat(path).then(
       () => true,
@@ -115,6 +122,49 @@ describe('DownloadService', () => {
 
     expect(location.filePath).toBe(repositoryPath('sub', 'model.gguf'));
     expect(location.partialPath).toBe(repositoryPath('sub', 'model.gguf.part'));
+  });
+
+  it('writes under the model directory the download names, where the node has it configured', async () => {
+    await downloadService.applyDesiredDownloads({
+      downloads: [{ ...downloadOf([fileOf('model.gguf')]), modelDirectory: secondDirectory }],
+    });
+
+    expect((await settled()).state).toBe(DownloadState.SUCCEEDED);
+
+    const location: IFileLocation = fetchMock.mock.calls[0][2];
+
+    expect(location.filePath).toBe(secondRepositoryPath('model.gguf'));
+  });
+
+  it('removes what it partly wrote in the model directory the download names when it fails', async () => {
+    fetchMock.mockImplementation(async (_download, _file, location) => {
+      await mkdir(join(location.partialPath, '..'), { recursive: true });
+      await writeFile(location.partialPath, 'partial');
+
+      throw new DownloadError('The disk filled');
+    });
+
+    await downloadService.applyDesiredDownloads({
+      downloads: [{ ...downloadOf([fileOf('model.gguf')]), modelDirectory: secondDirectory }],
+    });
+
+    expect((await settled()).state).toBe(DownloadState.FAILED);
+    expect(await exists(secondRepositoryPath('model.gguf.part'))).toBe(false);
+  });
+
+  it('fails a download naming a model directory the node does not have, naming it, and writes nothing', async () => {
+    const elsewhere = join(secondDirectory, 'not-configured');
+
+    await downloadService.applyDesiredDownloads({
+      downloads: [{ ...downloadOf([fileOf('model.gguf')]), modelDirectory: elsewhere }],
+    });
+
+    const download = await settled();
+
+    expect(download.state).toBe(DownloadState.FAILED);
+    expect(download.message).toBe(`Model directory ${elsewhere} is not configured on this node.`);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await exists(elsewhere)).toBe(false);
   });
 
   it('fetches config.json last, so a partly fetched directory never reads as a whole model', async () => {
@@ -194,6 +244,14 @@ describe('DownloadService', () => {
     expect(download.state).toBe(DownloadState.FAILED);
     expect(download.message).toMatch(/owner\/repo needs .* GiB but .* has .* GiB free/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('measures the free space in the model directory the download names', async () => {
+    await downloadService.applyDesiredDownloads({
+      downloads: [{ ...downloadOf([fileOf('huge.gguf', 2 ** 53 - 1)]), modelDirectory: secondDirectory }],
+    });
+
+    expect((await settled()).message).toContain(`but ${secondDirectory} has`);
   });
 
   it('fails, naming the reason, and removes what it partly wrote', async () => {
@@ -467,6 +525,31 @@ describe('DownloadService', () => {
     await downloadService.applyDesiredDownloads({ downloads: [downloadOf([fileOf('model.gguf')])] });
 
     expect(await exists(orphan)).toBe(false);
+    expect(await exists(wanted)).toBe(true);
+  });
+
+  it('clears partials no wanted file maps to under every model directory, keeping one wanted in another', async () => {
+    const orphan = repositoryPath('dropped.gguf.part');
+    const secondOrphan = secondRepositoryPath('dropped.gguf.part');
+    const wanted = secondRepositoryPath('model.gguf.part');
+
+    await mkdir(repositoryPath(), { recursive: true });
+    await mkdir(secondRepositoryPath(), { recursive: true });
+    await writeFile(orphan, 'left by a download stopped while the agent was down');
+    await writeFile(secondOrphan, 'left by another');
+    await writeFile(wanted, 'resumable');
+
+    fetchMock.mockImplementation(() => new Promise(() => undefined));
+
+    await downloadService.applyDesiredDownloads({
+      downloads: [
+        { ...downloadOf([fileOf('model.gguf')]), modelDirectory: secondDirectory },
+        { ...downloadOf([fileOf('other.gguf')], '7f1f4c1e-3a7b-4c1d-9a55-0d2b3c4d5e6f'), modelDirectory: '/elsewhere' },
+      ],
+    });
+
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(secondOrphan)).toBe(false);
     expect(await exists(wanted)).toBe(true);
   });
 

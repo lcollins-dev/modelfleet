@@ -20,6 +20,27 @@ describe('MfMeter', () => {
     expect(meter.findAll('[title]')[1].attributes('title')).toBe('Used · 40');
   });
 
+  it("adds a band's hover note to its segment and legend entry, leaving other bands without one", () => {
+    const meter = mountMeter({
+      bands: [band('Used', 40), { ...band('Other', 10), hoverNote: 'python 12' }],
+      legend: true,
+    });
+
+    const legendEntries = meter.findAll('[data-testid="meter-legend"] > span');
+
+    expect(widths(meter)).toHaveLength(3);
+    expect(meter.findAll('[title]').map(element => element.attributes('title'))).toEqual([
+      'Used · 40',
+      'Other · 10 · python 12',
+      'python 12',
+    ]);
+    expect(legendEntries[0].attributes('title')).toBeUndefined();
+    expect(legendEntries[0].classes()).not.toContain('cursor-help');
+    expect(legendEntries[1].classes()).toContain('cursor-help');
+    expect(legendEntries[0].get('.truncate').classes()).not.toContain('decoration-dotted');
+    expect(legendEntries[1].get('.truncate').classes()).toContain('decoration-dotted');
+  });
+
   it('paints each legend dot in the same tone as its band', () => {
     const meter = mountMeter({
       bands: [

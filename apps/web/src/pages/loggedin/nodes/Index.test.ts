@@ -105,6 +105,8 @@ const instance = (instanceKey: string, nodeId: number): ListInstanceDto => ({
   devices: [],
   state: InstanceState.READY,
   message: null,
+  onOlderSettings: false,
+  restartRequested: false,
   exitCode: null,
   startedDate: null,
   reportedDate: null,
@@ -175,9 +177,9 @@ describe('Nodes page', () => {
     expect(rows[0].text()).toContain('20 GiB of 80 GiB');
     expect(rows[0].get('[data-testid="table-row-link"]').attributes('href')).toBe('/nodes/1');
 
-    expect(rows[1].text()).toContain('Awaiting first contact');
+    expect(rows[1].text()).toContain('Waiting for agent');
     expect(rows[1].text()).toContain('Never');
-    expect(rows[1].text()).not.toContain('agent');
+    expect(rows[1].text()).not.toMatch(/agent \d/);
 
     expect(rows[0].findAll('span.font-mono').map(cell => cell.text())).toEqual(['1', '2']);
     expect(rows[1].findAll('span.font-mono').map(cell => cell.text())).toEqual(['-', '-']);

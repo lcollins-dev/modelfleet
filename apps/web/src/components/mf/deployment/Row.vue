@@ -19,7 +19,7 @@
         <ui-tag v-if="!props.deployment.enabled" type="error">Disabled</ui-tag>
       </template>
 
-      <ui-tag v-if="props.deployment.outOfDate" type="warning">Out of date</ui-tag>
+      <ui-tag v-if="onOlderSettings" type="warning">Older settings</ui-tag>
     </div>
 
     <span class="text-xs">{{ formatActivationPolicy(props.deployment.activationPolicy) }}</span>
@@ -65,6 +65,8 @@ const props = defineProps({
 });
 
 const ownInstances = computed(() => props.instances.filter(instance => instance.deploymentId === props.deployment.id));
+
+const onOlderSettings = computed(() => ownInstances.value.some(instance => instance.onOlderSettings));
 
 const runState = computed(() => deploymentRunState(props.deployment.id, props.instances));
 

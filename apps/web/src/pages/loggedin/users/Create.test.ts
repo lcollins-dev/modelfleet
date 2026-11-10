@@ -8,7 +8,7 @@ import { UserRoleId } from '@libs/dto';
 import { PASSWORD_MISMATCH } from '@/utils/password';
 
 import { useErrorStore } from '@/stores/error';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Create from './Create.vue';
 
@@ -63,7 +63,7 @@ describe('New user page', () => {
       'create-user'
     );
     expect(router.currentRoute.value.path).toBe('/users/12');
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('User created');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('User created');
 
     wrapper.unmount();
   });

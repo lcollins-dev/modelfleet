@@ -24,6 +24,8 @@ const instance = (overrides: Partial<ListInstanceDto> = {}): ListInstanceDto => 
   devices: [{ deviceKey: 'GPU-4f2c', name: 'NVIDIA A100-SXM4-80GB' }],
   state: InstanceState.READY,
   message: null,
+  onOlderSettings: false,
+  restartRequested: false,
   exitCode: null,
   startedDate: null,
   reportedDate: null,
@@ -53,6 +55,24 @@ describe('formatInstanceFailure', () => {
   it('names the exit code of a backend that exited, and a launch that never ran one', () => {
     expect(formatInstanceFailure(instance({ state: InstanceState.FAILED, exitCode: 1 }))).toBe('The backend exited 1');
     expect(formatInstanceFailure(instance({ state: InstanceState.FAILED }))).toBe('The launch failed');
+  });
+
+  it('gives the reason the node reported for a launch that never ran a backend', () => {
+    const message = 'manifest for registry.example.com/backend:v2 not found';
+
+    expect(formatInstanceFailure(instance({ state: InstanceState.FAILED, message }))).toBe(message);
+  });
+
+  it('reads backend output with no exit code as its last line, without its colours', () => {
+    const message = 'loading\n\u001b[31msrv  update_slots: stalled\u001b[0m\n\n';
+
+    expect(formatInstanceFailure(instance({ state: InstanceState.FAILED, message }))).toBe(
+      'srv  update_slots: stalled'
+    );
+  });
+
+  it('falls back where what the node reported holds no text', () => {
+    expect(formatInstanceFailure(instance({ state: InstanceState.FAILED, message: ' \n' }))).toBe('The launch failed');
   });
 
   it('gives nothing for an instance that has not failed', () => {

@@ -10,7 +10,7 @@ export const TEST_DOWNLOAD_KEY = '6f1f4c1e-3a7b-4c1d-9a55-0d2b3c4d5e6f';
 
 /** On a node named `gpu-0<nodeId>`, which the services' messages quote. */
 export const buildDownloadTarget = (nodeId: number, state: DownloadTargetState): DownloadTarget => {
-  const target = new DownloadTarget({ downloadId: TEST_DOWNLOAD_ID, nodeId });
+  const target = new DownloadTarget({ downloadId: TEST_DOWNLOAD_ID, nodeId, modelDirectory: null });
 
   target.id = nodeId * 10;
   target.state = state;

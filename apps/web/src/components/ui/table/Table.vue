@@ -40,7 +40,7 @@ import { computed } from 'vue';
 import UiEmpty from '../feedback/Empty.vue';
 
 const SCROLL_REGION_CLASS =
-  'max-h-72 overflow-y-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary';
+  'max-h-96 scroll-pt-9 overflow-y-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary';
 
 /**
  * `columns` is a `grid-template-columns` value that UiTableHead and UiTableRow lay their cells out on. Pass `#empty`

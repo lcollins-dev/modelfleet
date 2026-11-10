@@ -1,16 +1,11 @@
 <template>
-  <span v-if="tag !== null" class="inline-flex cursor-help" :title="tag.note" data-testid="attribution-tag">
-    <ui-tag type="warning">
-      <icon-info class="-ml-0.5 mr-1 size-3.5" />
-
-      {{ tag.label }}
-    </ui-tag>
-  </span>
+  <ui-tag v-if="tag !== null" type="warning" :hint="tag.note" data-testid="attribution-tag">
+    {{ tag.label }}
+  </ui-tag>
 </template>
 
 <script setup lang="ts">
 import { PropType, computed } from 'vue';
-import IconInfo from '~icons/material-symbols/info-outline-rounded';
 
 import type { GpuTelemetryDto } from '@libs/dto';
 

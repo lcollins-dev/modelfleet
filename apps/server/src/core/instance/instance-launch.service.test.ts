@@ -158,7 +158,7 @@ describe('InstanceLaunchService', () => {
       const placements = await instanceLaunchService.resolvePlacements(buildDeployment());
 
       expect(placements.map(placement => placement.problem)).toEqual([
-        'Set a container image, since this backend has no image for cpu placements',
+        'Set a container image. This backend has no default image for cpu placements',
         expect.not.stringContaining('image'),
       ]);
     });
@@ -223,7 +223,7 @@ describe('InstanceLaunchService', () => {
       const placements = await instanceLaunchService.resolvePlacements(buildDeployment());
 
       expect(placements.map(placement => placement.problem)).toEqual([
-        'Choose one GPU on this node, since this backend runs on a single GPU',
+        'This backend supports only one GPU. Select one GPU on this node',
         null,
       ]);
     });
@@ -240,7 +240,7 @@ describe('InstanceLaunchService', () => {
       const placements = await instanceLaunchService.resolvePlacements(buildDeployment());
 
       expect(placements[0].problem).toBe(
-        "Choose this node's CPU or its GPUs, not both, since this backend cannot offload to RAM"
+        "This backend cannot offload to RAM. Select either this node's CPU or its GPUs"
       );
     });
 
@@ -284,7 +284,7 @@ describe('InstanceLaunchService', () => {
       const placements = await instanceLaunchService.resolvePlacements(buildDeployment());
 
       expect(placements[0].problem).toBeNull();
-      expect(placements[1].problem).toMatch(/does not hold/);
+      expect(placements[1].problem).toMatch(/is not stored on this node/);
     });
 
     it('carries a device the node has never reported', async () => {
@@ -300,7 +300,7 @@ describe('InstanceLaunchService', () => {
 
       const [placement] = await instanceLaunchService.resolvePlacements(buildDeployment());
 
-      expect(placement.problem).toMatch(/never made contact/);
+      expect(placement.problem).toMatch(/has not connected yet/);
     });
 
     it('carries a node that is offline, since nothing would create the container', async () => {
@@ -332,7 +332,7 @@ describe('InstanceLaunchService', () => {
 
       const [placement] = await instanceLaunchService.resolvePlacements(buildDeployment());
 
-      expect(placement.problem).toMatch(/does not hold/);
+      expect(placement.problem).toMatch(/is not stored on this node/);
       expect(placement.modelMissing).toBe(true);
     });
 
@@ -424,7 +424,7 @@ describe('InstanceLaunchService', () => {
 
       const [placement] = await instanceLaunchService.resolvePlacements(buildDeployment());
 
-      expect(placement.problem).toBe('Gemma 3 4B is a LoRA adapter, and Projector takes a multimodal projector');
+      expect(placement.problem).toBe('Projector requires a multimodal projector. Gemma 3 4B is a LoRA adapter');
     });
 
     it('holds a missing projector against the node short of it alone, leaving the others startable', async () => {

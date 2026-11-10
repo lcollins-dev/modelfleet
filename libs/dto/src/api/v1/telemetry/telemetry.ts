@@ -89,7 +89,7 @@ export const InstanceMemoryDto = z.object({
   /** Null where the instance's process could not be read. */
   heldBytes: z.number().nullable(),
 
-  /** File-backed plus anonymous, null together with `heldBytes`. */
+  /** File-backed, anonymous and shared, null together with `heldBytes`. */
   residentBytes: z.number().nullable(),
 });
 export type InstanceMemoryDto = z.infer<typeof InstanceMemoryDto>;

@@ -1,6 +1,6 @@
-import { flushPromises, mount } from '@vue/test-utils';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ref } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
@@ -24,12 +24,13 @@ import {
 
 import { useDialogStore } from '@/stores/dialog';
 import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import Deployment from './Deployment.vue';
 
 const getDeployment = vi.fn();
 const getDeploymentConfiguration = vi.fn();
-const applyDeployment = vi.fn();
+const restartDeployment = vi.fn();
 const updateDeploymentState = vi.fn();
 const deleteDeployment = vi.fn();
 const getEventList = vi.fn();
@@ -43,7 +44,7 @@ vi.mock('@/services/api/admin/DeploymentAdminService', () => ({
   useDeploymentAdminService: () => ({
     getDeployment,
     getDeploymentConfiguration,
-    applyDeployment,
+    restartDeployment,
     updateDeploymentState,
     deleteDeployment,
   }),
@@ -75,7 +76,6 @@ const deployment = (extra: Partial<DeploymentDto> = {}): DeploymentDto => ({
   backend: BackendId.LLAMA_CPP,
   activationPolicy: ActivationPolicy.ALWAYS,
   enabled: true,
-  outOfDate: false,
   createdDate: new Date(),
   description: null,
   schemaVersion: 1,
@@ -103,6 +103,8 @@ const instance = (extra: Partial<ListInstanceDto> = {}): ListInstanceDto => ({
   devices: [{ deviceKey: 'GPU-1', name: 'NVIDIA A100-SXM4-80GB' }],
   state: InstanceState.READY,
   message: null,
+  onOlderSettings: false,
+  restartRequested: false,
   exitCode: null,
   startedDate: new Date(),
   reportedDate: new Date(),
@@ -119,6 +121,7 @@ const placementNode = (extra: Partial<PlacementNodeDto> = {}): PlacementNodeDto 
   problem: null,
   problemReason: null,
   expectedUsage: null,
+  measured: null,
   capacity: null,
   evictions: [],
   ...extra,
@@ -138,6 +141,7 @@ const instancesResponse = (extra: Partial<DeploymentInstancesResponseDto> = {}):
     givenUp: false,
     lastLaunchFailure: null,
     makingRoomNodeIds: [],
+    restarting: false,
   },
   ...extra,
 });
@@ -169,6 +173,8 @@ const buttonNamed = (wrapper: Awaited<ReturnType<typeof mountDeployment>>['wrapp
   return button;
 };
 
+enableAutoUnmount(afterEach);
+
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
@@ -177,7 +183,7 @@ beforeEach(() => {
   getDeploymentConfiguration.mockResolvedValue(CONFIGURATION);
   getEventList.mockResolvedValue({ eventList: [], pages: 1 });
   getDeploymentInstances.mockResolvedValue(instancesResponse());
-  applyDeployment.mockResolvedValue(undefined);
+  restartDeployment.mockResolvedValue(undefined);
   updateDeploymentState.mockResolvedValue(undefined);
   deleteDeployment.mockResolvedValue(undefined);
   startDeployment.mockResolvedValue({ started: 1, refused: [], evicting: [] });
@@ -219,28 +225,114 @@ describe('Deployment page', () => {
     expect(wrapper.find('[data-testid="deployment-preset-link"]').exists()).toBe(false);
   });
 
-  it('notices a launch backoff only while it holds the next start back and the deployment is not given up', async () => {
+  it('notices a launch backoff above the tiles only while it holds the next start back', async () => {
     const response = instancesResponse();
     const holding = { ...response.residency, launchFailures: 3, retryDate: new Date(Date.now() + 120_000) };
 
     getDeploymentInstances.mockResolvedValue({ ...response, residency: holding });
 
     const { wrapper: backingOff } = await mountDeployment();
+    const retry = backingOff.get('[data-testid="launch-retry"]');
 
-    expect(backingOff.get('[data-testid="launch-retry"]').text()).toContain('Last 3 starts failed');
-
-    getDeploymentInstances.mockResolvedValue({ ...response, residency: { ...holding, givenUp: true } });
-
-    const { wrapper: gaveUp } = await mountDeployment();
-
-    expect(gaveUp.find('[data-testid="launch-retry"]').exists()).toBe(false);
-    expect(gaveUp.text()).toContain('The scheduler has given up on this deployment');
+    expect(retry.text()).toContain('Last 3 starts failed');
+    expect(retry.element.nextElementSibling).toBe(backingOff.get('[data-testid="deployment-kpis"]').element);
+    expect(backingOff.get('[data-testid="instances-card"]').find('[role="alert"]').exists()).toBe(false);
 
     getDeploymentInstances.mockResolvedValue(response);
 
     const { wrapper: normal } = await mountDeployment();
 
     expect(normal.find('[data-testid="launch-retry"]').exists()).toBe(false);
+    expect(normal.find('[data-testid="launch-given-up"]').exists()).toBe(false);
+  });
+
+  it('counts the backoff down every second and clears it once the wait is over', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(new Date('2026-09-23T12:00:00Z'));
+
+    try {
+      const response = instancesResponse();
+      const residency = { ...response.residency, launchFailures: 3, retryDate: new Date('2026-09-23T12:00:30Z') };
+
+      getDeploymentInstances.mockResolvedValue({ ...response, residency });
+
+      const { wrapper } = await mountDeployment();
+
+      expect(wrapper.get('[data-testid="launch-retry"]').text()).toContain('Retry available in 30s');
+
+      vi.advanceTimersByTime(1000);
+      await flushPromises();
+
+      expect(wrapper.get('[data-testid="launch-retry"]').text()).toContain('Retry available in 29s');
+
+      const onInstances = streamDeploymentInstances.mock.calls[0][1] as (next: DeploymentInstancesResponseDto) => void;
+
+      onInstances({ ...response, residency: { ...residency, retryDate: new Date('2026-09-23T12:00:20Z') } });
+      await flushPromises();
+
+      expect(wrapper.get('[data-testid="launch-retry"]').text()).toContain('Retry available in 19s');
+
+      vi.advanceTimersByTime(19_000);
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="launch-retry"]').exists()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('notices neither a backoff nor a given-up run on a disabled deployment', async () => {
+    const response = instancesResponse();
+    const retryDate = new Date(Date.now() + 120_000);
+
+    getDeployment.mockResolvedValue(deployment({ enabled: false }));
+    getDeploymentInstances.mockResolvedValue({
+      ...response,
+      residency: { ...response.residency, launchFailures: 3, retryDate },
+    });
+
+    const { wrapper: backingOff } = await mountDeployment();
+
+    expect(backingOff.find('[data-testid="launch-retry"]').exists()).toBe(false);
+
+    getDeploymentInstances.mockResolvedValue({
+      ...response,
+      residency: { ...response.residency, launchFailures: 5, retryDate, givenUp: true },
+    });
+
+    const { wrapper: gaveUp } = await mountDeployment();
+
+    expect(gaveUp.find('[data-testid="launch-given-up"]').exists()).toBe(false);
+    expect(gaveUp.find('[data-testid="launch-retry"]').exists()).toBe(false);
+  });
+
+  it('notices a given-up deployment above the tiles in place of the backoff, with its output and a start', async () => {
+    const response = instancesResponse();
+    const residency = {
+      ...response.residency,
+      launchFailures: 5,
+      retryDate: new Date(Date.now() + 120_000),
+      givenUp: true,
+      lastLaunchFailure: 'CUDA out of memory',
+    };
+
+    getDeploymentInstances.mockResolvedValue({ ...response, residency });
+
+    const { wrapper } = await mountDeployment();
+    const givenUp = wrapper.get('[data-testid="launch-given-up"]');
+
+    expect(wrapper.find('[data-testid="launch-retry"]').exists()).toBe(false);
+    expect(givenUp.text()).toContain('Automatic retries paused');
+    expect(givenUp.text()).toContain('CUDA out of memory');
+    expect(givenUp.element.nextElementSibling).toBe(wrapper.get('[data-testid="deployment-kpis"]').element);
+    expect(wrapper.get('[data-testid="instances-card"]').find('[role="alert"]').exists()).toBe(false);
+
+    expect(wrapper.findAll('button').filter(button => button.text() === 'Start Now')).toHaveLength(1);
+
+    await givenUp.get('button').trigger('click');
+    await flushPromises();
+
+    expect(startDeployment).toHaveBeenCalledWith(5);
   });
 
   it('reads its instances, activation and requests in flight into tiles', async () => {
@@ -334,10 +426,10 @@ describe('Deployment page', () => {
 
       expect(vram.text()).toBe('40 / 70 GiB free');
       expect(vram.classes()).not.toContain('text-error');
-      expect(vram.attributes('title')).toBe('Declared');
+      expect(vram.get('[title]').attributes('title')).toBe('Declared');
       expect(ram.text()).toBe('38 / 12 GiB free');
       expect(ram.classes()).toContain('text-error');
-      expect(ram.attributes('title')).toBe('Weights 30 GiB, Prompt cache up to 8 GiB');
+      expect(ram.get('[title]').attributes('title')).toBe('CPU pinned 30 GiB · Prompt cache ≤8 GiB');
       expect(row.text()).not.toContain('Declared');
     });
 
@@ -434,23 +526,89 @@ describe('Deployment page', () => {
     expect(wrapper.get('[data-testid="placement-row"]').find('button[aria-label="Show details"]').exists()).toBe(false);
   });
 
-  it('applies the waiting changes once confirmed', async () => {
-    getDeployment.mockResolvedValue(deployment({ outOfDate: true }));
+  describe('instances on older settings', () => {
+    it('hides the notice when all instances use the latest settings', async () => {
+      const { wrapper } = await mountDeployment();
 
-    const { wrapper } = await mountDeployment();
-    const dialogStore = useDialogStore();
+      expect(wrapper.find('[data-testid="older-settings"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="instance-older-settings"]').exists()).toBe(false);
+    });
 
-    expect(wrapper.text()).toContain('Changes waiting to be applied');
+    it('tags instances on older settings and requests a restart after confirmation', async () => {
+      getDeploymentInstances.mockResolvedValue(instancesResponse({ instances: [instance({ onOlderSettings: true })] }));
 
-    await buttonNamed(wrapper, 'Apply Changes').trigger('click');
+      const { wrapper } = await mountDeployment();
+      const dialogStore = useDialogStore();
 
-    expect(dialogStore.top?.options.title).toBe('Apply changes to llama-70b-chat?');
+      expect(wrapper.get('[data-testid="older-settings"]').text()).toContain('The configuration has changed');
+      expect(wrapper.get('[data-testid="older-settings"]').text()).toContain('1 instance on older settings');
+      expect(wrapper.get('[data-testid="instance-older-settings"]').text()).toBe('Older settings');
 
-    await dialogStore.top?.options.action?.();
-    await flushPromises();
+      await buttonNamed(wrapper, 'Restart').trigger('click');
 
-    expect(applyDeployment).toHaveBeenCalledWith(5);
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Changes applied');
+      expect(dialogStore.top?.options.title).toBe('Restart instances of llama-70b-chat?');
+
+      await dialogStore.top?.options.action?.();
+      await flushPromises();
+
+      expect(restartDeployment).toHaveBeenCalledWith(5);
+      expect(useToastStore().toasts.at(-1)?.title).toBe('Restart requested');
+    });
+
+    it('shows pending restart status without another restart button', async () => {
+      getDeploymentInstances.mockResolvedValue(
+        instancesResponse({ instances: [instance({ onOlderSettings: true, restartRequested: true })] })
+      );
+
+      const { wrapper } = await mountDeployment();
+
+      expect(wrapper.get('[data-testid="restart-progress"]').text()).toContain('Restart in progress');
+      expect(wrapper.find('[data-testid="older-settings"]').exists()).toBe(false);
+    });
+
+    it('offers restart when an instance has no pending request', async () => {
+      getDeploymentInstances.mockResolvedValue(
+        instancesResponse({
+          instances: [
+            instance({ onOlderSettings: true, restartRequested: true }),
+            instance({ instanceKey: 'i-2', onOlderSettings: true }),
+          ],
+        })
+      );
+
+      const { wrapper } = await mountDeployment();
+
+      expect(wrapper.get('[data-testid="restart-progress"]').text()).toContain('Restart in progress');
+      expect(buttonNamed(wrapper, 'Restart').exists()).toBe(true);
+    });
+
+    it('shows restart status while the replacement waits for memory', async () => {
+      getDeploymentInstances.mockResolvedValue(
+        instancesResponse({ residency: { ...instancesResponse().residency, restarting: true } })
+      );
+
+      const { wrapper } = await mountDeployment();
+
+      expect(wrapper.get('[data-testid="restart-progress"]').text()).toContain('Restart in progress');
+    });
+
+    it('shows both notices when some instances still need a restart request', async () => {
+      getDeploymentInstances.mockResolvedValue(
+        instancesResponse({
+          instances: [
+            instance({ onOlderSettings: true, restartRequested: true }),
+            instance({ instanceKey: 'i-2', onOlderSettings: true }),
+          ],
+          residency: { ...instancesResponse().residency, restarting: true },
+        })
+      );
+
+      const { wrapper } = await mountDeployment();
+
+      expect(wrapper.get('[data-testid="older-settings"]').text()).toContain('1 instance on older settings');
+      expect(wrapper.get('[data-testid="restart-progress"]').text()).toContain('Restart in progress');
+      expect(buttonNamed(wrapper, 'Restart').exists()).toBe(true);
+    });
   });
 
   describe('starting over idle instances', () => {
@@ -478,10 +636,10 @@ describe('Deployment page', () => {
       await buttonNamed(wrapper, 'Start Now').trigger('click');
       await flushPromises();
 
-      expect(dialogStore.top?.options.title).toBe('Evict Instances');
+      expect(dialogStore.top?.options.title).toBe('Stop instances to free memory?');
       expect(dialogStore.top?.options.message).toBe(
-        'There is not enough room to run this instance without performing evictions. ' +
-          'The following instances will be evicted: qwen-idle'
+        'This deployment needs more memory to start. ' +
+          'Instances of these deployments will stop to free memory: qwen-idle'
       );
       expect(startDeployment).not.toHaveBeenCalled();
 
@@ -505,7 +663,7 @@ describe('Deployment page', () => {
       const { wrapper } = await mountDeployment();
 
       expect(wrapper.get('[data-testid="making-room"]').text()).toContain('Making room for this deployment');
-      expect(wrapper.text()).not.toContain('This deployment cannot be started');
+      expect(wrapper.text()).not.toContain('Unable to start');
     });
 
     it('starts at once with no confirmation where nothing would be evicted', async () => {
@@ -536,7 +694,7 @@ describe('Deployment page', () => {
 
     expect(startDeployment).toHaveBeenCalledWith(5);
     expect(useNotificationStore().notifications.at(-1)?.content).toBe(
-      'No instances started. These nodes could not run an instance: gpu-a-01'
+      'No instances started. Could not start on: gpu-a-01'
     );
   });
 
@@ -549,7 +707,7 @@ describe('Deployment page', () => {
     await buttonNamed(wrapper, 'Start Now').trigger('click');
     await flushPromises();
 
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Nothing to start');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Nothing to start');
   });
 
   it('reports a refused node alongside the room being made on another', async () => {
@@ -573,10 +731,10 @@ describe('Deployment page', () => {
     await buttonNamed(wrapper, 'Start Now').trigger('click');
     await flushPromises();
 
-    const notifications = useNotificationStore().notifications;
-
-    expect(notifications.some(notification => notification.title === 'Making room')).toBe(true);
-    expect(notifications.at(-1)?.content).toBe('No instances started. These nodes could not run an instance: gpu-a-01');
+    expect(useToastStore().toasts.map(toast => toast.title)).toEqual(['Making room']);
+    expect(useNotificationStore().notifications.at(-1)?.content).toBe(
+      'No instances started. Could not start on: gpu-a-01'
+    );
   });
 
   it('disables the deployment once confirmed', async () => {
@@ -589,12 +747,34 @@ describe('Deployment page', () => {
     expect(updateDeploymentState).toHaveBeenCalledWith(5, { enabled: false });
   });
 
+  it('drops the given-up notice once the deployment is disabled, whatever the residency still says', async () => {
+    const response = instancesResponse();
+
+    getDeploymentInstances.mockResolvedValue({
+      ...response,
+      residency: { ...response.residency, launchFailures: 5, givenUp: true },
+    });
+
+    const { wrapper } = await mountDeployment();
+    const dialogStore = useDialogStore();
+
+    expect(wrapper.find('[data-testid="launch-given-up"]').exists()).toBe(true);
+
+    getDeployment.mockResolvedValue(deployment({ enabled: false }));
+
+    await buttonNamed(wrapper, 'Disable Deployment').trigger('click');
+    await dialogStore.top?.options.action?.();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="launch-given-up"]').exists()).toBe(false);
+  });
+
   it('offers to enable a disabled deployment, leaving only deletion in the danger card', async () => {
     getDeployment.mockResolvedValue(deployment({ enabled: false }));
 
     const { wrapper } = await mountDeployment();
 
-    expect(wrapper.text()).toContain('The scheduler starts nothing for this deployment');
+    expect(wrapper.text()).toContain('Enable this deployment to start instances and accept requests.');
     expect(wrapper.findAll('button').some(button => button.text() === 'Disable Deployment')).toBe(false);
 
     await buttonNamed(wrapper, 'Enable Deployment').trigger('click');
@@ -613,5 +793,26 @@ describe('Deployment page', () => {
 
     expect(deleteDeployment).toHaveBeenCalledWith(5);
     expect(router.currentRoute.value.path).toBe('/deployments');
+  });
+
+  it('scrolls the event log above its pages and opens each new page at its first row', async () => {
+    getEventList.mockResolvedValue({ eventList: [], pages: 2 });
+
+    const { wrapper } = await mountDeployment();
+
+    const card = wrapper.get('[data-testid="event-log-card"]');
+    const region = card.get('[role="region"]');
+
+    expect(region.attributes('aria-label')).toBe('Event log');
+    expect(region.find('nav[aria-label="Pagination"]').exists()).toBe(false);
+    expect(card.find('nav[aria-label="Pagination"]').exists()).toBe(true);
+
+    region.element.scrollTop = 200;
+
+    await card.get('button[aria-label="Page 2"]').trigger('click');
+    await flushPromises();
+
+    expect(getEventList).toHaveBeenLastCalledWith(expect.anything(), 2);
+    expect(card.get('[role="region"]').element.scrollTop).toBe(0);
   });
 });

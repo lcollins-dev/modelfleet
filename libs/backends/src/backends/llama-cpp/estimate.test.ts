@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { BackendConfiguration } from '../../configuration';
-import { EstimateBasis, EstimateInputSource, IVramEstimate, IVramEstimateInput } from '../../runtime';
+import { EstimateBasis, EstimateInputSource, IEstimatedModel, IVramEstimate, IVramEstimateInput } from '../../runtime';
 import { buildEstimatedModel } from '../../test/container.factory';
 import { llamaCppDeclaration } from './declaration';
 import { llamaCppSizeVram } from './sizing';
@@ -42,6 +42,11 @@ const missingFields = (overrides: Partial<IVramEstimateInput>): string[] => {
 
   return result.computed ? [] : result.missing.map(entry => entry.field);
 };
+
+const GIB_BYTES = 1024 ** 3;
+
+/** The activations of one physical batch, which a CPU-held expert computes in system memory. */
+const CPU_COMPUTE = 512 * 4096 * 64;
 
 describe('llamaCppSizeVram estimate', () => {
   it('sums the weights, the KV cache and the overhead into the total', () => {
@@ -98,6 +103,43 @@ describe('llamaCppSizeVram estimate', () => {
 
     expect(projected.weightsBytes).toBe(buildEstimatedModel().sizeBytes + 812_000_000);
     expect(projected.totalBytes).toBe(computed().totalBytes + 812_000_000);
+  });
+
+  describe('a projector kept off the GPU', () => {
+    const PROJECTOR_BYTES = 812_000_000;
+    const PROJECTOR = { field: 'mmproj', sizeBytes: PROJECTOR_BYTES, metadata: null };
+    const inRam = { ...configuration, noMmprojOffload: true };
+
+    it('counts in RAM rather than VRAM', () => {
+      const kept = computed({ configuration: inRam, companions: [PROJECTOR] });
+
+      expect(kept.weightsBytes).toBe(buildEstimatedModel().sizeBytes);
+      expect(kept.totalBytes).toBe(computed().totalBytes);
+      expect(kept.hostWeightsBytes).toBe(PROJECTOR_BYTES);
+      expect(kept.hostResidentBytes).toBe(PROJECTOR_BYTES);
+    });
+
+    it('leaves a draft model on the cards', () => {
+      const draft = { field: 'draftModel', sizeBytes: GIB_BYTES, metadata: null };
+      const kept = computed({ configuration: inRam, companions: [PROJECTOR, draft] });
+
+      expect(kept.weightsBytes).toBe(buildEstimatedModel().sizeBytes + GIB_BYTES);
+      expect(kept.hostResidentBytes).toBe(PROJECTOR_BYTES);
+    });
+
+    it('counts nothing where the deployment has no projector', () => {
+      expect(computed({ configuration: inRam }).hostResidentBytes).toBe(computed().hostResidentBytes);
+    });
+
+    it('stays on the cards with the option off', () => {
+      const offloaded = computed({
+        configuration: { ...configuration, noMmprojOffload: false },
+        companions: [PROJECTOR],
+      });
+
+      expect(offloaded.hostWeightsBytes).toBe(0);
+      expect(offloaded.weightsBytes).toBe(buildEstimatedModel().sizeBytes + PROJECTOR_BYTES);
+    });
   });
 
   it('caches every layer, so the figure scales with the block count alone', () => {
@@ -187,7 +229,7 @@ describe('llamaCppSizeVram estimate', () => {
     });
 
     const resident = (loadMode?: string): number =>
-      computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode } }).hostResidentBytes;
+      computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode } }).hostResidentBytes - CPU_COMPUTE;
 
     it('holds the experts in full where the file is mapped, since every one is read over a few tokens', () => {
       expect(resident()).toBe(500_000_000);
@@ -208,7 +250,8 @@ describe('llamaCppSizeVram estimate', () => {
     it('holds all but a lazy table where the load mode reads the file, and that too under mmap+mlock', () => {
       const lazy = { ...model, architecture: 'deepseek41' };
       const residentLazy = (loadMode: string): number =>
-        computed({ model: lazy, configuration: { ...configuration, cpuMoe: true, loadMode } }).hostResidentBytes;
+        computed({ model: lazy, configuration: { ...configuration, cpuMoe: true, loadMode } }).hostResidentBytes -
+        CPU_COMPUTE;
 
       for (const loadMode of ['none', 'dio', 'mlock']) {
         expect(residentLazy(loadMode)).toBe(1_500_000_000);
@@ -264,7 +307,7 @@ describe('llamaCppSizeVram estimate', () => {
       computed({
         model: modelWith(tableBytes),
         configuration: { ...configuration, cpuMoe: true, loadMode, lazyMode },
-      }).hostResidentBytes;
+      }).hostResidentBytes - CPU_COMPUTE;
 
     it('counts no table where the file is mapped, whatever the lazy mode or size', () => {
       for (const loadMode of MAPPED_LOAD_MODES) {
@@ -322,7 +365,8 @@ describe('llamaCppSizeVram estimate', () => {
         const model = modelWith(OVER, architecture);
 
         expect(
-          computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none' } }).hostResidentBytes
+          computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none' } }).hostResidentBytes -
+            CPU_COMPUTE
         ).toBe(EXPERTS);
       }
     });
@@ -332,7 +376,7 @@ describe('llamaCppSizeVram estimate', () => {
 
       expect(
         computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none', lazyMode: 'on' } })
-          .hostResidentBytes
+          .hostResidentBytes - CPU_COMPUTE
       ).toBe(OVER + EXPERTS);
     });
 
@@ -341,7 +385,7 @@ describe('llamaCppSizeVram estimate', () => {
 
       expect(
         computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none', lazyMode: 'on' } })
-          .hostResidentBytes
+          .hostResidentBytes - CPU_COMPUTE
       ).toBe(OVER + EXPERTS);
     });
 
@@ -350,7 +394,7 @@ describe('llamaCppSizeVram estimate', () => {
 
       expect(
         computed({ model, configuration: { ...configuration, cpuMoe: true, loadMode: 'none', lazyMode: 'on' } })
-          .hostResidentBytes
+          .hostResidentBytes - CPU_COMPUTE
       ).toBe(OVER + EXPERTS);
     });
 
@@ -502,8 +546,9 @@ describe('llamaCppSizeVram estimate', () => {
 
     it('holds an f32 mask where flash attention is off', () => {
       const unflashed = computed({ configuration: { ...configuration, flashAttn: 'off' } });
+      const scores = 2048 * 512 * 32 * 4 * 2;
 
-      expect(unflashed.overheadBytes - computed().overheadBytes).toBe(MASK_BYTES);
+      expect(unflashed.overheadBytes - computed().overheadBytes).toBe(MASK_BYTES + scores);
     });
 
     it('holds four copies of the mask on each card of a layer split, which llama.cpp pipelines', () => {
@@ -572,5 +617,324 @@ describe('llamaCppSizeVram estimate', () => {
       'headCount',
       'ubatchSize',
     ]);
+  });
+});
+
+describe('llamaCppSizeVram against llama.cpp b12063', () => {
+  const GIB = 1024 ** 3;
+  const LAYER_ELEMENT_BYTES = 8 * 128 * 2 + 8 * 128 * 2;
+  const CACHE_CELLS = 8192;
+  const DEFAULT_PROMPT_CACHE = 8192 * 1024 * 1024;
+
+  const withAttention = (attention: IEstimatedModel['attention'], overrides: Partial<IEstimatedModel> = {}) =>
+    buildEstimatedModel({ attention, ...overrides });
+
+  describe('KV width', () => {
+    it('takes the key and value lengths the file states, over the embedding divided by its heads', () => {
+      const model = withAttention({ keyLength: 64, valueLength: 256 });
+
+      expect(computed({ model }).kvCacheBytes).toBe(CACHE_CELLS * 32 * (64 * 8 * 2 + 256 * 8 * 2));
+    });
+
+    it('charges an MLA model its compressed key alone', () => {
+      const model = withAttention({ keyLength: 64, keyLengthMla: 32, valueLengthMla: 32 });
+
+      expect(computed({ model }).kvCacheBytes).toBe(CACHE_CELLS * 32 * (64 * 8 * 2));
+    });
+  });
+
+  describe('sliding windows', () => {
+    const gemma = (attention: IEstimatedModel['attention']): IEstimatedModel =>
+      withAttention(attention, { architecture: 'gemma3', layerCount: 12 });
+
+    const WINDOW_CELLS = 1536;
+
+    it("charges a window layer its window and a batch, on the architecture's default pattern", () => {
+      const result = computed({ model: gemma({ slidingWindow: 1024 }) });
+
+      expect(result.kvCacheBytes).toBe(4 * (2 * 2048 + 10 * WINDOW_CELLS) * LAYER_ELEMENT_BYTES);
+    });
+
+    it('follows a per-layer pattern the file states', () => {
+      const pattern = [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+      const result = computed({ model: gemma({ slidingWindow: 1024, slidingWindowPattern: pattern }) });
+
+      expect(result.kvCacheBytes).toBe(4 * (10 * 2048 + 2 * WINDOW_CELLS) * LAYER_ELEMENT_BYTES);
+    });
+
+    it('takes the window lengths the file states for its window layers', () => {
+      const result = computed({ model: gemma({ slidingWindow: 1024, keyLengthSwa: 64, valueLengthSwa: 32 }) });
+      const windowElementBytes = 8 * (64 * 2 + 32 * 2);
+
+      expect(result.kvCacheBytes).toBe(4 * (2 * 2048 * LAYER_ELEMENT_BYTES + 10 * WINDOW_CELLS * windowElementBytes));
+    });
+
+    it('reads a pattern stated as an interval', () => {
+      const result = computed({ model: gemma({ slidingWindow: 1024, slidingWindowPattern: 3 }) });
+
+      expect(result.kvCacheBytes).toBe(4 * (4 * 2048 + 8 * WINDOW_CELLS) * LAYER_ELEMENT_BYTES);
+    });
+
+    it('takes a pattern of zero as a window on every layer', () => {
+      const result = computed({ model: gemma({ slidingWindow: 1024, slidingWindowPattern: 0 }) });
+
+      expect(result.kvCacheBytes).toBe(4 * 12 * WINDOW_CELLS * LAYER_ELEMENT_BYTES);
+    });
+
+    it('starts the pattern on a dense layer where the architecture does', () => {
+      const model = withAttention({ slidingWindow: 1024 }, { architecture: 'smallthinker', layerCount: 8 });
+
+      expect(computed({ model }).kvCacheBytes).toBe(4 * (2 * 2048 + 6 * WINDOW_CELLS) * LAYER_ELEMENT_BYTES);
+    });
+
+    it("uses an architecture's own window where the file states none", () => {
+      const model = buildEstimatedModel({ architecture: 'gemma2', layerCount: 4 });
+      const result = computed({ model, configuration: { ...configuration, contextSize: 65536 } });
+
+      expect(result.kvCacheBytes).toBe(4 * (2 * 16384 + 2 * 4608) * LAYER_ELEMENT_BYTES);
+    });
+
+    it('adds sliding-window checkpoints per slot to the host prompt cache', () => {
+      const result = computed({ model: gemma({ slidingWindow: 1024 }) });
+
+      expect(result.hostCacheBytes).toBe(DEFAULT_PROMPT_CACHE + 32 * 4 * 10 * WINDOW_CELLS * LAYER_ELEMENT_BYTES);
+    });
+  });
+
+  describe('recurrent and hybrid models', () => {
+    it('charges no KV to a layer with no key-value heads', () => {
+      const headCountKvByLayer = [8, 0, 8, 0, ...Array<number>(28).fill(0)];
+      const result = computed({ model: withAttention({ headCountKvByLayer }) });
+
+      expect(result.kvCacheBytes).toBe(CACHE_CELLS * 2 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('sizes a recurrent architecture with no attention heads at all', () => {
+      const model = buildEstimatedModel({ architecture: 'mamba', headCount: 0, headCountKv: 0 });
+
+      expect(computed({ model }).kvCacheBytes).toBe(0);
+    });
+
+    it('charges only the full-attention layers of an interleaved hybrid', () => {
+      const model = buildEstimatedModel({ architecture: 'qwen3next', layerCount: 8 });
+
+      expect(computed({ model }).kvCacheBytes).toBe(CACHE_CELLS * 2 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('follows a recurrent-layer list the file states', () => {
+      const model = withAttention({ recurrentLayers: [1, 0, 1, 0] }, { layerCount: 4 });
+
+      expect(computed({ model }).kvCacheBytes).toBe(CACHE_CELLS * 2 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('follows a full-attention interval the file states', () => {
+      const model = withAttention({ fullAttentionInterval: 2 }, { layerCount: 8 });
+
+      expect(computed({ model }).kvCacheBytes).toBe(CACHE_CELLS * 4 * LAYER_ELEMENT_BYTES);
+    });
+
+    it("sizes a stated head list's width from its first layer alone, as llama.cpp does", () => {
+      const heads = { headCountByLayer: [0, 8, 0, 8], headCountKvByLayer: [0, 8, 0, 8] };
+      const inferred = withAttention(heads, { layerCount: 4 });
+      const stated = withAttention({ ...heads, keyLength: 128, valueLength: 128 }, { layerCount: 4 });
+
+      expect(computed({ model: inferred }).kvCacheBytes).toBe(0);
+      expect(computed({ model: stated }).kvCacheBytes).toBe(CACHE_CELLS * 2 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('counts checkpoints of recurrent state for a hybrid', () => {
+      const model = buildEstimatedModel({ architecture: 'qwen3next', layerCount: 8 });
+
+      expect(computed({ model }).hostCacheBytes).toBe(DEFAULT_PROMPT_CACHE + 32 * 4 * 6 * 4096 * 64 * 4);
+    });
+
+    it('counts checkpoints of every layer of a recurrent model', () => {
+      const model = buildEstimatedModel({ architecture: 'mamba', headCount: 0, headCountKv: 0, layerCount: 8 });
+
+      expect(computed({ model }).hostCacheBytes).toBe(DEFAULT_PROMPT_CACHE + 32 * 4 * 8 * 4096 * 64 * 4);
+    });
+  });
+
+  describe('context', () => {
+    it('pads the context, then each sequence, to 256 cells', () => {
+      const result = computed({ configuration: { ...configuration, contextSize: 8200 } });
+
+      expect(result.kvCacheBytes).toBe(4 * 2304 * 32 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('uses one trained context length per slot with an explicit split and context size zero', () => {
+      const result = computed({ configuration: { ...configuration, contextSize: 0, tensorSplit: [1, 1] } });
+
+      expect(result.kvCacheBytes).toBe(4 * 8192 * 32 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('keeps the trained length in total in tensor mode, where fit never starts', () => {
+      const result = computed({
+        configuration: { ...configuration, contextSize: 0, splitMode: 'tensor' },
+      });
+
+      expect(result.kvCacheBytes).toBe(CACHE_CELLS * 32 * LAYER_ELEMENT_BYTES);
+    });
+  });
+
+  describe('NextN layers', () => {
+    const model = withAttention(
+      { nextnLayerCount: 1 },
+      { tensors: [{ name: 'blk.31.nextn.eh_proj.weight', sizeBytes: GIB }] }
+    );
+
+    it('counts neither their weights nor their cache unless draft-mtp loads them', () => {
+      const result = computed({ model });
+
+      expect(result.weightsBytes).toBe(model.sizeBytes - GIB);
+      expect(result.kvCacheBytes).toBe(CACHE_CELLS * 31 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('counts both once draft-mtp loads them', () => {
+      const result = computed({ model, configuration: { ...configuration, speculativeType: 'draft-mtp' } });
+
+      expect(result.weightsBytes).toBe(model.sizeBytes);
+      expect(result.kvCacheBytes).toBe(CACHE_CELLS * 32 * LAYER_ELEMENT_BYTES);
+    });
+  });
+
+  describe('RAM', () => {
+    it('counts no prompt cache for a decision model unless one is set', () => {
+      const model = withAttention({ decisionType: 'classify' });
+
+      expect(computed({ model }).hostCacheBytes).toBe(0);
+      expect(computed({ model, configuration: { ...configuration, promptCache: 2048 } }).hostCacheBytes).toBe(
+        2048 * 1024 * 1024
+      );
+    });
+
+    it('moves the KV cache to RAM under --no-kv-offload', () => {
+      const result = computed({ configuration: { ...configuration, noKvOffload: true } });
+
+      expect(result.kvCacheBytes).toBe(0);
+      expect(result.hostResidentBytes).toBe(CACHE_CELLS * 32 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('locks each shard from its start to its last host tensor under mmap+mlock', () => {
+      const model = buildEstimatedModel({
+        tensors: [
+          { name: 'token_embd.weight', sizeBytes: GIB, offsetBytes: 40 * GIB, shard: 0 },
+          { name: 'per_layer_token_embd.weight', sizeBytes: GIB, offsetBytes: 2 * GIB, shard: 1 },
+        ],
+      });
+      const result = computed({ model, configuration: { ...configuration, loadMode: 'mmap+mlock' } });
+
+      expect(result.hostResidentBytes).toBe(41 * GIB + 3 * GIB);
+    });
+
+    it('leaves a lazy table past the last locked tensor out of the range', () => {
+      const model = buildEstimatedModel({
+        architecture: 'gemma4',
+        tensors: [
+          { name: 'per_layer_token_embd.weight', sizeBytes: 5 * GIB, offsetBytes: 50 * GIB, shard: 0 },
+          { name: 'token_embd.weight', sizeBytes: GIB, offsetBytes: GIB, shard: 0 },
+        ],
+      });
+      const result = computed({ model, configuration: { ...configuration, loadMode: 'mmap+mlock' } });
+
+      expect(result.hostResidentBytes).toBe(2 * GIB);
+    });
+
+    it('counts the host tensors alone where any of them has no offset', () => {
+      const model = buildEstimatedModel({
+        tensors: [
+          { name: 'token_embd.weight', sizeBytes: GIB, offsetBytes: 40 * GIB, shard: 0 },
+          { name: 'position_embd.weight', sizeBytes: GIB },
+        ],
+      });
+      const result = computed({ model, configuration: { ...configuration, loadMode: 'mmap+mlock' } });
+
+      expect(result.hostResidentBytes).toBe(2 * GIB);
+    });
+
+    it('keeps one copy of a mirrored cache in RAM under --no-kv-offload', () => {
+      const model = buildEstimatedModel({ architecture: 'deepseek4' });
+      const result = computed({
+        model,
+        deviceCount: 2,
+        configuration: { ...configuration, splitMode: 'tensor', noKvOffload: true },
+      });
+
+      expect(result.hostResidentBytes).toBe(CACHE_CELLS * 32 * LAYER_ELEMENT_BYTES);
+    });
+
+    it('counts a compute buffer in RAM for experts held on the CPU', () => {
+      const result = computed({ configuration: { ...configuration, cpuMoeLayers: 2 } });
+
+      expect(result.hostResidentBytes).toBe(CPU_COMPUTE);
+    });
+
+    it('keeps the remaining input tensors off the cards, read by row or held whole as llama.cpp reads them', () => {
+      const tensors = [
+        { name: 'value_embd.weight', sizeBytes: GIB },
+        { name: 'masked_embd_centroids.weight', sizeBytes: 2 * GIB },
+      ];
+      const result = computed({ model: buildEstimatedModel({ tensors, sizeBytes: 10 * GIB }) });
+
+      expect(result.hostWeightsBytes).toBe(3 * GIB);
+      expect(result.hostResidentBytes).toBe(2 * GIB);
+    });
+
+    it('holds the mask ordering whole and reads a mask table by row', () => {
+      const tensors = [
+        { name: 'mask_embd.weight', sizeBytes: GIB },
+        { name: 'masked_embd_ordering', sizeBytes: 2 * GIB },
+      ];
+      const result = computed({ model: buildEstimatedModel({ tensors, sizeBytes: 10 * GIB }) });
+
+      expect(result.hostWeightsBytes).toBe(3 * GIB);
+      expect(result.hostResidentBytes).toBe(2 * GIB);
+    });
+  });
+
+  describe('compressed and indexed caches', () => {
+    it('charges DeepSeek 4 K-only caches: a raw window, and each ratio over its own cells, with an indexer on CSA', () => {
+      const model = withAttention(
+        { compressRatios: [4, 128], slidingWindow: 1024, keyLength: 128, indexerKeyLength: 64 },
+        { architecture: 'deepseek4', layerCount: 2, headCountKv: 1 }
+      );
+      const rawWindow = 1536 * 128;
+      const csa = 512 * 128 + 512 * 64;
+      const hca = 256 * 128;
+
+      expect(computed({ model }).kvCacheBytes).toBe(4 * 2 * (2 * rawWindow + csa + hca));
+    });
+
+    it('charges DeepSeek 4.1 its compressed key beside the indexer, with no separate indexer cache', () => {
+      const model = withAttention(
+        { compressRatios: [2, 1], slidingWindow: 1024, keyLength: 128, indexerKeyLength: 64 },
+        { architecture: 'deepseek41', layerCount: 2, headCountKv: 1 }
+      );
+
+      expect(computed({ model }).kvCacheBytes).toBe(4 * 2 * (2 * 1536 * 128 + 1024 * 192 + 2048 * 192));
+    });
+
+    it('adds an indexer key cache on the architectures that have one', () => {
+      const model = withAttention({ indexerKeyLength: 64 }, { architecture: 'glm-dsa', layerCount: 2 });
+
+      expect(computed({ model }).kvCacheBytes).toBe(CACHE_CELLS * (2 * LAYER_ELEMENT_BYTES + 2 * 64 * 2));
+    });
+
+    it("copies HRM's weights to every card in tensor mode, not its KV cache alone", () => {
+      const model = buildEstimatedModel({ architecture: 'hrm_text', sizeBytes: 10 * GIB });
+      const devices = [
+        { deviceKey: 'GPU-0', totalBytes: null },
+        { deviceKey: 'GPU-1', totalBytes: null },
+      ];
+
+      const result = computed({
+        model,
+        deviceCount: 2,
+        devices,
+        configuration: { ...configuration, splitMode: 'tensor' },
+      });
+
+      expect(result.weightsBytes).toBe(20 * GIB);
+    });
   });
 });

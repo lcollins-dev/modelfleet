@@ -171,6 +171,23 @@ describe('EvictionPlannerService', () => {
       expect(admission.checkReleasing).toHaveBeenCalledTimes(2);
     });
 
+    it('plans nothing for a load in progress, which eviction cannot shorten', async () => {
+      instanceService.findAll.mockResolvedValue([candidateRow(1)]);
+
+      const plan = await planner.plan(requester, placement(refusal({ refusal: FitRefusal.LOAD_IN_PROGRESS })), () => 0);
+
+      expect(plan).toBeNull();
+    });
+
+    it('counts a plan that leaves only a load to wait out as fitting', async () => {
+      instanceService.findAll.mockResolvedValue([candidateRow(1)]);
+      admission.checkReleasing.mockResolvedValueOnce(refusal({ refusal: FitRefusal.LOAD_IN_PROGRESS }));
+
+      const plan = await planner.plan(requester, placement(), () => 0);
+
+      expect(plan?.victims.map(victim => victim.instance.id)).toEqual([1]);
+    });
+
     it('answers no plan where every victim together still does not fit', async () => {
       instanceService.findAll.mockResolvedValue([candidateRow(1)]);
       admission.checkReleasing.mockResolvedValue(refusal({ availableBytes: 8 * GIB }));

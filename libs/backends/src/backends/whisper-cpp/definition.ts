@@ -7,10 +7,9 @@ import {
   ProbeMethod,
   StreamDialect,
   VramSource,
+  MIB,
 } from '../../definition';
 import { WHISPER_CPP_IMAGES, whisperCppDeclaration } from './declaration';
-
-const MIB = 1024 * 1024;
 
 const SHARED_MEMORY_BYTES = 64 * MIB;
 

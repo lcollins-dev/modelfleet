@@ -51,7 +51,7 @@ test.describe('users', () => {
     await userPage.nameInput.fill('Renamed By Admin');
     await userPage.saveButton.click();
 
-    await expect(page.getByText('Profile updated', { exact: true })).toBeVisible();
+    await expect(page.getByText('Profile updated.', { exact: true })).toBeVisible();
 
     await page.reload();
 
@@ -66,7 +66,7 @@ test.describe('users', () => {
 
     await userPage.disable();
 
-    await expect(page.getByText('Account disabled', { exact: true })).toBeVisible();
+    await expect(page.getByText('Account disabled.', { exact: true })).toBeVisible();
     await expect(userPage.stateTag).toHaveText('Disabled');
 
     await usersPage.goto();
@@ -86,6 +86,6 @@ test.describe('users', () => {
     await userPage.goto(user.id);
     await userPage.signOutEverywhere();
 
-    await expect(page.getByText('Signed out everywhere', { exact: true })).toBeVisible();
+    await expect(page.getByText('Signed out everywhere.', { exact: true })).toBeVisible();
   });
 });

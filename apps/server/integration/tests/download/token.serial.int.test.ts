@@ -137,9 +137,7 @@ describe('Downloads with a Hugging Face token (integration, serial)', () => {
 
   it('says the token has not been granted a gated repository whose terms its account never accepted', async () => {
     const node = await register();
-    const reason =
-      `${FAKE_HUB_GATED_REFUSED} is gated, ` +
-      'and the account HUGGINGFACE_TOKEN belongs to has not been granted access';
+    const reason = 'The account associated with HUGGINGFACE_TOKEN does not have access to this gated repository.';
 
     const listed = await getRepositoryListing(app, adminToken, { repository: FAKE_HUB_GATED_REFUSED }).expect(400);
     const created = await createDownload(app, adminToken, {
@@ -163,7 +161,9 @@ describe('Downloads with a Hugging Face token (integration, serial)', () => {
       nodeIds: [node.id],
     }).expect(400);
 
-    expect(response.body.message).toBe('owner/unknown does not exist, or HUGGINGFACE_TOKEN cannot reach it');
+    expect(response.body.message).toBe(
+      'This repository does not exist or HUGGINGFACE_TOKEN does not have access to it.'
+    );
   });
 
   it('never answers the token to the console', async () => {

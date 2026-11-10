@@ -33,8 +33,14 @@ const resolveLocalOrigin = (): string =>
 
 const ORIGIN = process.env.E2E_BASE_URL ?? resolveLocalOrigin();
 
+// Vite proxies the API alone, so the agent socket is dialled on the server's own port.
+const resolveLocalServerOrigin = (): string =>
+  LOCAL_INSTANCE === null ? 'http://localhost:3000' : `http://localhost:${3000 + LOCAL_INSTANCE * 100}`;
+
 const stripTrailingSlash = (value: string): string => value.replace(/\/$/, '');
 
 export const BASE_URL = stripTrailingSlash(ORIGIN);
+
+export const SERVER_URL = stripTrailingSlash(process.env.E2E_SERVER_URL ?? resolveLocalServerOrigin());
 
 export const webRoute = (path: string): string => `${BASE_URL}${path}`;

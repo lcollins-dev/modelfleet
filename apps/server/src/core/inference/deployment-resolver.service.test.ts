@@ -31,7 +31,6 @@ const buildDeployment = (tasks: ModelTask[] = []): Deployment => {
     document: '',
     configuration: {},
     configurationRevision: 'rev',
-    appliedRevision: 'rev',
   });
 
   deployment.model = buildModel({ detectedTasks: tasks });

@@ -7,7 +7,7 @@ import { UserRoleId } from '@libs/dto';
 import { ApiValidationError } from '@/types/api/error';
 
 import { useErrorStore } from '@/stores/error';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import FirstTimeSetup from './FirstTimeSetup.vue';
@@ -97,7 +97,7 @@ describe('FirstTimeSetup', () => {
       'setup'
     );
     expect(push).toHaveBeenCalledWith('/dashboard');
-    expect(useNotificationStore().notifications.at(-1)?.title).toBe('Account set up');
+    expect(useToastStore().toasts.at(-1)?.title).toBe('Account set up');
   });
 
   it("shows the api's refusal of the initial password under the new password", async () => {

@@ -36,7 +36,7 @@ export const modelReferenceProblem = (reference: IResolvedModelReference): strin
   }
 
   if (model.type !== reference.modelType) {
-    return `${model.label} is a ${modelTypeLabel(model.type)}, and ${reference.label} takes a ${wanted}`;
+    return `${reference.label} requires a ${wanted}. ${model.label} is a ${modelTypeLabel(model.type)}`;
   }
 
   return null;

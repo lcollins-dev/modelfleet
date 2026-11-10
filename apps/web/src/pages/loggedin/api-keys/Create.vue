@@ -61,7 +61,7 @@ import type { CreateApiKeyResponseDto } from '@libs/dto';
 
 import { useLogService } from '@/services/LogService';
 import { useApiKeyAdminService } from '@/services/api/admin/ApiKeyAdminService';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import {
   UiButton,
@@ -96,7 +96,7 @@ const router = useRouter();
 const { goBack } = useGoBack();
 
 const apiKeyAdminService = useApiKeyAdminService();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 
 const name = ref('');
 const loading = ref(false);
@@ -131,7 +131,7 @@ watch(showToken, shown => {
     return;
   }
 
-  notificationStore.addToast('Key created', `${created.value.apiKey.name} is ready to use.`);
+  toastStore.addToast('Key created');
 
   router.push('/api-keys').catch((error: unknown) => {
     logger.error({ error }, 'watch(showToken): Failed to return to the key list');

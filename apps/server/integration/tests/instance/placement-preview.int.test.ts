@@ -100,27 +100,6 @@ describe('Placement preview (integration)', () => {
     expect(node.capacity?.cards).toEqual([expect.objectContaining({ deviceKey: DEVICE_KEY, totalBytes: 24 * GIB })]);
   });
 
-  it('names a figure measured for the same configuration as measured', async () => {
-    const deployment = await saved();
-
-    await reportCard(app, deployment.nodeId, DEVICE_KEY);
-    await dbQuery(
-      app,
-      'INSERT INTO "measured_vram" ("configurationRevision", "gpuCount", "bytes") VALUES ($1, 1, $2)',
-      [deployment.configurationRevision, 5 * GIB]
-    );
-
-    const [node] = (await preview(draftOf(deployment))).placement.nodes;
-
-    expect(node.expectedUsage).toEqual({
-      bytes: 5 * GIB,
-      source: ExpectedUsageSource.MEASURED,
-      hostWeightsBytes: 0,
-      hostResidentBytes: 0,
-      hostCacheBytes: 8192 * 1024 * 1024,
-    });
-  });
-
   it('says the same of a saved deployment as it said of the draft that became it', async () => {
     const deployment = await saved();
 
@@ -152,7 +131,7 @@ describe('Placement preview (integration)', () => {
 
     expect(placement).toEqual({
       nodes: [],
-      problem: 'This configuration holds a value its backend will not accept, so it cannot be sized',
+      problem: 'Cannot estimate memory use because this configuration contains an unsupported value',
     });
   });
 });

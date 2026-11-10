@@ -56,6 +56,8 @@ const instance = (state: InstanceState, extra: Partial<ListInstanceDto> = {}): L
   devices: [],
   state,
   message: null,
+  onOlderSettings: false,
+  restartRequested: false,
   exitCode: null,
   startedDate: null,
   reportedDate: null,
@@ -77,6 +79,7 @@ const instancesResponse = (instances: ListInstanceDto[]): DeploymentInstancesRes
     givenUp: false,
     lastLaunchFailure: null,
     makingRoomNodeIds: [],
+    restarting: false,
   },
 });
 
@@ -321,6 +324,19 @@ describe('Instance page', () => {
     expect(wrapper.get('[data-testid="output-failure"] pre').text()).toBe(
       'The node reported no output from this backend.'
     );
+  });
+
+  it('does not call a failure that never ran a backend its output', async () => {
+    const wrapper = await mountPage();
+
+    await sendInstances([instance(InstanceState.FAILED, { message: 'manifest unknown' })]);
+    outputStream(0).refuse({ status: 404, message: 'The node holds no container for this instance' });
+    await flushPromises();
+
+    const failure = wrapper.get('[data-testid="output-failure"]');
+
+    expect(failure.text()).toContain('What the node reported for the failed launch.');
+    expect(failure.get('pre').text()).toBe('manifest unknown');
   });
 
   it('says so when a failed instance kept no output', async () => {

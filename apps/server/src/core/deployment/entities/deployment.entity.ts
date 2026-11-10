@@ -29,7 +29,6 @@ export class Deployment {
     document: string;
     configuration: ConfigurationDocument;
     configurationRevision: string;
-    appliedRevision: string;
   }) {
     this.name = fields.name;
     this.modelId = fields.modelId;
@@ -41,7 +40,6 @@ export class Deployment {
     this.document = fields.document;
     this.configuration = fields.configuration;
     this.configurationRevision = fields.configurationRevision;
-    this.appliedRevision = fields.appliedRevision;
 
     this.enabled = true;
     this.lastUsedDate = null;
@@ -95,10 +93,6 @@ export class Deployment {
   /** A digest of the effective configuration's relaunch-required values. */
   @Column({ type: 'varchar', length: 64 })
   configurationRevision: string;
-
-  /** The revision running instances are being brought to. It trails `configurationRevision` until an apply. */
-  @Column({ type: 'varchar', length: 64 })
-  appliedRevision: string;
 
   /** A disabled deployment is stopped by the deployment supervisor and cannot be started by hand. */
   @Column({ type: 'bool' })

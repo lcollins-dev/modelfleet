@@ -113,7 +113,7 @@ import { formatDate, formatRelativeDate } from '@/utils/format/date';
 import { useLogService } from '@/services/LogService';
 import { useApiKeyAdminService } from '@/services/api/admin/ApiKeyAdminService';
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 import { useUserStore } from '@/stores/user';
 
 import { IKpiBand, IKpiLegendItem, MfFilterToolbar, MfKpiTile } from '@/components/mf';
@@ -151,7 +151,7 @@ const logService = useLogService();
 const logger = logService.createLogger('pages/loggedin/api-keys/Index');
 
 const dialogStore = useDialogStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 const userStore = useUserStore();
 
 const apiKeyAdminService = useApiKeyAdminService();
@@ -231,7 +231,7 @@ const doRevoke = (apiKey: ListApiKeyDto): Promise<void> => {
   return apiKeyAdminService
     .revokeApiKey(apiKey.id)
     .then(() => {
-      notificationStore.addToast('Key revoked', `${apiKey.name} no longer works.`);
+      toastStore.addToast('Key revoked', `${apiKey.name} no longer works.`);
 
       void load();
       doGetStats();
@@ -245,7 +245,7 @@ const confirmRevoke = (apiKey: ListApiKeyDto) => {
   void dialogStore.confirm({
     type: DialogType.DANGER,
     title: `Revoke ${apiKey.name}?`,
-    message: "Apps using this key stop working straight away. You can't undo this, but the key stays listed.",
+    message: 'Apps will no longer be able to use this key. Revoking it is permanent. The key will stay in the list.',
     confirmLabel: 'Revoke Key',
     action: () => doRevoke(apiKey),
   });

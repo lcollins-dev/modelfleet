@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="apps/web/public/logo.svg" width="96" height="96" alt="" />
   <h1>Modelfleet</h1>
   <h3>Deploy, manage and hot-swap AI models on your own GPUs</h3>
 </div>

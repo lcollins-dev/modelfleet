@@ -41,7 +41,7 @@
       <ui-notice v-if="failedTargets.length > 0" type="error" :title="failureTitle" data-testid="download-failure">
         <div v-for="target of failedTargets" :key="target.nodeId" class="break-words">
           <span v-if="failedTargets.length > 1" class="font-mono">{{ target.nodeName }}: </span>
-          {{ target.message ?? 'The node gave no reason.' }}
+          {{ target.message ?? 'No error details are available.' }}
         </div>
 
         <template v-if="retryable" #action>
@@ -114,6 +114,16 @@
                 <ui-tag v-if="target.nodeState !== NodeState.ONLINE" :type="nodeStateTone(target.nodeState)">
                   {{ formatNodeState(target.nodeState) }}
                 </ui-tag>
+              </div>
+
+              <div class="mt-0.5 flex min-w-0 font-mono text-xs text-muted">
+                <ui-hint
+                  :text="target.modelDirectory ?? undefined"
+                  class="block truncate"
+                  data-testid="download-target-model-directory"
+                >
+                  {{ target.modelDirectory ?? 'First model directory' }}
+                </ui-hint>
               </div>
 
               <div
@@ -203,7 +213,7 @@ import { ISseSubscription } from '@/services/api/SseService';
 import { useDownloadAdminService } from '@/services/api/admin/DownloadAdminService';
 import { useEventAdminService } from '@/services/api/admin/EventAdminService';
 import { useDialogStore } from '@/stores/dialog';
-import { useNotificationStore } from '@/stores/notification';
+import { useToastStore } from '@/stores/toast';
 
 import { MfDownloadFilePath, MfDownloadProgress, MfDownloadTargetFiles } from '@/components/mf';
 import {
@@ -211,6 +221,7 @@ import {
   UiButton,
   UiCard,
   UiEmpty,
+  UiHint,
   UiLink,
   UiNotice,
   UiPageContainer,
@@ -238,7 +249,7 @@ const logger = logService.createLogger('pages/loggedin/downloads/Download');
 const route = useRoute();
 const { goBack } = useGoBack();
 const dialogStore = useDialogStore();
-const notificationStore = useNotificationStore();
+const toastStore = useToastStore();
 
 const downloadAdminService = useDownloadAdminService();
 const eventAdminService = useEventAdminService();
@@ -394,7 +405,7 @@ const confirmCancel = () => {
   void dialogStore.confirm({
     type: DialogType.DANGER,
     title: `Cancel the download of ${download.value?.repository ?? 'this repository'}?`,
-    message: 'It cancels on every node. Partly written files are removed; finished ones stay.',
+    message: 'The download will stop on all nodes. Incomplete files will be deleted. Completed files will be kept.',
     confirmLabel: 'Cancel Download',
     action: () => {
       loadingAction.value = true;
@@ -402,7 +413,7 @@ const confirmCancel = () => {
       return downloadAdminService
         .stopDownload(id, {})
         .then(() => {
-          notificationStore.addToast('Download cancelled', 'Partly written files were removed; finished ones stay.');
+          toastStore.addToast('Download cancelled', 'Incomplete files are deleted. Completed files are kept.');
         })
         .finally(() => {
           loadingAction.value = false;
@@ -416,7 +427,7 @@ const doRetry = () => {
     if (downloadId.value !== null) {
       await downloadAdminService.retryDownload(downloadId.value);
 
-      notificationStore.addToast('Download restarted', `${download.value?.repository ?? 'It'} is downloading again.`);
+      toastStore.addToast('Download restarted');
     }
   }, 'doRetry');
 };

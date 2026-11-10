@@ -94,7 +94,7 @@ describe('telemetry messages', () => {
   it('carries what each instance holds through the codec, a process it could not read staying unknown', () => {
     const report = telemetry();
     report.host.instanceMemory = [
-      { instanceKey: '11111111-1111-4111-8111-111111111111', heldBytes: 4096, residentBytes: 8192 },
+      { instanceKey: '11111111-1111-4111-8111-111111111111', heldBytes: 4096, sharedBytes: 2048, residentBytes: 8192 },
       { instanceKey: '22222222-2222-4222-8222-222222222222', heldBytes: null, residentBytes: null },
       { instanceKey: '33333333-3333-4333-8333-333333333333', heldBytes: 0 },
     ];

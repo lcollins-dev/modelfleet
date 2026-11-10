@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { MAX_MESSAGE_LENGTH } from './limits';
+import { MAX_MODEL_PATH_LENGTH } from './model';
 
 /** Where a download's files come from, and the directory beneath the model directory they land in. */
 export enum DownloadSource {
@@ -106,7 +107,13 @@ export const desiredDownloadSchema = z.object({
 
   repository: z.string().regex(DOWNLOAD_REPOSITORY_PATTERN),
 
-  /** Where under the node's first model directory the files land, as a relative path. */
+  /**
+   * One of the node's model directories, exactly as the node reports it. Absent reads as the first, which an agent that
+   * predates it always uses. The node fails a download naming one it does not have configured.
+   */
+  modelDirectory: z.string().min(1).max(MAX_MODEL_PATH_LENGTH).optional(),
+
+  /** Where under the model directory the files land, as a relative path. */
   directory: z.string().min(1).max(MAX_DOWNLOAD_DIRECTORY_LENGTH).refine(isContainedDownloadPath),
   revision: z.string().regex(DOWNLOAD_REVISION_PATTERN),
 

@@ -40,7 +40,7 @@ export class DeploymentInstanceAdminController {
   /**
    * Emits the current set on connect, then again on every write to any instance, this deployment's or not, on an
    * edit, enable or disable of this deployment, and at most once a second on telemetry from the nodes its placement
-   * refuses.
+   * refuses, would evict on or shows measured figures for.
    */
   @Sse('stream')
   async streamDeploymentInstances(

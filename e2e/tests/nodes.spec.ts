@@ -19,7 +19,7 @@ test.describe('nodes', () => {
 
       await nodesPage.search(node.name);
 
-      await expect(nodesPage.listItemByName(node.name)).toContainText('Awaiting first contact');
+      await expect(nodesPage.listItemByName(node.name)).toContainText('Waiting for agent');
       await expect(nodesPage.listItemByName(node.name)).toContainText('Never');
 
       await nodesPage.stateFilter('Inactive').click();

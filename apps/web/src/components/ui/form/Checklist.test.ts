@@ -79,6 +79,23 @@ describe('Checklist', () => {
     expect(list.findAll('input')).toHaveLength(ITEMS.length);
   });
 
+  it('draws what an item nests directly under its row', () => {
+    const list = mount(Checklist, {
+      props: { label: 'Nodes', items: ITEMS },
+      slots: { nested: '<div data-testid="nested">{{ params.item.value }}</div>' },
+    });
+    const rows = list.get('[data-testid="picker-rows"]').element.children;
+
+    expect([...rows].map(row => row.textContent.trim())).toEqual([
+      'node-a-011.42 TiB free',
+      'node-a-01',
+      'node-w-03Offline',
+      'node-w-03',
+      'node-b-02',
+      'node-b-02',
+    ]);
+  });
+
   it('sets the labels in mono when asked, for names and paths', () => {
     const list = mount(Checklist, { props: { label: 'Nodes', items: ITEMS, mono: true } });
 

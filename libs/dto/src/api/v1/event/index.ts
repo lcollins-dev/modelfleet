@@ -24,7 +24,9 @@ export enum EventType {
   PRESET_DELETED = 'preset.deleted',
   DEPLOYMENT_CREATED = 'deployment.created',
   DEPLOYMENT_UPDATED = 'deployment.updated',
+  /** Required to read historical events. */
   DEPLOYMENT_APPLIED = 'deployment.applied',
+  DEPLOYMENT_RESTART_REQUESTED = 'deployment.restart-requested',
   DEPLOYMENT_ENABLED = 'deployment.enabled',
   DEPLOYMENT_DISABLED = 'deployment.disabled',
   DEPLOYMENT_DELETED = 'deployment.deleted',
@@ -101,6 +103,7 @@ export type EventDetailMap = {
   [EventType.DEPLOYMENT_CREATED]: { name: string; backend: string; modelName: string; presetName: string };
   [EventType.DEPLOYMENT_UPDATED]: { name: string; previousName: string };
   [EventType.DEPLOYMENT_APPLIED]: { name: string; revision: string };
+  [EventType.DEPLOYMENT_RESTART_REQUESTED]: { name: string; instances: number };
   [EventType.DEPLOYMENT_ENABLED]: { name: string };
   [EventType.DEPLOYMENT_DISABLED]: { name: string };
   [EventType.DEPLOYMENT_DELETED]: { name: string; modelName: string };

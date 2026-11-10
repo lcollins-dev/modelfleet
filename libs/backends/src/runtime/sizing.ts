@@ -17,6 +17,12 @@ export interface IVramSizing {
 
   /** When set, CPU pins do not allow RAM offloading. Included in GPU memory refusal messages. */
   cardsOnlyReason?: string;
+
+  /** Placement uses live free memory and must wait for other loads on the same GPUs. */
+  balancedOnFreeMemory?: boolean;
+
+  /** Kept free on each card in place of the node's headroom. */
+  headroomBytes?: number;
 }
 
 export type VramSizer = (input: IVramEstimateInput) => IVramSizing;

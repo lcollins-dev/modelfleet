@@ -56,6 +56,7 @@ const residency = (partial: Partial<DeploymentResidencyDto> = {}): DeploymentRes
   givenUp: false,
   lastLaunchFailure: null,
   makingRoomNodeIds: [],
+  restarting: false,
   ...partial,
 });
 
@@ -90,6 +91,14 @@ describe('describeLaunchFailures', () => {
 
     expect(line).toBe('Last 3 starts failed. Retry available in 2m.');
     expect(describeLaunchFailures(residency({ launchFailures: 3 }), NOW)).toBeNull();
+  });
+
+  it('rounds the wait up and says nothing once it has run out', () => {
+    const failed = residency({ launchFailures: 2, retryDate: new Date('2026-09-23T12:00:00.400Z') });
+
+    expect(describeLaunchFailures(failed, NOW)).toBe('Last 2 starts failed. Retry available in 1s.');
+    expect(describeLaunchFailures(failed, new Date('2026-09-23T12:00:00.400Z'))).toBeNull();
+    expect(describeLaunchFailures(failed, new Date('2026-09-23T12:00:05Z'))).toBeNull();
   });
 });
 
@@ -134,6 +143,8 @@ describe('deployment run state', () => {
     devices: [{ deviceKey: 'GPU-4f2c', name: 'NVIDIA A100-SXM4-80GB' }],
     state: InstanceState.READY,
     message: null,
+    onOlderSettings: false,
+    restartRequested: false,
     exitCode: null,
     startedDate: null,
     reportedDate: null,
@@ -152,7 +163,6 @@ describe('deployment run state', () => {
     backend: BackendId.LLAMA_CPP,
     activationPolicy: ActivationPolicy.ALWAYS,
     enabled: true,
-    outOfDate: false,
     createdDate: new Date('2026-09-22T12:00:00.000Z'),
     ...overrides,
   });
@@ -240,6 +250,7 @@ describe('placement figures', () => {
     problem: null,
     problemReason: null,
     expectedUsage: usage(),
+    measured: null,
     capacity: capacity(),
     evictions: [],
     ...overrides,
@@ -391,22 +402,85 @@ describe('placement figures', () => {
     it.each([
       [ExpectedUsageSource.CONFIGURED, 'Configured'],
       [ExpectedUsageSource.DECLARED, 'Declared'],
-      [ExpectedUsageSource.MEASURED, 'Measured'],
       [ExpectedUsageSource.ESTIMATED, 'Estimated'],
     ])('hovers VRAM with its %s source', (source, title) => {
       expect(placementMemory(node({ expectedUsage: usage({ source }) })).vram.title).toBe(title);
     });
 
-    it('hovers RAM with the weights and prompt cache, leaving out a part that is zero', () => {
-      const ramTitle = (overrides: Partial<ExpectedUsageDto>): string | null =>
-        placementMemory(node({ expectedUsage: usage(overrides) })).ram.title;
+    describe('the RAM hover', () => {
+      const hovered = (neededBytes: number, cacheBytes: number, hostFreeBytes: number | null = null) =>
+        placementMemory(
+          node({
+            capacity: capacity({
+              hostFreeBytes,
+              hostWeights: neededBytes === 0 ? null : { neededBytes, cacheBytes, freeBytes: 16 * GIB },
+            }),
+          })
+        ).ram;
 
-      expect(ramTitle({ hostResidentBytes: 30 * GIB, hostCacheBytes: 8 * GIB })).toBe(
-        'Weights 30 GiB, Prompt cache up to 8 GiB'
-      );
-      expect(ramTitle({ hostResidentBytes: 30 * GIB })).toBe('Weights 30 GiB');
-      expect(ramTitle({ hostCacheBytes: 8 * GIB })).toBe('Prompt cache up to 8 GiB');
-      expect(ramTitle({})).toBeNull();
+      it('reads pinned, overflow and cache in that order, adding up to the cell', () => {
+        const ram = hovered(9 * GIB, 8 * GIB, 16 * GIB);
+
+        expect(ram.text).toBe('22 / 16 GiB free');
+        expect(ram.title).toBe('CPU pinned 1 GiB · VRAM overflow 13 GiB · Prompt cache ≤8 GiB');
+      });
+
+      it('reads each part in its own unit, and says nothing about an eviction', () => {
+        const ram = placementMemory(
+          node({
+            capacity: capacity({
+              expectedBytes: 285 * GIB,
+              availableBytes: 258 * GIB,
+              hostFreeBytes: 208 * GIB,
+              hostWeights: { neededBytes: 671 * 1024 ** 2 + GIB, cacheBytes: GIB, freeBytes: 208 * GIB },
+            }),
+            evictions: [EVICTION],
+          })
+        ).ram;
+
+        expect(ram.title).toBe('CPU pinned 671 MiB · VRAM overflow 235 GiB · Prompt cache ≤1 GiB');
+      });
+
+      it('leaves out a part that is zero', () => {
+        expect(hovered(30 * GIB, 0).title).toBe('CPU pinned 30 GiB');
+        expect(hovered(8 * GIB, 8 * GIB).title).toBe('Prompt cache ≤8 GiB');
+        expect(hovered(0, 0, 16 * GIB).title).toBe('VRAM overflow 13 GiB');
+        expect(hovered(0, 0).title).toBeNull();
+      });
+
+      it('reads a node the ledger has not checked from its expected usage', () => {
+        const held = node({
+          running: 1,
+          expectedUsage: usage({ hostResidentBytes: 4 * GIB, hostCacheBytes: 8 * GIB }),
+          capacity: null,
+        });
+
+        expect(placementMemory(held).ram.title).toBe('CPU pinned 4 GiB · Prompt cache ≤8 GiB');
+      });
+    });
+
+    describe('a node holding its full share', () => {
+      const holding = (vramBytes: number | null, ramBytes: number | null) =>
+        node({ running: 1, capacity: null, expectedUsage: usage(), measured: { vramBytes, ramBytes } });
+
+      it('reads one measured number per cell, with no hover, and stays Running', () => {
+        const memory = placementMemory(holding(83 * GIB, 213 * GIB));
+
+        expect(memory.vram).toMatchObject({ text: '83 GiB', short: false, title: null });
+        expect(memory.ram).toMatchObject({ text: '213 GiB', short: false, title: null });
+        expect(placementFit(holding(83 * GIB, 213 * GIB))).toBe(PlacementFit.HELD);
+      });
+
+      it('leaves a figure with no reading blank rather than falling back to the estimate', () => {
+        const memory = placementMemory(holding(null, 213 * GIB));
+
+        expect(memory.vram).toMatchObject({ text: '-', title: null });
+        expect(memory.ram.text).toBe('213 GiB');
+      });
+
+      it('reads a zero as a dash, as every other figure on the row does', () => {
+        expect(placementMemory(holding(0, 213 * GIB)).vram.text).toBe('-');
+      });
     });
   });
 

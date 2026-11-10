@@ -18,12 +18,15 @@ export enum LlamaCppField {
   SPLIT_MODE = 'splitMode',
   TENSOR_SPLIT = 'tensorSplit',
   FLASH_ATTN = 'flashAttn',
+  FIT_TARGET = 'fitTarget',
+  NO_MMPROJ_OFFLOAD = 'noMmprojOffload',
   CACHE_TYPE_K = 'cacheTypeK',
   CACHE_TYPE_V = 'cacheTypeV',
   NO_KV_OFFLOAD = 'noKvOffload',
   LOAD_MODE = 'loadMode',
   LAZY_MODE = 'lazyMode',
   PROMPT_CACHE = 'promptCache',
+  PROJECTOR = 'mmproj',
   DRAFT_MODEL = 'draftModel',
   SPECULATIVE_TYPE = 'speculativeType',
   DRAFT_TOKENS = 'draftTokens',
@@ -154,6 +157,26 @@ const fields: BackendField[] = [
     group: GPU,
     type: BackendFieldType.CHOICE,
     choices: ['auto', 'on', 'off'],
+  },
+  {
+    name: LlamaCppField.FIT_TARGET,
+    flag: '--fit-target',
+    label: 'Fit target (MiB)',
+    description:
+      "Set how much VRAM, in MiB, automatic fitting leaves free on each GPU. The VRAM check uses this in place of the node's " +
+      'headroom. This has no effect in tensor mode, or with a tensor split across several GPUs, tensor overrides or ' +
+      'expert layers on the CPU, since those turn automatic fitting off.',
+    group: GPU,
+    type: BackendFieldType.INTEGER,
+    min: 0,
+  },
+  {
+    name: LlamaCppField.NO_MMPROJ_OFFLOAD,
+    flag: '--no-mmproj-offload',
+    label: 'Keep the projector off the GPU',
+    description: 'Keep the multimodal projector in RAM. This frees VRAM for the model but slows image and audio input.',
+    group: GPU,
+    type: BackendFieldType.BOOLEAN,
   },
 
   {
@@ -286,7 +309,7 @@ const fields: BackendField[] = [
   },
 
   {
-    name: 'mmproj',
+    name: LlamaCppField.PROJECTOR,
     flag: '--mmproj',
     label: 'Projector',
     description:

@@ -25,7 +25,7 @@ test.describe('edit profile', () => {
     await editProfilePage.nameInput.fill('Renamed In E2E');
     await editProfilePage.saveButton.click();
 
-    await expect(page.getByText('Profile updated', { exact: true })).toBeVisible();
+    await expect(page.getByText('Profile updated.', { exact: true })).toBeVisible();
 
     await page.reload();
 
@@ -50,7 +50,7 @@ test.describe('edit profile', () => {
     await editProfilePage.confirmPasswordInput.fill('Chang3d$Pass');
     await editProfilePage.changePasswordButton.click();
 
-    await expect(page.getByText('Password changed', { exact: true })).toBeVisible();
+    await expect(page.getByText('Password changed.', { exact: true })).toBeVisible();
 
     // The password change replaces the session, so this only holds if the app swapped tokens.
     await dashboardPage.goto();

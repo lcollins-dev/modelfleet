@@ -19,7 +19,7 @@ describe('UiTable', () => {
     const wrapper = mount(Table, { props: { columns: '1fr' }, slots: { default: '<div />' } });
 
     expect(wrapper.find('[role="region"]').exists()).toBe(false);
-    expect(wrapper.get('.overflow-x-auto').classes()).not.toContain('max-h-72');
+    expect(wrapper.get('.overflow-x-auto').classes()).not.toContain('max-h-96');
   });
 
   it('scrolls its rows in a named region the keyboard can reach, under a head that sticks', () => {
@@ -32,7 +32,7 @@ describe('UiTable', () => {
 
     expect(region.attributes('aria-label')).toBe('Files');
     expect(region.attributes('tabindex')).toBe('0');
-    expect(region.classes()).toEqual(expect.arrayContaining(['max-h-72', 'overflow-y-auto']));
+    expect(region.classes()).toEqual(expect.arrayContaining(['max-h-96', 'scroll-pt-9', 'overflow-y-auto']));
     expect(region.get('[data-testid="table-head"]').classes()).toEqual(
       expect.arrayContaining(['sticky', 'top-0', 'bg-surface'])
     );

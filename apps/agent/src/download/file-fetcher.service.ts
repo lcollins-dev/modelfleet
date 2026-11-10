@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { DesiredDownload, DesiredDownloadFile, DownloadFileState } from '@libs/agent-protocol';
+import { Stall } from '@libs/runtime';
 
 import { Backoff } from '../common/backoff';
 import { ConfigService } from '../config/config.service';
@@ -160,8 +161,7 @@ export class FileFetcherService {
 
   private async receive(transfer: ITransfer, offset: number): Promise<void> {
     const { download, file, url, location, signal } = transfer;
-    const stall = new AbortController();
-    const stallTimer = setTimeout(() => stall.abort(), this.configService.downloadStallTimeoutMs);
+    const stall = new Stall(this.configService.downloadStallTimeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -180,7 +180,7 @@ export class FileFetcherService {
 
       try {
         for await (const chunk of response.body) {
-          stallTimer.refresh();
+          stall.progressed();
           received += chunk.length;
 
           if (received > file.sizeBytes) {
@@ -199,9 +199,9 @@ export class FileFetcherService {
         throw new DownloadError('The connection closed before the file was complete', true);
       }
     } catch (error: unknown) {
-      throw this.classify(error, transfer, stall.signal);
+      throw this.classify(error, transfer, stall);
     } finally {
-      clearTimeout(stallTimer);
+      stall.stop();
     }
   }
 
@@ -262,12 +262,12 @@ export class FileFetcherService {
   }
 
   /** An abort from the caller passes through unchanged. */
-  private classify(error: unknown, transfer: ITransfer, stallSignal: AbortSignal): unknown {
+  private classify(error: unknown, transfer: ITransfer, stall: Stall): unknown {
     if (transfer.signal.aborted || error instanceof DownloadError) {
       return error;
     }
 
-    if (stallSignal.aborted) {
+    if (stall.stalled) {
       return new DownloadError(`Nothing arrived for ${this.configService.downloadStallTimeout}`, true);
     }
 

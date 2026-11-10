@@ -1,5 +1,6 @@
 import { mount } from '@vue/test-utils';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { h } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
 import TableRow from './TableRow.vue';
@@ -43,6 +44,33 @@ describe('UiTableRow', () => {
     const wrapper = mountExpandable({ expanded: true });
 
     expect(wrapper.find('[data-testid="detail"]').exists()).toBe(true);
+  });
+
+  it('brings its panel into view when it opens inside a scroll region, and only then', async () => {
+    const scrollIntoView = vi.fn();
+
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    const inRegion = mount({
+      render: () =>
+        h('div', { role: 'region' }, [
+          h(TableRow, null, { default: () => h('span', 'node.registered'), expand: () => h('div', 'nodeKey 7') }),
+        ]),
+    });
+
+    await inRegion.get('span').trigger('click');
+
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'nearest' });
+
+    await inRegion.get('span').trigger('click');
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+    scrollIntoView.mockClear();
+
+    await mountExpandable().get('span').trigger('click');
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
   it('tightens its padding and type when dense', () => {

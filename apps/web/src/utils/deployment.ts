@@ -2,10 +2,10 @@ import type {
   ConfigurationDocument,
   DeploymentResidencyDto,
   EffectiveConfigurationEntryDto,
-  ExpectedUsageDto,
   ListDeploymentDto,
   ListInstanceDto,
   PlacementEvictionDto,
+  PlacementMeasuredDto,
   PlacementNodeDto,
 } from '@libs/dto';
 import {
@@ -133,7 +133,6 @@ const REASON_FITS: Record<PlacementProblemReason, PlacementFit> = {
 const EXPECTED_USAGE_LABELS: Record<ExpectedUsageSource, string> = {
   [ExpectedUsageSource.CONFIGURED]: 'Configured',
   [ExpectedUsageSource.DECLARED]: 'Declared',
-  [ExpectedUsageSource.MEASURED]: 'Measured',
   [ExpectedUsageSource.ESTIMATED]: 'Estimated',
 };
 
@@ -151,11 +150,16 @@ export const describeLaunchFailures = (residency: DeploymentResidencyDto, now = 
     return null;
   }
 
+  const waitSecs = Math.ceil((residency.retryDate.getTime() - now.getTime()) / 1000);
+
+  if (waitSecs <= 0) {
+    return null;
+  }
+
   const launches =
     residency.launchFailures === 1 ? 'Last start failed' : `Last ${residency.launchFailures} starts failed`;
-  const wait = formatDuration((residency.retryDate.getTime() - now.getTime()) / 1000);
 
-  return `${launches}. Retry available in ${wait}.`;
+  return `${launches}. Retry available in ${formatDuration(waitSecs)}.`;
 };
 
 /** Empty where the deployment names no preset, since every entry is then attributed to the deployment. */
@@ -311,6 +315,10 @@ export const placementFitTone = (fit: PlacementFit): DeploymentRunTone => FIT_TO
 
 /** A refusal for one card marks VRAM short even where the pooled figure fits. */
 export const placementMemory = (node: PlacementNodeDto, makingRoomNodeIds: number[] = []): IPlacementMemory => {
+  if (node.measured !== null) {
+    return measuredMemory(node.measured);
+  }
+
   const figures = placementFigures(node);
   const { vram, ram } = figures === null ? { vram: UNKNOWN_MEMORY, ram: UNKNOWN_MEMORY } : memoryCells(figures);
   const fit = placementFit(node, makingRoomNodeIds);
@@ -327,20 +335,32 @@ export const placementMemory = (node: PlacementNodeDto, makingRoomNodeIds: numbe
       ...ram,
       label: 'RAM',
       short: marked && (ram.short || fit === PlacementFit.NOT_ENOUGH_RAM),
-      title: ramBreakdown(node.expectedUsage),
+      title: ramBreakdown(figures),
     },
   };
 };
 
-const ramBreakdown = (usage: ExpectedUsageDto | null): string | null => {
-  const weights = usage?.hostResidentBytes ?? 0;
-  const cache = usage?.hostCacheBytes ?? 0;
+const measuredMemory = (measured: PlacementMeasuredDto): IPlacementMemory => ({
+  vram: { ...measuredCell(measured.vramBytes), label: 'VRAM', title: null },
+  ram: { ...measuredCell(measured.ramBytes), label: 'RAM', title: null },
+});
+
+const measuredCell = (bytes: number | null): IMemoryCell =>
+  bytes === null || bytes === 0 ? UNKNOWN_MEMORY : { text: formatBytes(bytes), short: false };
+
+const ramBreakdown = (figures: IMemoryFigures | null): string | null => {
+  if (figures === null) {
+    return null;
+  }
+
+  const pinnedBytes = figures.ramUsedBytes - figures.ramOverflowBytes - figures.ramCacheBytes;
   const parts = [
-    ...(weights > 0 ? [`Weights ${formatBytes(weights)}`] : []),
-    ...(cache > 0 ? [`Prompt cache up to ${formatBytes(cache)}`] : []),
+    ...(pinnedBytes > 0 ? [`CPU pinned ${formatBytes(pinnedBytes)}`] : []),
+    ...(figures.ramOverflowBytes > 0 ? [`VRAM overflow ${formatBytes(figures.ramOverflowBytes)}`] : []),
+    ...(figures.ramCacheBytes > 0 ? [`Prompt cache ≤${formatBytes(figures.ramCacheBytes)}`] : []),
   ];
 
-  return parts.length === 0 ? null : parts.join(', ');
+  return parts.length === 0 ? null : parts.join(' · ');
 };
 
 export const describePlacementFit = (node: PlacementNodeDto): IPlacementMemoryCell[] => {
@@ -363,5 +383,7 @@ const placementFigures = (node: PlacementNodeDto): IMemoryFigures | null => {
     vramFreeBytes: null,
     ramUsedBytes: node.expectedUsage.hostResidentBytes + node.expectedUsage.hostCacheBytes,
     ramFreeBytes: null,
+    ramOverflowBytes: 0,
+    ramCacheBytes: node.expectedUsage.hostCacheBytes,
   };
 };

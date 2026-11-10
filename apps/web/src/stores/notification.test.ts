@@ -179,16 +179,4 @@ describe('useNotificationStore', () => {
 
     expect(contents()).toEqual([]);
   });
-
-  it('creates a titled success toast', () => {
-    const notificationStore = useNotificationStore();
-
-    notificationStore.addToast('Invite revoked', 'The link no longer works.');
-
-    expect(notificationStore.notifications[0]).toMatchObject({
-      type: NotificationType.SUCCESS,
-      content: 'The link no longer works.',
-      title: 'Invite revoked',
-    });
-  });
 });

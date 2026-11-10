@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" style="color-scheme: light dark">
+  <!-- Inline in the console the theme tokens colour it. As the favicon it cannot read them, so the fallbacks follow the browser's colour scheme. -->
+  <path style="fill: var(--fg-header, light-dark(#15141a, #f2f0f8))" d="M2 22H30L26 30H6L2 24Z"/>
+  <rect style="fill: var(--fg-header, light-dark(#15141a, #f2f0f8))" x="4" y="16" width="6" height="4"/>
+  <rect style="fill: var(--fg-header, light-dark(#15141a, #f2f0f8))" x="4" y="10" width="6" height="4"/>
+  <rect style="fill: var(--fg-header, light-dark(#15141a, #f2f0f8))" x="12" y="16" width="6" height="4"/>
+  <rect style="fill: var(--fg-header, light-dark(#15141a, #f2f0f8))" x="12" y="10" width="6" height="4"/>
+  <rect style="fill: var(--primary, light-dark(#2a67b8, #3176c8))" x="12" y="4" width="6" height="4"/>
+  <rect style="fill: var(--fg-header, light-dark(#15141a, #f2f0f8))" x="20" y="16" width="6" height="4"/>
+</svg>

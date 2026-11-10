@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { Instance } from './entities/instance.entity';
-import { MeasuredVram } from './entities/measured-vram.entity';
 
 import { ExpectedUsageService } from './expected-usage.service';
 import { InstanceAdmissionService } from './instance-admission.service';
@@ -10,7 +9,6 @@ import { InstanceDesiredStateService } from './instance-desired-state.service';
 import { InstanceLaunchService } from './instance-launch.service';
 import { InstanceObservationService } from './instance-observation.service';
 import { InstanceService } from './instance.service';
-import { MeasuredVramService } from './measured-vram.service';
 
 import { DeploymentModule } from '../deployment/deployment.module';
 import { EventModule } from '../event/event.module';
@@ -22,7 +20,7 @@ import { TelemetryModule } from '../telemetry/telemetry.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Instance, MeasuredVram]),
+    TypeOrmModule.forFeature([Instance]),
     DeploymentModule,
     EventModule,
     GpuModule,
@@ -35,7 +33,6 @@ import { TelemetryModule } from '../telemetry/telemetry.module';
     InstanceService,
     InstanceAdmissionService,
     ExpectedUsageService,
-    MeasuredVramService,
     InstanceLaunchService,
     InstanceDesiredStateService,
     InstanceObservationService,

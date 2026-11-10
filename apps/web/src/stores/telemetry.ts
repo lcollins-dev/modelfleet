@@ -15,6 +15,9 @@ export const useTelemetryStore = defineStore('telemetry', () => {
   const streams = shallowRef<ITelemetryStream[]>([]);
   const now = ref(Date.now());
 
+  // Untracked, since streams open inside callers' effects and two effects tracking the list reopen each other forever.
+  let registered: ITelemetryStream[] = [];
+
   const { pause, resume } = useIntervalFn(
     () => {
       now.value = Date.now();
@@ -71,15 +74,17 @@ export const useTelemetryStore = defineStore('telemetry', () => {
   function register(stream: ITelemetryStream): () => void {
     const tracked = { ...stream };
 
-    streams.value = [...streams.value, tracked];
+    registered = [...registered, tracked];
+    streams.value = registered;
     now.value = Date.now();
 
     resume();
 
     return () => {
-      streams.value = streams.value.filter(entry => entry !== tracked);
+      registered = registered.filter(entry => entry !== tracked);
+      streams.value = registered;
 
-      if (streams.value.length === 0) {
+      if (registered.length === 0) {
         pause();
       }
     };
